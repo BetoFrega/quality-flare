@@ -3,7 +3,7 @@ import { checks as allChecks } from "./checks/index.ts";
 import type { Check, CheckResult } from "./checks/types.ts";
 import { verifySignature } from "./crypto.ts";
 import { GitHubClient, type PullRequest } from "./github.ts";
-import { getDisabledChecks } from "./settings.ts";
+import { getRepoSettings } from "./settings.ts";
 
 const PULL_REQUEST_ACTIONS = new Set([
 	"opened",
@@ -24,7 +24,10 @@ interface WebhookPayload {
 	check_suite?: { pull_requests: { number: number }[] };
 }
 
-/** Reported instead of running a check the repository turned off, so required checks don't block merges. */
+/**
+ * Reported instead of running a check that is off for an enabled repository,
+ * so a check that branch protection requires doesn't block merges.
+ */
 export const DISABLED_RESULT: CheckResult = {
 	conclusion: "neutral",
 	title: "Desativado",
@@ -54,7 +57,9 @@ export default {
 		if (!plan || !payload.installation || !payload.repository) return new Response("Ignored\n", { status: 202 });
 
 		const repo = payload.repository.full_name;
-		const disabled = await getDisabledChecks(env.SETTINGS, repo);
+		const settings = await getRepoSettings(env.SETTINGS, repo);
+		// Repositories start disabled: until someone enables one in the admin, its deliveries are ignored.
+		if (!settings.enabled) return new Response("Repository not enabled\n", { status: 202 });
 		const github = await GitHubClient.forInstallation(
 			{ appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY },
 			payload.installation.id,
@@ -63,7 +68,7 @@ export default {
 			// Re-run requests only carry the PR number; fetch it so labels and body are current.
 			const pr = typeof target === "number" ? await github.getPullRequest(repo, target) : target;
 			for (const check of plan.checks) {
-				const result = disabled.has(check.id) ? DISABLED_RESULT : await check.run({ github, repo, pr, env });
+				const result = settings.enabledChecks.has(check.id) ? await check.run({ github, repo, pr, env }) : DISABLED_RESULT;
 				await github.createCheckRun(repo, pr.head.sha, check.name, result);
 			}
 		}

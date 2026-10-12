@@ -1,7 +1,7 @@
 import { checks as allChecks } from "../checks/index.ts";
 import type { Check } from "../checks/types.ts";
 import { GitHubClient, type InstalledRepo } from "../github.ts";
-import { getDisabledChecks, setCheckEnabled } from "../settings.ts";
+import { getRepoSettings, setChecksEnabled, setRepoEnabled } from "../settings.ts";
 import { renderAdminPage, renderMessage } from "./page.ts";
 
 export const ADMIN_PATH = "/admin";
@@ -33,28 +33,45 @@ export async function handleAdmin(
 	if (request.method === "GET" && path === ADMIN_PATH) {
 		const repos = await listRepos(env);
 		const rows = await Promise.all(
-			repos.map(async (repo) => ({ repo, disabled: await getDisabledChecks(env.SETTINGS, repo.full_name) })),
+			repos.map(async (repo) => ({ repo, settings: await getRepoSettings(env.SETTINGS, repo.full_name) })),
 		);
 		const identity = await access.getIdentity();
-		return html(renderAdminPage({ email: identity?.email, checks, rows }));
+		return html(renderAdminPage({ email: identity?.email, checks, rows, open: url.searchParams.get("open") }));
 	}
 
-	if (request.method === "POST" && path === `${ADMIN_PATH}/checks`) {
+	if (request.method === "POST" && path.startsWith(`${ADMIN_PATH}/`)) {
 		// Forms post from the admin page itself; anything else is a cross-site request.
 		if (request.headers.get("Origin") !== url.origin) return html(renderMessage("Origem inválida", ""), 403);
 		const form = await request.formData();
-		const repo = String(form.get("repo") ?? "");
-		const checkId = String(form.get("check") ?? "");
 		const enabled = form.get("enabled") === "true";
-		const check = checks.find((c) => c.id === checkId);
-		const installed = (await listRepos(env)).find((r) => r.full_name === repo);
-		if (!check || !installed) return html(renderMessage("Pedido inválido", "Repositório ou check desconhecido."), 400);
-		await setCheckEnabled(env.SETTINGS, installed.full_name, check.id, enabled);
-		return Response.redirect(`${url.origin}${ADMIN_PATH}#${encodeURIComponent(installed.full_name)}`, 303);
+		const repo = (await listRepos(env)).find((r) => r.full_name === form.get("repo"))?.full_name;
+		if (!repo) return invalid();
+
+		switch (path) {
+			case `${ADMIN_PATH}/repos`:
+				await setRepoEnabled(env.SETTINGS, repo, enabled);
+				break;
+			case `${ADMIN_PATH}/checks`: {
+				const check = checks.find((c) => c.id === form.get("check"));
+				if (!check) return invalid();
+				await setChecksEnabled(env.SETTINGS, repo, [check.id], enabled);
+				break;
+			}
+			case `${ADMIN_PATH}/checks/all`:
+				await setChecksEnabled(env.SETTINGS, repo, checks.map((c) => c.id), enabled);
+				break;
+			default:
+				return html(renderMessage("Página não encontrada", ""), 404);
+		}
+		// Changes to checks happen inside the repository's collapsible, so keep it open.
+		const open = path === `${ADMIN_PATH}/repos` ? "" : `?open=${encodeURIComponent(repo)}`;
+		return Response.redirect(`${url.origin}${ADMIN_PATH}${open}#${encodeURIComponent(repo)}`, 303);
 	}
 
 	return html(renderMessage("Página não encontrada", ""), 404);
 }
+
+const invalid = () => html(renderMessage("Pedido inválido", "Repositório ou check desconhecido."), 400);
 
 function html(body: string, status = 200): Response {
 	return new Response(body, {
