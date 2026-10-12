@@ -3,6 +3,7 @@ import { livePublisher } from "../../live.ts";
 import { d1RunStore } from "../../runs.ts";
 import type { Check, CheckResult } from "../types.ts";
 import { CONFIG_FILE, readTestConfig, selectTestFiles, type TestConfig } from "./config.ts";
+import { readVitestConfig } from "./vitest-config.ts";
 import { isLoadable, isTestFile } from "./convention.ts";
 import { d1JobStore, type JobStore, type ShardResult, type TestShard } from "./jobs.ts";
 import { readLockfile, type LockedPackage } from "./lockfile.ts";
@@ -52,7 +53,9 @@ export const tests: Check = {
 		let checkRunId: number | undefined;
 		try {
 			if (runId === undefined) throw new Error("O D1 (quality-flare-runs) não respondeu; ele coordena os lotes de testes.");
-			const config = readTestConfig(await github.getFileText(repo, sha, CONFIG_FILE));
+			const read = (path: string) => github.getFileText(repo, sha, path);
+			// quality-flare.json overrides, key by key, what the repository's vitest config says.
+			const config = { ...(await readVitestConfig(read)).config, ...readTestConfig(await read(CONFIG_FILE)) };
 			const testFiles = selectTestFiles(await github.listFiles(repo, sha), config, isTestFile).sort();
 			if (!testFiles.length) {
 				await finishRun(runs, live, runId, NO_TESTS);

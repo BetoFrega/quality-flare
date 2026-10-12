@@ -29,7 +29,9 @@ O check roda quando a PR é aberta, reaberta, recebe commits ou sai de draft, e 
 
 ## Configuração
 
-Sem configuração, vale a convenção acima. Um `quality-flare.json` na raiz do repositório espelha o config do Vitest que a suíte usa:
+O check lê o config do Vitest do repositório sem executá-lo: o primeiro de `vitest.unit.config.*` e `vitest.config.*` (`.mts`, `.ts`, `.mjs`, `.js`, `.cts`, `.cjs`). Dos blocos `test: {…}` valem `include`, `exclude`, `setupFiles`, `globals` e `testTimeout` escritos como literais; `...configDefaults.exclude` é entendido e valores calculados em runtime são ignorados. `mergeConfig` com configs locais importados é seguido, e as listas se concatenam como no Vitest. Sem config do Vitest, vale a convenção acima.
+
+Um `quality-flare.json` na raiz sobrescreve, chave por chave, o que veio do config do Vitest. Use-o só para o que difere no Workers:
 
 ```json
 {
@@ -54,7 +56,7 @@ Sem configuração, vale a convenção acima. Um `quality-flare.json` na raiz do
 - **Sem snapshots** (`toMatchSnapshot`, `toMatchInlineSnapshot`) e sem `expect.poll`.
 - **Playwright fica de fora:** `*.spec.ts` que importa `@playwright/test` não é rodado. Specs que só importam fixtures locais do Playwright ainda são pegos; mova-os para uma pasta ignorada ou renomeie.
 - **Lotes:** os arquivos de teste rodam em lotes de 20, cada lote num Dynamic Worker próprio, só com o código que aqueles arquivos importam. Os lotes passam por uma Cloudflare Queue (`quality-flare-tests`) e rodam em paralelo. Um lote que passa de 48 MB de código, ou cujo Worker cai, se divide ao meio até caber ou até isolar o arquivo culpado. Um arquivo sozinho com mais de 64 MB de imports (Next.js inteiro, por exemplo) aparece como falha com o tamanho.
-- **Sem arquivo de config do Vitest:** `vitest.config.*` não é lido; aliases do Vite e `environment` (jsdom/happy-dom) são ignorados. `include`, `exclude`, `setupFiles`, `globals` e `testTimeout` vêm do `quality-flare.json` (veja Configuração).
+- **Config do Vitest parcial:** só `include`, `exclude`, `setupFiles`, `globals` e `testTimeout` são lidos (veja Configuração); aliases do Vite e `environment` (jsdom/happy-dom) são ignorados.
 - **Runtime do Workers, não o Node:** não há sistema de arquivos real, nem `child_process`, nem processos; `Date.now()` só avança em I/O. APIs do Node que o `nodejs_compat` não implementa falham.
 - **Pacotes:** só os que estão no lockfile e no registry público do npm. Sem lockfile, ou com yarn/bun, só imports relativos e `vitest` funcionam. Registries privados e dependências git não são resolvidos. Pacotes que precisam de binário nativo ou de WebAssembly compilado em runtime não funcionam.
 - **Limites:** 30 s de CPU por lote no Dynamic Worker e 128 MB de memória no Worker que monta o lote. Um lote que derruba o Worker três vezes é reportado como falha.
