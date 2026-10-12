@@ -150,4 +150,21 @@ describe("buildModules", () => {
 		});
 		expect(testFiles).toEqual(["/test/a.test.ts"]);
 	});
+
+	it("drops JSON import attributes, which the Worker Loader rejects", async () => {
+		const { modules } = await build({
+			"test/a.test.ts": `import data from "./data.json" with { type: "json" }; import other from './other.json' assert { type: 'json' }; console.log(data, other);`,
+			"test/data.json": "{}",
+			"test/other.json": "{}",
+		});
+		expect(modules["test/a.test.ts"].js).toContain(`import data from "/test/data.json"; import other from '/test/other.json';`);
+	});
+
+	it("gives CommonJS node:process through an ESM module, as workerd can't require it", async () => {
+		const { modules } = await buildModules(
+			new Map([["test/a.test.js", `require("process"); require("node:process");`]]),
+			{ runtimeSource: "", fetchPackage },
+		);
+		expect(modules["test/a.test.js"]).toEqual({ cjs: `require("/__qf/process.js"); require("/__qf/process.js");` });
+	});
 });

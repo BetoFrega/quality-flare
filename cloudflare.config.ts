@@ -1,4 +1,5 @@
-import { bindings, defineConfig, exports } from "cf/config";
+import { bindings, defineConfig, exports, triggers } from "cf/config";
+import type { TestShard } from "./src/checks/tests/jobs.ts";
 import * as entrypoint from "./src/index.ts" with { type: "cf-worker" };
 
 export default defineConfig({
@@ -8,6 +9,14 @@ export default defineConfig({
 		entrypoint,
 		// Keep Workers Logs on; deploys from this config would otherwise turn them off.
 		observability: { enabled: true },
+		// The webhook and admin are served on quality-flare.<subdomain>.workers.dev.
+		workersDev: true,
+		// Each Tests shard builds its files' module graph (TypeScript stripping and all) before running it.
+		limits: { cpuMs: 120_000 },
+		triggers: [
+			// Tests shards, one per invocation so each gets the Worker's full memory. Retries split a shard that crashed.
+			triggers.queue({ name: "quality-flare-tests", maxBatchSize: 1, maxRetries: 3, maxConcurrency: 10 }),
+		],
 		exports: {
 			// Relays live test progress to the admin over WebSockets.
 			RunsHub: exports.durableObject({ storage: "sqlite" }),
@@ -29,6 +38,8 @@ export default defineConfig({
 			LIVE: bindings.durableObject({ worker: "quality-flare", exportName: "RunsHub" }),
 			// Loads Dynamic Workers that run each repository's tests (the "Tests" check).
 			LOADER: bindings.workerLoader(),
+			// Shards of Tests runs, consumed by this same Worker (see triggers).
+			TESTS_QUEUE: bindings.queue<TestShard>({ name: "quality-flare-tests" }),
 			// Audience tag of the Cloudflare Access application that protects /admin.
 			ACCESS_AUD: bindings.text("b04a2d0ead7c4054e2cf3ea58e43a1bcd1f9f276aa944fec5cb9c2f11f577bae"),
 		},

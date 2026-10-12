@@ -20,6 +20,7 @@ export const LIVE_SCRIPT = `(() => {
 	function render(runId) {
 		const c = progress(runId);
 		const done = c.pass + c.fail + c.other;
+		if (!done && c.status) return document.querySelectorAll('[data-progress="' + runId + '"]').forEach((el) => (el.textContent = c.status));
 		const text = (c.total ? done + " de " + c.total : done + " testes") + (c.fail ? " · " + c.fail + (c.fail === 1 ? " falhou" : " falharam") : "");
 		document.querySelectorAll('[data-progress="' + runId + '"]').forEach((el) => (el.textContent = text));
 	}
@@ -49,10 +50,12 @@ export const LIVE_SCRIPT = `(() => {
 		if (event.type === "started" || event.type === "finished") return location.reload();
 		if (event.type === "snapshot") {
 			progress(event.runId).total = event.total;
+			progress(event.runId).status = event.status;
 			for (const test of event.tests) addTest(test);
 		}
-		if (event.type === "collected") progress(event.runId).total = event.total;
+		if (event.type === "collected") progress(event.runId).total = (progress(event.runId).total || 0) + event.total;
 		if (event.type === "test") addTest(event);
+		if (event.type === "status") progress(event.runId).status = event.text;
 		render(event.runId);
 	}
 

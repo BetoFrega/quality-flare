@@ -29,7 +29,7 @@ A convenção, sem configuração por repositório:
 - **Quais arquivos:** todo `*.test.{ts,mts,js,mjs}` e `*.spec.{ts,mts,js,mjs}`, fora de `node_modules`, `dist`, `build`, `coverage` e pastas ocultas.
 - **API:** importe de `"vitest"` como sempre: `describe`, `it`/`test`, hooks (`beforeEach`…), `expect` (matchers do Jest, `expect.objectContaining`, `expect.assertions`…) e `vi` (`vi.fn`, `vi.spyOn`, `vi.stubGlobal`, `vi.unstubAllGlobals`, `vi.restoreAllMocks`). `vi.mock` e fake timers ainda não existem.
 - **Imports:** TypeScript é convertido na hora; `./a`, `./a.js` e `./a/index.ts` encontram `a.ts`, como num bundler. Pacotes do npm vêm do lockfile (`pnpm-lock.yaml` ou `package-lock.json`), na versão exata, baixados do registry. `paths` do `tsconfig.json` e pacotes do workspace (npm/pnpm) também resolvem. Specs do Playwright (`@playwright/test`) ficam de fora. Módulos do Node (`node:crypto`, `crypto`…) funcionam com `nodejs_compat`.
-- **Ambiente:** o runtime dos Workers, sem rede (`fetch` só funciona se o teste fizer stub), com limite de 30 s de CPU.
+- **Ambiente:** o runtime dos Workers, sem rede (`fetch` só funciona se o teste fizer stub), com limite de 30 s de CPU por lote. Os arquivos rodam em lotes de 20 por Dynamic Worker, distribuídos pela Cloudflare Queue `quality-flare-tests`; um lote grande demais (mais de 48 MB de código) ou que derruba o Worker se divide ao meio até caber.
 - ✅ Passa se todos os testes passam; ⚪ neutro se o repositório não tem testes; ❌ falha com cada teste que falhou e a mensagem do `expect`.
 - Roda quando a PR é aberta, reaberta, recebe commits ou sai de draft (não em mudanças de label ou descrição), e no **Re-run**.
 
@@ -50,7 +50,7 @@ Faz o mesmo que o workflow `gh pr merge --auto --squash` para PRs do Dependabot,
 1. O GitHub envia o webhook para o Worker; a assinatura `X-Hub-Signature-256` é verificada.
 2. O Worker assina um JWT da App (RS256, WebCrypto) e troca por um token da instalação.
 3. Lê as issues que a PR fecha via GraphQL (`closingIssuesReferences`) e também procura palavras-chave na descrição.
-4. Responde ao GitHub na hora e continua em `waitUntil`: roda cada check registrado e cria um check run por check no commit `head` da PR.
+4. Responde ao GitHub na hora e continua em `waitUntil`: roda cada check registrado e cria um check run por check no commit `head` da PR. O Tests só lista os arquivos de teste, abre o check run como "em andamento" e coloca os lotes na fila; o mesmo Worker consome a fila, e o último lote a terminar completa o check run.
 5. O check Tests baixa o tarball do commit, monta os módulos (testes, código importado e pacotes do npm) e carrega tudo num Dynamic Worker pelo binding `LOADER`. O runtime de testes ([`src/checks/tests/runtime`](src/checks/tests/runtime)) é empacotado no build por [`build/test-runtime.ts`](build/test-runtime.ts).
 
 Eventos tratados:
@@ -113,7 +113,7 @@ Em [`/admin`](https://quality-flare.frega.workers.dev/admin) ficam os repositór
 - O interruptor **Ativar checks** de cada repositório liga o quality-flare nele. Enquanto estiver desligado, o Worker ignora os webhooks desse repositório e não cria check runs.
 - Clicar no repositório abre a lista dos checks, cada um com seu interruptor, e os botões **Ativar todos** e **Desativar todos**.
 - Num repositório ativo, um check desativado não roda e é publicado com conclusão `neutral` ("Desativado"), para que um check exigido pela proteção de branch não trave o merge.
-- **Execuções de testes** ([`/admin/runs`](https://quality-flare.frega.workers.dev/admin/runs)) lista as 50 execuções mais recentes do check Tests: rodando, passou, falhou, neutro ou interrompida (ficou "rodando" por mais de 2 minutos, o Worker passou do tempo). As páginas acompanham ao vivo: cada teste aparece assim que termina, com a contagem ("12 de 40 · 1 falhou"). Cada execução abre com os arquivos, cada teste e a mensagem de cada falha.
+- **Execuções de testes** ([`/admin/runs`](https://quality-flare.frega.workers.dev/admin/runs)) lista as 50 execuções mais recentes do check Tests: rodando, passou, falhou, neutro ou interrompida (ficou "rodando" por mais de 30 minutos). As páginas acompanham ao vivo: cada teste aparece assim que termina, com a contagem ("12 de 40 · 1 falhou"). Cada execução abre com os arquivos, cada teste e a mensagem de cada falha.
 
 - **Login:** uma aplicação self-hosted do Cloudflare Access cobre `quality-flare.frega.workers.dev/admin` e `/admin/*`. O Worker ainda confere `ctx.access` e exige que o `aud` seja o dessa aplicação (`ACCESS_AUD`), então o admin recusa qualquer pedido que não passou pelo Access.
 - **Ao vivo:** o Dynamic Worker transmite cada teste que termina (NDJSON) para o check, que repassa em lotes ao Durable Object `RunsHub` (binding `LIVE`). As páginas do admin abrem um WebSocket em `/admin/live` (atrás do Access, só da mesma origem) e recebem os eventos; quem abre no meio de uma execução recebe o progresso até ali. Sem JavaScript, a página recarrega a cada 5 s.

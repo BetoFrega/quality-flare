@@ -1,14 +1,16 @@
-import type { GitHubClient } from "../../github.ts";
+import { GitHubClient } from "../../github.ts";
 import { livePublisher } from "../../live.ts";
 import { d1RunStore } from "../../runs.ts";
 import type { Check, CheckResult } from "../types.ts";
-import { isLoadable } from "./convention.ts";
+import { isLoadable, isTestFile } from "./convention.ts";
+import { d1JobStore, type JobStore, type ShardResult, type TestShard } from "./jobs.ts";
 import { readLockfile, type LockedPackage } from "./lockfile.ts";
-import { buildModules, MAIN_MODULE, type TestBundle } from "./modules.ts";
-import { toCheckResult, type ProgressEvent, type TestReport } from "./report.ts";
+import { buildModules, bundleSize, MAIN_MODULE, type TestBundle } from "./modules.ts";
+import { mergeReports, toCheckResult, type ProgressEvent, type TestReport } from "./report.ts";
 import { readRun } from "./stream.ts";
 import { readTarball } from "./tarball.ts";
 
+const NAME = "Tests";
 const LOCKFILES = new Set(["pnpm-lock.yaml", "package-lock.json"]);
 const PACKAGE_FILE = /\.(c|m)?js$|\.json$/;
 
@@ -18,53 +20,207 @@ const COMPATIBILITY_DATE = "2026-10-06";
 /** Code only changes on these; label and description edits don't need a new test run. */
 const CODE_ACTIONS = new Set(["opened", "reopened", "synchronize", "ready_for_review"]);
 
+/** Test files per shard. A shard whose code is too big splits in two until it fits. */
+export const SHARD_SIZE = 20;
+
+/** A Dynamic Worker takes at most 64 MB of code; past this, a shard splits instead of trying. */
+export const MAX_CODE_BYTES = 48 * 1024 * 1024;
+
+/** A one-file shard that crashed the consumer this many times (out of memory, likely) is reported as failed. */
+const MAX_ATTEMPTS = 3;
+
 /**
- * Runs the repository's `*.test.*` / `*.spec.*` files at the PR head in a Dynamic Worker,
- * with vitest's runner and `expect`, and records each run for the admin. The convention is in
- * the README and in .claude/skills/quality-flare-tests/SKILL.md.
+ * Runs the repository's `*.test.*` / `*.spec.*` files at the PR head in Dynamic Workers, with
+ * vitest's runner and `expect`. The webhook only lists the test files and queues them in
+ * shards; each shard builds and runs its own files from the queue (`runTestShards`), and the
+ * last one to finish reports the check run. The convention is in the README and in
+ * .claude/skills/quality-flare-tests/SKILL.md.
  */
 export const tests: Check = {
 	id: "tests",
-	name: "Tests",
+	name: NAME,
 	pullRequestActions: CODE_ACTIONS,
-	async run({ github, repo, pr, env }) {
+	async run({ github, repo, pr, env, installationId }) {
+		const sha = pr.head.sha;
 		const runs = d1RunStore(env.RUNS);
 		// History and live progress are for visibility only; failing to record must not fail the check.
-		const runId = await runs.start({ repo, pr: pr.number, sha: pr.head.sha }).catch(logError);
+		const runId = await runs.start({ repo, pr: pr.number, sha }).catch(logError);
 		const live = livePublisher(runId === undefined ? undefined : env.LIVE);
-		live.send({ type: "started", runId: runId!, repo, pr: pr.number, sha: pr.head.sha });
-		const { result, report } = await runTests(github, repo, pr.head.sha, env.LOADER, (event) => live.send({ runId: runId!, ...event }));
-		if (runId !== undefined) await runs.finish(runId, result, report).catch(logError);
-		live.send({ type: "finished", runId: runId!, conclusion: result.conclusion, title: result.title });
-		await live.flush();
-		return result;
+		live.send({ type: "started", runId: runId!, repo, pr: pr.number, sha });
+		let checkRunId: number | undefined;
+		try {
+			if (runId === undefined) throw new Error("O D1 (quality-flare-runs) não respondeu; ele coordena os lotes de testes.");
+			const testFiles = (await github.listFiles(repo, sha)).filter(isTestFile).sort();
+			if (!testFiles.length) {
+				await finishRun(runs, live, runId, NO_TESTS);
+				return NO_TESTS;
+			}
+			const shards = chunk(testFiles, SHARD_SIZE).map(
+				(files, i): TestShard => ({ runId, shard: String(i), repo, installationId, sha, files }),
+			);
+			checkRunId = await github.startCheckRun(repo, sha, NAME, `Rodando ${count(testFiles.length, "arquivo")} de teste`);
+			await d1JobStore(env.RUNS).create(runId, { shards: shards.length, checkRunId, installationId });
+			await enqueue(env.TESTS_QUEUE, shards);
+			live.send({ type: "status", runId, text: `${count(testFiles.length, "arquivo")} de teste na fila, em ${count(shards.length, "lote")}` });
+			await live.flush();
+			return null;
+		} catch (error) {
+			const result = cannotRun(error);
+			if (runId !== undefined) await finishRun(runs, live, runId, result);
+			if (checkRunId === undefined) return result;
+			await github.completeCheckRun(repo, checkRunId, result);
+			return null;
+		}
 	},
 };
 
-async function runTests(
-	github: GitHubClient,
-	repo: string,
-	sha: string,
-	loader: WorkerLoader,
-	onProgress: (event: ProgressEvent) => void,
-): Promise<{ result: CheckResult; report?: TestReport }> {
-	try {
-		const files = await readTarball(await github.getTarball(repo, sha), (p) => isLoadable(p) || LOCKFILES.has(p));
-		// Imported lazily: the bundled runtime is only needed when the check actually runs.
-		const { default: runtimeSource } = await import("virtual:test-runtime");
-		const bundle = await buildModules(files, { runtimeSource, lockfile: readLockfile(files), fetchPackage });
-		if (!bundle.testFiles.length) return { result: NO_TESTS };
-		const report = await runInDynamicWorker(loader, bundle, onProgress);
-		return { result: toCheckResult(report, bundle.unresolved), report };
-	} catch (error) {
-		return {
-			result: {
-				conclusion: "failure",
-				title: "Não foi possível rodar os testes",
-				summary: `\`\`\`\n${error instanceof Error ? error.message : String(error)}\n\`\`\``,
-			},
-		};
+/** Queue consumer: runs each shard, and publishes the run when its last shard is done. */
+export async function runTestShards(batch: MessageBatch<TestShard>, env: Env): Promise<void> {
+	for (const message of batch.messages) {
+		const shard = message.body;
+		const live = livePublisher(env.LIVE);
+		const credentials = { appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY };
+		const github = () => GitHubClient.forInstallation(credentials, shard.installationId);
+		try {
+			await processShard(shard, message.attempts, {
+				jobs: d1JobStore(env.RUNS),
+				enqueue: (shards) => enqueue(env.TESTS_QUEUE, shards),
+				run: async (s) => runShard(await github(), env.LOADER, s, (event) => live.send({ runId: s.runId, ...event })),
+				publish: async (s, report, unresolved) => {
+					const job = await d1JobStore(env.RUNS).get(s.runId);
+					const result = report.files.length ? toCheckResult(report, unresolved) : NO_TESTS;
+					if (job) await (await github()).completeCheckRun(s.repo, job.checkRunId, result);
+					await finishRun(d1RunStore(env.RUNS), live, s.runId, result, report);
+				},
+			});
+			await live.flush();
+			message.ack();
+		} catch (error) {
+			console.error("quality-flare: test shard failed, retrying", shard.runId, shard.shard, error);
+			message.retry();
+		}
 	}
+}
+
+export interface ShardDeps {
+	jobs: JobStore;
+	enqueue(shards: TestShard[]): Promise<void>;
+	run(shard: TestShard): Promise<ShardResult>;
+	publish(shard: TestShard, report: TestReport, unresolved: ShardResult["unresolved"]): Promise<void>;
+}
+
+/** Runs one shard, splitting it when it doesn't fit, and publishes the run if it was the last. */
+export async function processShard(shard: TestShard, attempts: number, deps: ShardDeps): Promise<void> {
+	// A shard that took the consumer down before (out of memory, most likely) tries again in halves.
+	if (attempts > 1 && shard.files.length > 1) return split(shard, deps);
+	let result: ShardResult;
+	if (attempts >= MAX_ATTEMPTS) {
+		result = failed(shard.files, `O arquivo derrubou o Worker ${attempts - 1} vezes (provavelmente faltou memória: o limite é 128 MB).`);
+	} else {
+		try {
+			result = await deps.run(shard);
+		} catch (error) {
+			// Too big, or one file took the Dynamic Worker down: halve until the culprit runs alone.
+			if ((error instanceof TooLarge || error instanceof Crashed) && shard.files.length > 1) return split(shard, deps);
+			result = failed(shard.files, error instanceof Error ? error.message : String(error));
+		}
+	}
+	const all = await deps.jobs.finish(shard.runId, shard.shard, result);
+	if (all) {
+		const { report, unresolved } = mergeReports(all);
+		await deps.publish(shard, report, unresolved);
+	}
+}
+
+async function split(shard: TestShard, deps: ShardDeps): Promise<void> {
+	const half = Math.ceil(shard.files.length / 2);
+	await deps.jobs.split(shard.runId, shard.shard, 2);
+	// Enqueued even when this split was recorded before: the halves' results count once anyway.
+	await deps.enqueue([
+		{ ...shard, shard: `${shard.shard}.0`, files: shard.files.slice(0, half) },
+		{ ...shard, shard: `${shard.shard}.1`, files: shard.files.slice(half) },
+	]);
+}
+
+/** Thrown when a shard's code doesn't fit in one Dynamic Worker. */
+export class TooLarge extends Error {
+	constructor(bytes: number) {
+		super(`Os testes importam ${(bytes / 1024 / 1024).toFixed(0)} MB de código; um Dynamic Worker aceita até 64 MB.`);
+	}
+}
+
+/** Thrown when the Dynamic Worker died while running a shard's files. */
+export class Crashed extends Error {
+	constructor(cause: unknown) {
+		super(`O Dynamic Worker caiu ao rodar este arquivo: ${cause instanceof Error ? cause.message : String(cause)}`);
+	}
+}
+
+/** Builds a shard's files and everything they import, and runs them in a fresh Dynamic Worker. */
+async function runShard(
+	github: GitHubClient,
+	loader: WorkerLoader,
+	shard: TestShard,
+	onProgress: (event: ProgressEvent) => void,
+): Promise<ShardResult> {
+	const label = `Lote ${shard.shard}`;
+	onProgress({ type: "status", text: `${label}: baixando o código` });
+	const files = await readTarball(await github.getTarball(shard.repo, shard.sha), (p) => isLoadable(p) || LOCKFILES.has(p));
+	onProgress({ type: "status", text: `${label}: montando ${count(shard.files.length, "arquivo")} de teste e as dependências` });
+	// Imported lazily: the bundled runtime is only needed when tests actually run.
+	const { default: runtimeSource } = await import("virtual:test-runtime");
+	const bundle = await buildModules(files, { runtimeSource, lockfile: readLockfile(files), fetchPackage, testFiles: shard.files });
+	files.clear();
+	// Imports that fail inside npm packages are usually optional ones that never run.
+	const unresolved = bundle.unresolved.filter((u) => !u.from.startsWith("node_modules/"));
+	if (!bundle.testFiles.length) return { report: { files: [] }, unresolved };
+	const size = bundleSize(bundle);
+	if (size > MAX_CODE_BYTES) throw new TooLarge(size);
+	onProgress({ type: "status", text: `${label}: rodando` });
+	try {
+		return { report: await runInDynamicWorker(loader, bundle, onProgress), unresolved };
+	} catch (error) {
+		if (error instanceof Error && /exceeds the maximum allowed size/.test(error.message)) throw new TooLarge(size);
+		throw new Crashed(error);
+	}
+}
+
+/** A shard's files, each failed with `message`. */
+function failed(files: string[], message: string): ShardResult {
+	return { report: { files: files.map((path) => ({ path, state: "fail", errors: [message], tests: [] })) }, unresolved: [] };
+}
+
+async function finishRun(
+	runs: ReturnType<typeof d1RunStore>,
+	live: ReturnType<typeof livePublisher>,
+	runId: number,
+	result: CheckResult,
+	report?: TestReport,
+): Promise<void> {
+	await runs.finish(runId, result, report).catch(logError);
+	live.send({ type: "finished", runId, conclusion: result.conclusion, title: result.title });
+	await live.flush();
+}
+
+async function enqueue(queue: Queue<TestShard>, shards: TestShard[]): Promise<void> {
+	// sendBatch takes at most 100 messages.
+	for (const part of chunk(shards, 100)) await queue.sendBatch(part.map((body) => ({ body })));
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+	const chunks: T[][] = [];
+	for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
+	return chunks;
+}
+
+const count = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+function cannotRun(error: unknown): CheckResult {
+	return {
+		conclusion: "failure",
+		title: "Não foi possível rodar os testes",
+		summary: `\`\`\`\n${error instanceof Error ? error.message : String(error)}\n\`\`\``,
+	};
 }
 
 function logError(error: unknown): undefined {
@@ -78,9 +234,11 @@ const NO_TESTS: CheckResult = {
 	summary: "Nenhum arquivo `*.test.ts`, `*.test.js`, `*.spec.ts` ou `*.spec.js` (nem `.mts`/`.mjs`) fora de `node_modules`, `dist`, `build`, `coverage` e pastas ocultas.",
 };
 
-/** Downloads a package from the npm registry. */
+/** Downloads a package from the npm registry. Tarballs never change, so Cloudflare's cache keeps them. */
 async function fetchPackage({ name, version }: LockedPackage): Promise<Map<string, string>> {
-	const res = await fetch(`https://registry.npmjs.org/${name}/-/${name.split("/").pop()}-${version}.tgz`);
+	const res = await fetch(`https://registry.npmjs.org/${name}/-/${name.split("/").pop()}-${version}.tgz`, {
+		cf: { cacheEverything: true, cacheTtl: 7 * 24 * 3600 },
+	});
 	if (!res.ok || !res.body) throw new Error(`npm: ${name}@${version} → ${res.status}`);
 	return readTarball(res.body, (p) => PACKAGE_FILE.test(p));
 }

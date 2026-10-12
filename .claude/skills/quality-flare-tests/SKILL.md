@@ -33,11 +33,11 @@ O check roda quando a PR é aberta, reaberta, recebe commits ou sai de draft, e 
 - **Sem `vi.mock`/`vi.doMock`** (não existe grafo de módulos para interceptar) e **sem fake timers** (`vi.useFakeTimers`). Os dois lançam erro explicando isso. Prefira injeção de dependência ou `vi.spyOn` num objeto.
 - **Sem snapshots** (`toMatchSnapshot`, `toMatchInlineSnapshot`) e sem `expect.poll`.
 - **Playwright fica de fora:** `*.spec.ts` que importa `@playwright/test` não é rodado. Specs que só importam fixtures locais do Playwright ainda são pegos; mova-os para uma pasta ignorada ou renomeie.
-- **Tamanho:** todos os arquivos de teste e o que eles importam viram um só Dynamic Worker, que tem limite de código (64 MB no workerd). Suítes que importam frameworks inteiros (Next.js, SDKs grandes) estouram esse limite.
+- **Lotes:** os arquivos de teste rodam em lotes de 20, cada lote num Dynamic Worker próprio, só com o código que aqueles arquivos importam. Os lotes passam por uma Cloudflare Queue (`quality-flare-tests`) e rodam em paralelo. Um lote que passa de 48 MB de código, ou cujo Worker cai, se divide ao meio até caber ou até isolar o arquivo culpado. Um arquivo sozinho com mais de 64 MB de imports (Next.js inteiro, por exemplo) aparece como falha com o tamanho.
 - **Sem arquivo de config do Vitest:** `vitest.config.*`, `setupFiles`, `globals: true`, aliases do Vite e `environment` (jsdom/happy-dom) são ignorados. Cada teste importa o que usa de `"vitest"`.
 - **Runtime do Workers, não o Node:** não há sistema de arquivos real, nem `child_process`, nem processos; `Date.now()` só avança em I/O. APIs do Node que o `nodejs_compat` não implementa falham.
 - **Pacotes:** só os que estão no lockfile e no registry público do npm. Sem lockfile, ou com yarn/bun, só imports relativos e `vitest` funcionam. Registries privados e dependências git não são resolvidos. Pacotes que precisam de binário nativo ou de WebAssembly compilado em runtime não funcionam.
-- **Limites:** 30 s de CPU no Dynamic Worker. O webhook continua o trabalho em `waitUntil`, que tem um teto de cerca de 30 s depois da resposta, então a suíte inteira (download + montagem + execução) precisa caber nisso.
+- **Limites:** 30 s de CPU por lote no Dynamic Worker e 128 MB de memória no Worker que monta o lote. Um lote que derruba o Worker três vezes é reportado como falha.
 - Os testes de todos os arquivos rodam no mesmo isolate, um arquivo depois do outro. Estado global vaza entre arquivos: limpe stubs em `afterEach` (`vi.unstubAllGlobals()`, `vi.restoreAllMocks()`).
 
 ## Teste que só funciona no Node
@@ -59,7 +59,7 @@ Use import dinâmico dentro do teste para módulos que não existem no Workers o
 
 ## Ler uma falha
 
-Cada execução fica registrada em **Execuções de testes** no admin (`/admin/runs`). Enquanto roda, a página mostra ao vivo cada teste que termina; depois, o resultado com cada arquivo, cada teste e a mensagem de cada falha. Uma execução que fica "rodando" por mais de 2 minutos aparece como interrompida (o Worker passou do tempo); use **Re-run** na PR.
+Cada execução fica registrada em **Execuções de testes** no admin (`/admin/runs`). Enquanto roda, a página mostra ao vivo cada teste que termina; depois, o resultado com cada arquivo, cada teste e a mensagem de cada falha. Uma execução que fica "rodando" por mais de 30 minutos aparece como interrompida; use **Re-run** na PR.
 
 O check run mostra uma tabela por arquivo e uma seção por falha:
 
