@@ -39,6 +39,8 @@ export interface Unresolved {
 export interface TestBundle {
 	/** Module paths of the test files, e.g. "/test/a.test.ts", in the order they run. */
 	testFiles: string[];
+	/** Module paths of the setup files, run before each test file. */
+	setupFiles: string[];
 	modules: Modules;
 	/** Imports that could not be resolved; the importing file fails when it runs. */
 	unresolved: Unresolved[];
@@ -53,6 +55,8 @@ export interface BuildOptions {
 	fetchPackage: (pkg: LockedPackage) => Promise<PackageFiles>;
 	/** Only these test files (repository paths), for one shard of a run; all of them when omitted. */
 	testFiles?: string[];
+	/** Repository paths of files to run before each test file (vitest's `setupFiles`). */
+	setupFiles?: string[];
 }
 
 interface Package {
@@ -80,8 +84,10 @@ type Kind = "esm" | "cjs" | "json";
  */
 export async function buildModules(repoFiles: Map<string, string>, options: BuildOptions): Promise<TestBundle> {
 	// Playwright specs share the *.spec.ts name but need a browser; they are not ours to run.
-	const candidates = options.testFiles?.filter((p) => repoFiles.has(p)) ?? [...repoFiles.keys()];
-	const testFiles = candidates.filter((p) => isTestFile(p) && !isPlaywrightSpec(repoFiles.get(p)!)).sort();
+	// Given test files were already picked (by convention or quality-flare.json); otherwise, by convention.
+	const candidates = options.testFiles?.filter((p) => repoFiles.has(p)) ?? [...repoFiles.keys()].filter(isTestFile);
+	const testFiles = candidates.filter((p) => !isPlaywrightSpec(repoFiles.get(p)!)).sort();
+	const setupFiles = (options.setupFiles ?? []).map((p) => p.replace(/^\.?\//, ""));
 	const aliases = tsconfigPaths(repoFiles);
 	const modules: Modules = {
 		[RUNTIME_MODULE]: { js: options.runtimeSource },
@@ -241,7 +247,13 @@ export default { fetch: handleRequest };`,
 		}
 	};
 
-	for (const path of testFiles) enqueue(path);
+	for (const path of [...setupFiles, ...testFiles]) {
+		if (repoFiles.has(path)) enqueue(path);
+		else {
+			unresolved.push({ specifier: path, from: "quality-flare.json" });
+			modules[path] = { js: `throw new Error(${JSON.stringify(`quality-flare.json cita "${path}", que não existe no repositório.`)});` };
+		}
+	}
 	// Breadth first, one wave at a time, so packages download in parallel.
 	while (queue.length) {
 		const wave = queue;
@@ -257,7 +269,7 @@ export default __qf_cjs && __qf_cjs.__esModule && "default" in __qf_cjs ? __qf_c
 ${names.length ? `export const { ${names.join(", ")} } = __qf_cjs ?? {};` : ""}`,
 		};
 	}
-	return { testFiles: testFiles.map((p) => `/${p}`), modules, unresolved };
+	return { testFiles: testFiles.map((p) => `/${p}`), setupFiles: setupFiles.map((p) => `/${p}`), modules, unresolved };
 }
 
 /** Bytes of code in a bundle, as the Worker Loader counts them against its size limit (roughly). */

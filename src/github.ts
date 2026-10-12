@@ -122,6 +122,16 @@ export class GitHubClient {
 		return res.body;
 	}
 
+	/** A file's text at `ref`, or undefined when the repository has no such file. */
+	async getFileText(repo: string, ref: string, path: string): Promise<string | undefined> {
+		const res = await fetch(`${API}/repos/${repo}/contents/${path}?ref=${encodeURIComponent(ref)}`, {
+			headers: { ...headers(this.token), Accept: "application/vnd.github.raw+json" },
+		});
+		if (res.status === 404) return undefined;
+		if (!res.ok) throw new Error(`GitHub GET ${path} of ${repo}@${ref} failed: ${res.status}`);
+		return res.text();
+	}
+
 	/** Every file path in the repository at `ref` (no contents). */
 	async listFiles(repo: string, ref: string): Promise<string[]> {
 		const tree = await request<{ tree: { path: string; type: string }[]; truncated: boolean }>(

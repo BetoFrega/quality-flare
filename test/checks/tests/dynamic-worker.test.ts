@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildModules, MAIN_MODULE, type TestBundle } from "../../../src/checks/tests/modules.ts";
-import type { ProgressEvent, TestReport } from "../../../src/checks/tests/report.ts";
+import type { ProgressEvent, RunRequest, TestReport } from "../../../src/checks/tests/report.ts";
 import { readRun } from "../../../src/checks/tests/stream.ts";
 import { serveWorkerd } from "../../workerd.ts";
 
@@ -69,17 +69,37 @@ describe.skipIf(inWorkers)("tests in a Dynamic Worker", () => {
 		expect(progress).toContainEqual(expect.objectContaining({ type: "test", file: "test/math.test.ts", name: "add › adds", state: "pass" }));
 		expect(progress).toContainEqual(expect.objectContaining({ type: "test", file: "test/fail.test.ts", name: "fails an assertion", state: "fail" }));
 	}, 30_000);
+
+	it("runs setup files first and exposes globals, as quality-flare.json asks", async () => {
+		const { default: runtimeSource } = await import("virtual:test-runtime");
+		const repo = {
+			"setup.ts": "(globalThis as any).ready = 'set up';",
+			"test/globals.test.ts": "it('sees setup and globals', () => { expect((globalThis as any).ready).toBe('set up'); expect(typeof vi.fn).toBe('function'); });",
+		};
+		const bundle = await buildModules(new Map(Object.entries(repo)), {
+			runtimeSource,
+			fetchPackage: () => Promise.reject(new Error("offline")),
+			setupFiles: ["./setup.ts"],
+		});
+		const report = await runInWorkerd(bundle, () => {}, { globals: true });
+		expect(report.files.map((f) => [f.path, f.state, f.errors])).toEqual([["test/globals.test.ts", "pass", undefined]]);
+	}, 30_000);
 });
 
 /** Serves a host Worker with a Worker Loader binding on workerd and has it run the bundle. */
-async function runInWorkerd(bundle: TestBundle, onProgress: (event: ProgressEvent) => void): Promise<TestReport> {
+async function runInWorkerd(
+	bundle: TestBundle,
+	onProgress: (event: ProgressEvent) => void,
+	options: Omit<RunRequest, "files" | "setupFiles"> = {},
+): Promise<TestReport> {
+	const run: RunRequest = { files: bundle.testFiles, setupFiles: bundle.setupFiles, ...options };
 	const host = `import bundle from "bundle.json";
 export default { async fetch(request, env) {
 	if (new URL(request.url).pathname !== "/") return new Response("up");
 	const worker = env.LOADER.load({ compatibilityDate: "2026-10-06", compatibilityFlags: ["nodejs_compat"], mainModule: ${JSON.stringify(MAIN_MODULE)}, modules: bundle.modules, globalOutbound: null });
-	return worker.getEntrypoint().fetch("http://tests/", { method: "POST", body: JSON.stringify(bundle.testFiles) });
+	return worker.getEntrypoint().fetch("http://tests/", { method: "POST", body: JSON.stringify(bundle.run) });
 } };`;
-	const server = await serveWorkerd({ "host.js": host, "bundle.json": JSON.stringify(bundle) }, `bindings = [(name = "LOADER", workerLoader = ())],`);
+	const server = await serveWorkerd({ "host.js": host, "bundle.json": JSON.stringify({ modules: bundle.modules, run }) }, `bindings = [(name = "LOADER", workerLoader = ())],`);
 	try {
 		const res = await fetch(`${server.url}/`);
 		if (!res.ok) throw new Error(`host Worker answered ${res.status}: ${await res.text()}`);

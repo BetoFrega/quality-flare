@@ -2,12 +2,13 @@ import { GitHubClient } from "../../github.ts";
 import { livePublisher } from "../../live.ts";
 import { d1RunStore } from "../../runs.ts";
 import type { Check, CheckResult } from "../types.ts";
+import { CONFIG_FILE, readTestConfig, selectTestFiles, type TestConfig } from "./config.ts";
 import { isLoadable, isTestFile } from "./convention.ts";
 import { d1JobStore, type JobStore, type ShardResult, type TestShard } from "./jobs.ts";
 import { readLockfile, type LockedPackage } from "./lockfile.ts";
 import { buildModules, bundleSize, MAIN_MODULE, type TestBundle } from "./modules.ts";
 import { type PackageFiles, readPackage, type Turns, turns } from "./packages.ts";
-import { mergeReports, toCheckResult, type ProgressEvent, type TestReport } from "./report.ts";
+import { mergeReports, toCheckResult, type ProgressEvent, type RunRequest, type TestReport } from "./report.ts";
 import { readRun } from "./stream.ts";
 import { readTarball } from "./tarball.ts";
 
@@ -51,13 +52,14 @@ export const tests: Check = {
 		let checkRunId: number | undefined;
 		try {
 			if (runId === undefined) throw new Error("O D1 (quality-flare-runs) não respondeu; ele coordena os lotes de testes.");
-			const testFiles = (await github.listFiles(repo, sha)).filter(isTestFile).sort();
+			const config = readTestConfig(await github.getFileText(repo, sha, CONFIG_FILE));
+			const testFiles = selectTestFiles(await github.listFiles(repo, sha), config, isTestFile).sort();
 			if (!testFiles.length) {
 				await finishRun(runs, live, runId, NO_TESTS);
 				return NO_TESTS;
 			}
 			const shards = chunk(testFiles, SHARD_SIZE).map(
-				(files, i): TestShard => ({ runId, shard: String(i), repo, installationId, sha, files }),
+				(files, i): TestShard => ({ runId, shard: String(i), repo, installationId, sha, files, config }),
 			);
 			const title = `Rodando ${count(testFiles.length, "arquivo")} de teste`;
 			checkRunId = await github.startCheckRun(repo, sha, NAME, title, `${env.PUBLIC_URL}/admin/runs/${runId}`);
@@ -177,6 +179,7 @@ async function runShard(
 		lockfile: readLockfile(files),
 		fetchPackage: (pkg) => fetchPackage(pkg, inTurn),
 		testFiles: shard.files,
+		setupFiles: shard.config?.setupFiles,
 	});
 	files.clear();
 	// Imports that fail inside npm packages are usually optional ones that never run.
@@ -186,7 +189,7 @@ async function runShard(
 	if (size > MAX_CODE_BYTES) throw new TooLarge(size);
 	onProgress({ type: "status", text: `${label}: rodando` });
 	try {
-		return { report: await runInDynamicWorker(loader, bundle, onProgress), unresolved };
+		return { report: await runInDynamicWorker(loader, bundle, onProgress, shard.config), unresolved };
 	} catch (error) {
 		if (error instanceof Error && /exceeds the maximum allowed size/.test(error.message)) throw new TooLarge(size);
 		throw new Crashed(error);
@@ -261,6 +264,7 @@ export async function runInDynamicWorker(
 	loader: WorkerLoader,
 	bundle: TestBundle,
 	onProgress: (event: ProgressEvent) => void = () => {},
+	config: TestConfig = {},
 ): Promise<TestReport> {
 	const worker = loader.load({
 		compatibilityDate: COMPATIBILITY_DATE,
@@ -270,7 +274,8 @@ export async function runInDynamicWorker(
 		globalOutbound: null,
 		limits: { cpuMs: 30_000 },
 	});
-	const res = await worker.getEntrypoint().fetch("http://tests/", { method: "POST", body: JSON.stringify(bundle.testFiles) });
+	const run: RunRequest = { files: bundle.testFiles, setupFiles: bundle.setupFiles, globals: config.globals, testTimeout: config.testTimeout };
+	const res = await worker.getEntrypoint().fetch("http://tests/", { method: "POST", body: JSON.stringify(run) });
 	if (!res.ok) throw new Error(`O Dynamic Worker respondeu ${res.status}: ${await res.text()}`);
 	return readRun(res, onProgress);
 }

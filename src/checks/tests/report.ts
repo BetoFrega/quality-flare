@@ -90,3 +90,11 @@ function fileTable(report: TestReport): string {
 }
 
 const codeBlock = (text: string) => `\`\`\`\n${text.replaceAll("```", "ʼʼʼ")}\n\`\`\``;
+
+/** What the Dynamic Worker is asked to run: module paths, and the vitest options that apply. */
+export interface RunRequest {
+	files: string[];
+	setupFiles?: string[];
+	globals?: boolean;
+	testTimeout?: number;
+}

@@ -1,3 +1,4 @@
+import type { TestConfig } from "./config.ts";
 import type { Unresolved } from "./modules.ts";
 import type { TestReport } from "./report.ts";
 
@@ -18,6 +19,8 @@ export interface TestShard {
 	sha: string;
 	/** Repository paths of the test files, e.g. "test/a.test.ts". */
 	files: string[];
+	/** The repository's quality-flare.json `tests` section, read once for the whole run. */
+	config?: TestConfig;
 }
 
 export interface ShardResult {
