@@ -15,6 +15,8 @@ export interface Lockfile {
 	fromRepo(path: string, name: string): LockedPackage | undefined;
 	/** The package `name` as seen from inside `pkg`. */
 	fromPackage(pkg: LockedPackage, name: string): LockedPackage | undefined;
+	/** The repository folder of workspace package `name`, as seen from the repository file at `path`. */
+	workspace(path: string, name: string): string | undefined;
 }
 
 export function readLockfile(files: Map<string, string>): Lockfile | undefined {
@@ -40,12 +42,18 @@ function pnpmLockfile(lock: YamlMap): Lockfile {
 			? { key: `${name}@${version}`, name, version: version.replace(/\(.*$/, "") }
 			: undefined;
 	const importerPaths = Object.keys(importers).sort((a, b) => b.length - a.length);
+	const importerOf = (path: string) => importerPaths.find((dir) => dir === "." || path.startsWith(`${dir}/`));
+	const versionFrom = (path: string, name: string) => {
+		const importer = importerOf(path);
+		const deps = importer ? importers[importer] : {};
+		const dep = deps.dependencies?.[name] ?? deps.devDependencies?.[name] ?? deps.optionalDependencies?.[name];
+		return { importer, version: dep?.version };
+	};
 	return {
-		fromRepo(path, name) {
-			const importer = importerPaths.find((dir) => dir === "." || path.startsWith(`${dir}/`));
-			const deps = importer ? importers[importer] : {};
-			const dep = deps.dependencies?.[name] ?? deps.devDependencies?.[name] ?? deps.optionalDependencies?.[name];
-			return locked(name, dep?.version);
+		fromRepo: (path, name) => locked(name, versionFrom(path, name).version),
+		workspace(path, name) {
+			const { importer, version } = versionFrom(path, name);
+			return version?.startsWith("link:") ? joinPath(importer === "." ? "" : importer!, version.slice("link:".length)) : undefined;
 		},
 		fromPackage(pkg, name) {
 			const snapshot = snapshots[pkg.key] ?? {};
@@ -55,7 +63,7 @@ function pnpmLockfile(lock: YamlMap): Lockfile {
 }
 
 interface NpmLock {
-	packages?: Record<string, { version?: string; name?: string; link?: boolean }>;
+	packages?: Record<string, { version?: string; name?: string; link?: boolean; resolved?: string }>;
 }
 
 function npmLockfile(lock: NpmLock): Lockfile {
@@ -71,10 +79,40 @@ function npmLockfile(lock: NpmLock): Lockfile {
 			base = parent === -1 ? "" : base.slice(0, parent);
 		}
 	};
-	return {
-		fromRepo: (_path, name) => find("", name),
-		fromPackage: (pkg, name) => find(pkg.key, name),
+	// From a repository file, every folder above it may have a node_modules (workspace packages do).
+	const ancestors = (path: string) => {
+		const dirs: string[] = [];
+		for (let i = path.lastIndexOf("/"); i > 0; i = path.lastIndexOf("/", i - 1)) dirs.push(path.slice(0, i));
+		return [...dirs, ""];
 	};
+	const nearest = (path: string, name: string) => {
+		for (const dir of ancestors(path)) {
+			const key = `${dir ? `${dir}/` : ""}node_modules/${name}`;
+			if (packages[key]) return { key, entry: packages[key] };
+		}
+		return undefined;
+	};
+	return {
+		fromRepo(path, name) {
+			const { key, entry } = nearest(path, name) ?? {};
+			return key && entry?.version && !entry.link ? { key, name: entry.name ?? name, version: entry.version } : undefined;
+		},
+		fromPackage: (pkg, name) => find(pkg.key, name),
+		workspace(path, name) {
+			const { entry } = nearest(path, name) ?? {};
+			return entry?.link ? entry.resolved : undefined;
+		},
+	};
+}
+
+/** Joins repository paths, resolving `.` and `..`. */
+export function joinPath(dir: string, relative: string): string {
+	const parts: string[] = [];
+	for (const part of `${dir}/${relative}`.split("/")) {
+		if (part === "..") parts.pop();
+		else if (part !== "." && part !== "") parts.push(part);
+	}
+	return parts.join("/");
 }
 
 /**

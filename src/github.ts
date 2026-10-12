@@ -62,6 +62,13 @@ export class GitHubClient {
 	/** The repository's files at `ref`, as GitHub's gzipped tarball. */
 	async getTarball(repo: string, ref: string): Promise<ReadableStream<Uint8Array>> {
 		const res = await fetch(`${API}/repos/${repo}/tarball/${ref}`, { headers: headers(this.token) });
+		if (res.status === 403 || res.status === 404) {
+			// Public repositories download without it, so this only shows up on private ones.
+			throw new Error(
+				`O GitHub respondeu ${res.status} ao baixar o código de ${repo}. A GitHub App precisa da permissão ` +
+					`"Contents: Read-only", e a instalação precisa aceitar essa permissão (GitHub → Settings → Applications → quality-flare).`,
+			);
+		}
 		if (!res.ok || !res.body) throw new Error(`GitHub GET tarball of ${repo}@${ref} failed: ${res.status}`);
 		return res.body;
 	}

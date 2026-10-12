@@ -64,6 +64,11 @@ describe("pnpm-lock.yaml", () => {
 		expect(lock.fromRepo("a.ts", "left-pad")).toBeUndefined();
 	});
 
+	it("finds workspace packages in the repository", () => {
+		expect(lock.workspace("packages/web/src/a.ts", "shared")).toBe("packages/shared");
+		expect(lock.workspace("packages/web/src/a.ts", "sucrase")).toBeUndefined();
+	});
+
 	it("parses quoted keys and empty maps", () => {
 		expect(parseYaml(PNPM).snapshots).toMatchObject({ "@jridgewell/gen-mapping@0.3.13": {} });
 	});
@@ -80,6 +85,8 @@ describe("package-lock.json", () => {
 						"node_modules/a": { version: "1.0.0" },
 						"node_modules/b": { version: "2.0.0" },
 						"node_modules/a/node_modules/b": { version: "1.5.0" },
+						"node_modules/@app/shared": { resolved: "packages/shared", link: true },
+						"packages/web/node_modules/b": { version: "3.0.0" },
 					},
 				}),
 			],
@@ -91,5 +98,16 @@ describe("package-lock.json", () => {
 		expect(a).toEqual({ key: "node_modules/a", name: "a", version: "1.0.0" });
 		expect(lock.fromPackage(a, "b")?.version).toBe("1.5.0");
 		expect(lock.fromRepo("index.test.js", "b")?.version).toBe("2.0.0");
+	});
+
+	it("looks in workspace packages' own node_modules first", () => {
+		expect(lock.fromRepo("packages/web/src/a.ts", "b")?.version).toBe("3.0.0");
+		expect(lock.fromRepo("packages/other/a.ts", "b")?.version).toBe("2.0.0");
+	});
+
+	it("finds workspace packages in the repository", () => {
+		expect(lock.workspace("src/a.ts", "@app/shared")).toBe("packages/shared");
+		expect(lock.fromRepo("src/a.ts", "@app/shared")).toBeUndefined();
+		expect(lock.workspace("src/a.ts", "a")).toBeUndefined();
 	});
 });

@@ -27,7 +27,7 @@ A convenção, sem configuração por repositório:
 
 - **Quais arquivos:** todo `*.test.{ts,mts,js,mjs}` e `*.spec.{ts,mts,js,mjs}`, fora de `node_modules`, `dist`, `build`, `coverage` e pastas ocultas.
 - **API:** importe de `"vitest"` como sempre: `describe`, `it`/`test`, hooks (`beforeEach`…), `expect` (matchers do Jest, `expect.objectContaining`, `expect.assertions`…) e `vi` (`vi.fn`, `vi.spyOn`, `vi.stubGlobal`, `vi.unstubAllGlobals`, `vi.restoreAllMocks`). `vi.mock` e fake timers ainda não existem.
-- **Imports:** TypeScript é convertido na hora; `./a`, `./a.js` e `./a/index.ts` encontram `a.ts`, como num bundler. Pacotes do npm vêm do lockfile (`pnpm-lock.yaml` ou `package-lock.json`), na versão exata, baixados do registry. Módulos do Node (`node:crypto`, `crypto`…) funcionam com `nodejs_compat`.
+- **Imports:** TypeScript é convertido na hora; `./a`, `./a.js` e `./a/index.ts` encontram `a.ts`, como num bundler. Pacotes do npm vêm do lockfile (`pnpm-lock.yaml` ou `package-lock.json`), na versão exata, baixados do registry. `paths` do `tsconfig.json` e pacotes do workspace (npm/pnpm) também resolvem. Specs do Playwright (`@playwright/test`) ficam de fora. Módulos do Node (`node:crypto`, `crypto`…) funcionam com `nodejs_compat`.
 - **Ambiente:** o runtime dos Workers, sem rede (`fetch` só funciona se o teste fizer stub), com limite de 30 s de CPU.
 - ✅ Passa se todos os testes passam; ⚪ neutro se o repositório não tem testes; ❌ falha com cada teste que falhou e a mensagem do `expect`.
 - Roda quando a PR é aberta, reaberta, recebe commits ou sai de draft (não em mudanças de label ou descrição), e no **Re-run**.

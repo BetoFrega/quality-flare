@@ -23,8 +23,8 @@ O check roda quando a PR é aberta, reaberta, recebe commits ou sai de draft, e 
   - `expect` com os matchers do Jest/Vitest (`toBe`, `toEqual`, `toMatchObject`, `toThrow`, `resolves`/`rejects`, `toHaveBeenCalledWith`…), os assimétricos (`expect.objectContaining`, `expect.any`, `expect.stringContaining`…), `expect.assertions`, `expect.hasAssertions`, `expect.soft`, `expect.extend`, `expect.unreachable`.
   - `vi.fn`, `vi.spyOn`, `vi.mocked`, `vi.isMockFunction`, `vi.clearAllMocks`/`resetAllMocks`/`restoreAllMocks`, `vi.stubGlobal`, `vi.unstubAllGlobals`.
 - **TypeScript:** os tipos são removidos na hora (sucrase), sem checagem de tipos. Imports usados só como tipo somem, como no `tsc`. `enum` e parameter properties funcionam; decorators não.
-- **Imports relativos:** resolvidos como num bundler. `./a`, `./a.js`, `./a.ts` e `./a/index.ts` encontram `a.ts`. Arquivos `.json` podem ser importados. `package.json#imports` (`#alias`) funciona.
-- **Pacotes do npm:** vêm do lockfile na raiz do repositório, `pnpm-lock.yaml` (v9) ou `package-lock.json` (v2/v3), na versão exata, baixados de `registry.npmjs.org`. Em monorepo pnpm, cada pasta de `importers` usa as próprias dependências. Entre as condições de `exports`, `workerd`/`worker`/`import`/`node` têm preferência sobre `require`. Imports nomeados de pacotes CommonJS funcionam quando os nomes aparecem de forma estática (`exports.x =`, `module.exports = { x }`, saída do esbuild/tsc).
+- **Imports relativos:** resolvidos como num bundler. `./a`, `./a.js`, `./a.ts` e `./a/index.ts` encontram `a.ts`. Arquivos `.json` podem ser importados. `package.json#imports` (`#alias`) funciona. Os `paths` do `tsconfig.json` (`"@/*": ["./src/*"]`) também: vale o `tsconfig.json` mais próximo acima do arquivo que declare `paths`, sem seguir `extends`.
+- **Pacotes do npm:** vêm do lockfile na raiz do repositório, `pnpm-lock.yaml` (v9) ou `package-lock.json` (v2/v3), na versão exata, baixados de `registry.npmjs.org`. Em monorepo pnpm, cada pasta de `importers` usa as próprias dependências. Pacotes do próprio workspace (npm/pnpm workspaces, `link:`) são carregados direto do repositório, pelo `exports`/`main` do `package.json` deles, e podem apontar para `.ts`. Entre as condições de `exports`, `workerd`/`worker`/`import`/`node` têm preferência sobre `require`. Imports nomeados de pacotes CommonJS funcionam quando os nomes aparecem de forma estática (`exports.x =`, `module.exports = { x }`, saída do esbuild/tsc).
 - **Node:** `node:crypto`, `node:buffer`, `node:events` etc. (e também sem o prefixo `node:`) funcionam com o que o `nodejs_compat` do Workers oferece.
 
 ## Limitações
@@ -32,9 +32,11 @@ O check roda quando a PR é aberta, reaberta, recebe commits ou sai de draft, e 
 - **Sem rede:** o Dynamic Worker roda com `globalOutbound: null`. Qualquer `fetch` real falha; faça stub com `vi.stubGlobal("fetch", vi.fn(...))`.
 - **Sem `vi.mock`/`vi.doMock`** (não existe grafo de módulos para interceptar) e **sem fake timers** (`vi.useFakeTimers`). Os dois lançam erro explicando isso. Prefira injeção de dependência ou `vi.spyOn` num objeto.
 - **Sem snapshots** (`toMatchSnapshot`, `toMatchInlineSnapshot`) e sem `expect.poll`.
+- **Playwright fica de fora:** `*.spec.ts` que importa `@playwright/test` não é rodado. Specs que só importam fixtures locais do Playwright ainda são pegos; mova-os para uma pasta ignorada ou renomeie.
+- **Tamanho:** todos os arquivos de teste e o que eles importam viram um só Dynamic Worker, que tem limite de código (64 MB no workerd). Suítes que importam frameworks inteiros (Next.js, SDKs grandes) estouram esse limite.
 - **Sem arquivo de config do Vitest:** `vitest.config.*`, `setupFiles`, `globals: true`, aliases do Vite e `environment` (jsdom/happy-dom) são ignorados. Cada teste importa o que usa de `"vitest"`.
 - **Runtime do Workers, não o Node:** não há sistema de arquivos real, nem `child_process`, nem processos; `Date.now()` só avança em I/O. APIs do Node que o `nodejs_compat` não implementa falham.
-- **Pacotes:** só os que estão no lockfile e no registry público do npm. Sem lockfile, ou com yarn/bun, só imports relativos e `vitest` funcionam. Pacotes de workspace (`link:`), registries privados e dependências git não são resolvidos. Pacotes que precisam de binário nativo ou de WebAssembly compilado em runtime não funcionam.
+- **Pacotes:** só os que estão no lockfile e no registry público do npm. Sem lockfile, ou com yarn/bun, só imports relativos e `vitest` funcionam. Registries privados e dependências git não são resolvidos. Pacotes que precisam de binário nativo ou de WebAssembly compilado em runtime não funcionam.
 - **Limites:** 30 s de CPU no Dynamic Worker. O webhook continua o trabalho em `waitUntil`, que tem um teto de cerca de 30 s depois da resposta, então a suíte inteira (download + montagem + execução) precisa caber nisso.
 - Os testes de todos os arquivos rodam no mesmo isolate, um arquivo depois do outro. Estado global vaza entre arquivos: limpe stubs em `afterEach` (`vi.unstubAllGlobals()`, `vi.restoreAllMocks()`).
 
@@ -64,7 +66,7 @@ O check run mostra uma tabela por arquivo e uma seção por falha:
 - **Teste que falhou:** nome completo (`suite › teste`), arquivo e a mensagem do `expect`, com diff.
 - **Arquivo quebrado** (erro fora de um teste): o import falhou ou um `beforeAll`/`afterAll` lançou erro. Erros como `does not provide an export named 'x'` vindos de `/__qf/missing/<nome>.js` querem dizer que aquele import não foi resolvido. A seção **Imports não resolvidos** lista cada um, com o arquivo de origem.
 - **"Nenhum teste encontrado"** (neutro): nenhum arquivo segue a convenção.
-- **"Não foi possível rodar os testes"**: o download ou a montagem falhou antes de rodar (por exemplo, falta a permissão Contents na App).
+- **"Não foi possível rodar os testes"**: o download ou a montagem falhou antes de rodar. Um 403/404 ao baixar o código de um repositório privado quer dizer que falta a permissão Contents: Read-only na App, ou que a instalação ainda não aceitou essa permissão.
 
 ## Reproduzir localmente
 
