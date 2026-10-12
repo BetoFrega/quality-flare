@@ -12,6 +12,9 @@ export const MAIN_MODULE = "__qf/main.js";
 const VITEST_MODULE = "__qf/vitest.js";
 const PROCESS_MODULE = "__qf/process.js";
 const EMPTY_MODULE = "__qf/empty.js";
+const RESET_MODULES = /\bvi\s*\.\s*resetModules\s*\(/;
+/** Fresh copies per module for files that call vi.resetModules(): resets past the last reuse it. */
+const FRESH_COPIES = 3;
 /**
  * workerd's path.resolve() and relative() resolve against "/", not process.cwd() ("/bundle"),
  * so `resolve("docs")` misses the repository. This node:path resolves against the cwd.
@@ -26,6 +29,7 @@ export const posix = { ...path.posix, resolve, relative };
 posix.posix = posix;
 export default posix;`;
 const CSS_MODULE = "__qf/css-module.js";
+const ASSET_IMPORT = /\.(svg|png|jpe?g|gif|webp|avif|ico|bmp|woff2?|ttf|otf|eot|mp4|webm|ogg|mp3|wav|flac|aac|pdf|txt)(\?.*)?$/;
 const STYLESHEET = /\.(css|scss|sass|less|styl|stylus|pcss|postcss)(\?.*)?$/;
 /** Each test file's mocks, environment and setup copies; read by runtime/mocks.ts. */
 const FILES_MODULE = "__qf/files.js";
@@ -255,6 +259,12 @@ export default { fetch: handleRequest };`,
 		}
 		if (/^(node|cloudflare|workerd):/.test(specifier)) return specifier;
 		if (NODE_BUILTINS.has(specifier.split("/")[0])) return `node:${specifier}`;
+		// As Vite: importing an image, font or media file gives its URL.
+		if (ASSET_IMPORT.test(specifier)) {
+			const module = `__qf/asset/${specifier.replace(/[^\w./@-]+/g, "_")}.js`;
+			modules[module] ??= { js: `export default ${JSON.stringify(`/${specifier.replace(/^(\.\.?\/)+/, "").replace(/\?.*$/, "")}`)};` };
+			return `/${module}`;
+		}
 		// As vitest without `css.include`: stylesheets are empty, CSS modules map each class to its name.
 		if (STYLESHEET.test(specifier)) {
 			const module = /\.module\.[a-z]+$/.test(specifier) ? CSS_MODULE : EMPTY_MODULE;
@@ -404,8 +414,34 @@ export default { fetch: handleRequest };`,
 	};
 	const mockFacade = (key: string) => `__qf/mock/${key.replace(/^\//, "").replace(/[^\w./@-]+/g, "_")}`;
 	const isMockLink = (m: EsmModule, specifier: string) => !m.real && !specifier.endsWith(ACTUAL) && mockKeys.has(m.links.get(specifier)!);
+	const target = (m: EsmModule, s: string) => (isMockLink(m, s) ? `/${mockFacade(m.links.get(s)!)}` : m.links.get(s)!);
+	// vi.resetModules(): a file that calls it imports the repository modules it loads dynamically
+	// from fresh copies, one set per reset, since a module can't be evaluated twice.
+	const isRepoModule = (link: string) => link.startsWith("/") && esm.has(link.slice(1)) && !link.startsWith(`/${PACKAGES_DIR}/`) && !link.startsWith("/__qf/");
+	const resetting = testFiles.filter((path) => RESET_MODULES.test(esm.get(path)?.js ?? ""));
+	const fresh = new Set<string>();
+	const stack = resetting.flatMap((path) => {
+		const m = esm.get(path)!;
+		return importsOf(m.js).filter((i) => i.d > -1).map((i) => target(m, i.n!)).filter(isRepoModule).map((link) => link.slice(1));
+	});
+	while (stack.length) {
+		const name = stack.pop()!;
+		if (fresh.has(name)) continue;
+		fresh.add(name);
+		const m = esm.get(name)!;
+		for (const s of m.links.keys()) if (isRepoModule(target(m, s))) stack.push(target(m, s).slice(1));
+	}
 	for (const [name, m] of esm) {
-		modules[name] = { js: rewriteImports(m.js, (s) => (isMockLink(m, s) ? `/${mockFacade(m.links.get(s)!)}` : m.links.get(s)!)) };
+		const dynamic = resetting.includes(name)
+			? (s: string) => (fresh.has(target(m, s).slice(1)) ? `__qf_fresh(${JSON.stringify(target(m, s))}, ${FRESH_COPIES})` : undefined)
+			: undefined;
+		modules[name] = { js: rewriteImports(m.js, (s) => target(m, s), dynamic) };
+		if (!fresh.has(name)) continue;
+		for (let copy = 0; copy < FRESH_COPIES; copy++) {
+			modules[`__qf/fresh/${copy}/${name}`] = {
+				js: rewriteImports(m.js, (s) => (fresh.has(target(m, s).slice(1)) ? `/__qf/fresh/${copy}${target(m, s)}` : target(m, s))),
+			};
+		}
 	}
 	for (const key of mockKeys) {
 		const names = new Set<string>(exportNames(key));
@@ -515,12 +551,13 @@ const JSON_ATTRIBUTES = /^(["'])\s*(?:with|assert)\s*\{\s*type\s*:\s*(["'])json\
  * Replaces every static and literal dynamic import specifier with `map(specifier)`. JSON import
  * attributes are dropped: the Worker Loader rejects them, and `.json` files load as JSON anyway.
  */
-function rewriteImports(source: string, map: (specifier: string) => string): string {
+function rewriteImports(source: string, map: (specifier: string) => string, dynamic?: (specifier: string) => string | undefined): string {
 	let out = "";
 	let last = 0;
 	for (const imp of importsOf(source)) {
 		const replacement = map(imp.n!);
-		out += source.slice(last, imp.s) + (imp.d > -1 ? JSON.stringify(replacement) : replacement);
+		const expression = imp.d > -1 ? (dynamic?.(imp.n!) ?? JSON.stringify(replacement)) : replacement;
+		out += source.slice(last, imp.s) + expression;
 		last = imp.e;
 		const attributes = imp.d === -1 ? JSON_ATTRIBUTES.exec(source.slice(imp.e, imp.e + 64)) : null;
 		if (attributes) {

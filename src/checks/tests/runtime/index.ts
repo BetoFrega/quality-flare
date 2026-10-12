@@ -94,6 +94,9 @@ export const expect = createExpect();
 
 const stubbedGlobals = new Map<PropertyKey, PropertyDescriptor | undefined>();
 const stubbedEnv = new Map<string, string | undefined>();
+/** vi.resetModules() calls in the current file: which fresh copy its dynamic imports load (see modules.ts). */
+let resets = 0;
+(globalThis as Record<string, unknown>).__qf_fresh = (target: string, copies: number) => `/__qf/fresh/${Math.min(resets, copies - 1)}${target}`;
 const env = () => (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env ?? {};
 
 const unsupported = (name: string) => () => {
@@ -162,7 +165,10 @@ export const vi = {
 	importActual: unsupported("importActual com especificador que não é um texto literal"),
 	doMock: unsupported("doMock"),
 	unmock: unsupported("unmock"),
-	resetModules: unsupported("resetModules"),
+	resetModules() {
+		resets++;
+		return vi;
+	},
 };
 // vi.useFakeTimers(), vi.advanceTimersByTime()… return vi, as in vitest, so calls chain.
 for (const [name, method] of Object.entries(timers)) {
@@ -208,6 +214,7 @@ class WorkerRunner implements VitestRunner {
 	onCollectStart(file: File) {
 		this.collecting = file.filepath;
 		timers.useRealTimers();
+		resets = 0;
 	}
 
 	async importFile(filepath: string, source: "collect" | "setup") {
@@ -227,6 +234,7 @@ class WorkerRunner implements VitestRunner {
 			const file = (suite as File).filepath;
 			// Fake timers end with the file that installed them, as in vitest.
 			timers.useRealTimers();
+			resets = 0;
 			activateEnvironment(file);
 			activateMocks(file);
 		}

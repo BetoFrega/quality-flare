@@ -118,6 +118,18 @@ describe.skipIf(inWorkers)("tests in a Dynamic Worker", () => {
 				vi.mock("server-only", () => ({}));
 				it("never loads the mocked module", () => expect(read()).toBe("fake db"));`,
 			"docs/a.md": "# A",
+			"src/mode.ts": "export const mode = process.env.MODE;",
+			"test/e.test.ts": `
+				import { expect, it, vi } from "vitest";
+				it("evaluates modules again after vi.resetModules", async () => {
+					vi.stubEnv("MODE", "a");
+					const a = await import("../src/mode");
+					vi.resetModules();
+					vi.stubEnv("MODE", "b");
+					const b = await import("../src/mode");
+					expect([a.mode, b.mode]).toEqual(["a", "b"]);
+					vi.unstubAllEnvs();
+				});`,
 			"test/d.test.ts": `
 				import { expect, it, vi } from "vitest";
 				it("stubs env and waits", async () => {
@@ -157,6 +169,7 @@ describe.skipIf(inWorkers)("tests in a Dynamic Worker", () => {
 			["test/b.test.ts", "pass", undefined, [["sees the real module", "pass", undefined]]],
 			["test/c.test.ts", "pass", undefined, [["never loads the mocked module", "pass", undefined]]],
 			["test/d.test.ts", "pass", undefined, [["stubs env and waits", "pass", undefined], ["reads repository files from the working directory", "pass", undefined], ["fakes timers and the clock", "pass", undefined]]],
+			["test/e.test.ts", "pass", undefined, [["evaluates modules again after vi.resetModules", "pass", undefined]]],
 		]);
 	}, 30_000);
 });
