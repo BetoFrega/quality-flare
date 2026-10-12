@@ -221,6 +221,29 @@ describe.skipIf(inWorkers)("tests in a Dynamic Worker", () => {
 			["test/d.test.ts", "pass", []],
 		]);
 	}, 30_000);
+
+	it("imports modules that generate code or draw random values as they load", async () => {
+		const { default: runtimeSource } = await import("virtual:test-runtime");
+		const repo = {
+			// Like protobufjs, loaded by firebase-admin: compiles functions it calls only when encoding.
+			"src/load.ts": `
+				import { randomBytes } from "node:crypto";
+				export const encode = Function("prefix", "return function encode(x) { return prefix + x; }")("p");
+				export const id = crypto.randomUUID();
+				export const bytes = randomBytes(4).length;`,
+			"test/load.test.ts": `
+				import { expect, it } from "vitest";
+				import { bytes, encode, id } from "../src/load";
+				it("loads, and fails only where generated code runs", () => {
+					expect([id, bytes]).toEqual([expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4/), 4]);
+					expect(() => encode(1)).toThrow(EvalError);
+					expect(() => Function("return 1")).toThrow(EvalError);
+				});`,
+		};
+		const bundle = await buildModules(new Map(Object.entries(repo)), { runtimeSource, fetchPackage: () => Promise.reject(new Error("offline")) });
+		const report = await runInWorkerd(bundle, () => {});
+		expect(report.files.map((f) => [f.path, f.state, f.errors ?? f.tests.flatMap((t) => t.errors ?? [])])).toEqual([["test/load.test.ts", "pass", []]]);
+	}, 30_000);
 });
 
 /** Serves a host Worker with a Worker Loader binding on workerd and has it run the bundle. */

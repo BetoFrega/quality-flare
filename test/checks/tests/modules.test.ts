@@ -190,9 +190,28 @@ describe("buildModules", () => {
 		expect(modules["test/a.test.js"]).toEqual({ cjs: `__filename = "/bundle/test/a.test.js"; __dirname = "/bundle/test";require("/__qf/process.js"); require("/__qf/process.js");` });
 	});
 
-	it("gives a vi.mock factory with JSX the JSX runtime import", async () => {
-		const { modules } = await build({ "test/a.test.tsx": `import { vi } from "vitest";\nvi.mock("../src/Box", () => ({ Box: () => <i /> }));` });
-		expect(modules["test/__qf_mocks__a.test.tsx.js"].js).toMatch(/^import \{ vi \} from "[^"]+";import \{jsx as _jsx\} from "[^"]+";\n/);
+	it("gives vi.mock factories the test file's imports they use and the JSX runtime", async () => {
+		const { modules } = await build({
+			"test/a.test.tsx": `import { vi } from "vitest";\nimport { spies, other } from "./fixtures";\nimport { unused } from "./unused";\nvi.mock("../src/Box", () => ({ Box: () => <i />, save: spies.save }));`,
+			"test/fixtures.ts": "export const spies = {}; export const other = 1;",
+			"test/unused.ts": "export const unused = 1;",
+		});
+		const mocks = modules["test/__qf_mocks__a.test.tsx.js"].js!;
+		expect(mocks.split("\n")[0]).toMatch(/^import \{ vi \} from "[^"]+";import \{jsx as _jsx\} from "[^"]+";import \{ spies, \} from "\/test\/fixtures.ts"$/);
+	});
+
+	it("moves the vi.fn() declarations a vi.mock factory uses into it", async () => {
+		const { modules } = await build({
+			"test/a.test.ts": `import { vi } from "vitest";\nconst validate = vi.fn().mockReturnValue(\n  true,\n);\nconst kept = vi.fn();\nvi.mock("../src/v", () => ({ validate: (x: unknown) => validate(x) }));`,
+		});
+		expect(modules["test/__qf_mocks__a.test.ts.js"].js).toContain("const validate = vi.fn().mockReturnValue(\n  true,\n);");
+		expect(modules["test/a.test.ts"].js).toMatch(/^import \{ validate \} from "\/test\/__qf_mocks__a.test.ts.js"; [^\n]*\n\s*\n\s*\nconst kept = vi.fn\(\);/);
+	});
+
+	it("gives a package that needs a native binary as a module that fails when used", async () => {
+		const { modules } = await build({ "test/a.test.ts": `import sharp from "sharp"; export const s = sharp;` });
+		expect(modules["test/a.test.ts"].js).toContain(`from "/__qf/native/sharp.js"`);
+		expect(modules["__qf/native/sharp.js"].js).toContain("binário nativo");
 	});
 
 	it("assigns a getter defined on module.exports, which workerd ignores", async () => {

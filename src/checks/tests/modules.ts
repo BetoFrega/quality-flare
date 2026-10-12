@@ -3,7 +3,7 @@ import { exports as packageExports, imports as packageImports } from "resolve.ex
 import { transform } from "sucrase";
 import { isLoadable, isPlaywrightSpec, isTestFile } from "./convention.ts";
 import type { LockedPackage, Lockfile } from "./lockfile.ts";
-import { ACTUAL, rewriteImportActual, splitMocks } from "./mocks.ts";
+import { ACTUAL, rewriteImportActual, splitMocks, usedNames } from "./mocks.ts";
 import type { PackageFiles } from "./packages.ts";
 
 /** Module names reserved for the test runtime inside the Dynamic Worker. */
@@ -271,6 +271,18 @@ export default { fetch: handleRequest };`,
 			modules[module] ??= { js: module === CSS_MODULE ? `export default new Proxy({}, { get: (_, key) => (typeof key === "string" ? key : undefined) });` : "export {};" };
 			return `/${module}`;
 		}
+		// A package that loads a native binary throws as it is imported; Node would load it. Importing
+		// works, using it throws: tests that only import it through other modules still run.
+		const pkg = /^(@[^/]+\/)?[^/]+/.exec(specifier)?.[0];
+		if (pkg && NATIVE_PACKAGES.has(pkg)) {
+			const module = `__qf/native/${pkg}.js`;
+			const message = `O pacote "${pkg}" usa um binário nativo, que não roda no Workers.`;
+			// require() of an ES module returns its default export in workerd: CommonJS gets the proxy too.
+			modules[module] ??= {
+				js: `const fail = () => { throw new Error(${JSON.stringify(message)}); };\nexport default new Proxy(function () {}, { get: (_, key) => (typeof key === "string" && key !== "__esModule" && key !== "then" ? fail() : undefined), apply: fail, construct: fail });`,
+			};
+			return `/${module}`;
+		}
 		const target = await resolve(specifier, from, importer).catch((error: unknown) => {
 			if (error instanceof DownloadFailed) return error;
 			throw error;
@@ -367,9 +379,14 @@ export default { fetch: handleRequest };`,
 				const keys = await Promise.all(split.specs.map((s) => link(s, name, "esm")));
 				const hoisted = rewriteImportActual(split.hoisted).replace(/__QF_MOCK_(\d+)__/g, (_, i: string) => JSON.stringify(keys[Number(i)]));
 				const exported = split.names.length ? `export { ${split.names.join(", ")} };` : "";
-				// JSX in a mock factory needs the runtime import sucrase added to the test file.
-				const jsxImports = js.match(JSX_RUNTIME_IMPORT)?.join("") ?? "";
-				repoFiles.set(path, `import { vi } from "vitest";${jsxImports}\n${hoisted}\n${exported}\n`);
+				// vitest runs a factory after the file's imports, so it may use them: they come along, as does
+				// the JSX runtime import sucrase added to the test file.
+				const used = usedNames(split.hoisted);
+				const imports = importsOf(split.rest)
+					.filter((imp) => imp.d === -1 && imp.n !== "vitest")
+					.map((imp) => split.rest.slice(imp.ss, imp.se))
+					.filter((statement) => JSX_RUNTIME_IMPORT.test(statement) || localNames(statement).some((n) => used.has(n)));
+				repoFiles.set(path, `import { vi } from "vitest";${imports.map((i) => i.replace(/\n/g, " ")).join(";")}\n${hoisted}\n${exported}\n`);
 				realOnly.add(path);
 				enqueue(path);
 				for (const key of keys) mockKeys.add(key);
@@ -542,7 +559,9 @@ export function bundleSize(bundle: TestBundle): number {
 }
 
 const REQUIRE = /\brequire\s*\(\s*(['"])([^'"\n]+)\1\s*\)/g;
-const JSX_RUNTIME_IMPORT = /\bimport\s*\{[^}]*\}\s*from\s*["']react\/jsx-runtime["'];?/g;
+/** Packages that load a native binary when imported (see link). */
+const NATIVE_PACKAGES = new Set(["sharp"]);
+const JSX_RUNTIME_IMPORT = /\bfrom\s*["']react\/jsx-runtime["']/;
 const DEFINE_EXPORTS = /\bObject\.defineProperty\s*\(\s*module\s*,\s*(['"])exports\1\s*,\s*/g;
 const REQUIRE_RESOLVE = /\brequire\.resolve\s*\(\s*(['"])([^'"\n]+)\1\s*\)/g;
 
@@ -602,6 +621,17 @@ function importMeta(name: string, key: string): string {
 }
 
 /** The names an import or re-export statement takes: `import a, { b, c as d } from`, `export { e } from`. */
+/** The local bindings an import statement declares: `a`, `* as b`, `{ c, d as e }`. */
+function localNames(statement: string): string[] {
+	const clause = /^import\s+(?:type\s+)?([\s\S]*?)\s+from\b/.exec(statement)?.[1] ?? "";
+	const names = [...(clause.replace(/\{[^}]*\}/, "").match(/[A-Za-z_$][\w$]*/g) ?? [])].filter((n) => n !== "as");
+	for (const item of /\{([^}]*)\}/.exec(clause)?.[1].split(",") ?? []) {
+		const name = item.trim().replace(/^type\s+/, "").split(/\s+as\s+/).pop();
+		if (name) names.push(name);
+	}
+	return names;
+}
+
 function importedNames(statement: string): string[] {
 	const braces = /\{([^}]*)\}/.exec(statement);
 	if (!braces) return [];
