@@ -276,12 +276,9 @@ const GLOBALS = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, 
  * them, they take their fallback, as they would on a runtime that lacks the API.
  */
 function hideUnimplemented() {
-	const console = (globalThis as unknown as { console: { createTask?: (name: string) => unknown } }).console;
-	try {
-		console.createTask?.("quality-flare");
-	} catch {
-		console.createTask = undefined;
-	}
+	// A getter: a plain assignment does not stick in a Dynamic Worker.
+	const { console } = globalThis as unknown as { console: object };
+	Object.defineProperty(console, "createTask", { get: () => undefined, set: () => {}, configurable: true });
 }
 
 /** Runs the given test files (module paths, e.g. "/test/a.test.ts") and reports every test. */
