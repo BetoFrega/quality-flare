@@ -41,6 +41,11 @@ Vincular uma issue pela barra lateral não gera webhook. Depois de vincular, cli
 
 O deploy é automático: o Worker está conectado a este repositório pelo [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/), e cada push na `main` roda `pnpm typecheck && pnpm test` e depois `pnpm exec cf deploy`. Pushes em outras branches não publicam.
 
+Requisitos para o deploy automático funcionar:
+
+- A app **Cloudflare Workers and Pages** precisa ter acesso a este repositório no GitHub (Settings → Applications → Configure → Repository access). Sem isso, a Cloudflare não recebe os pushes e nenhum build é disparado.
+- Não altere o código do Worker direto pela API ou pelo painel da Cloudflare. O `cf deploy` em CI se recusa a publicar quando o Worker foi modificado fora dele; nesse caso, um deploy único com `wrangler deploy` destrava.
+
 Para publicar manualmente:
 
 ```sh
