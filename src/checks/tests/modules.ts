@@ -21,9 +21,10 @@ const ESM_CONDITIONS = ["workerd", "worker", "import", "module", "node", "defaul
 const CJS_CONDITIONS = ["workerd", "worker", "require", "node", "default"];
 
 const NODE_BUILTINS = new Set([
-	"assert", "async_hooks", "buffer", "child_process", "console", "constants", "crypto", "diagnostics_channel", "dns",
-	"events", "fs", "http", "https", "module", "net", "os", "path", "perf_hooks", "process", "punycode", "querystring",
-	"readline", "stream", "string_decoder", "timers", "tls", "tty", "url", "util", "vm", "worker_threads", "zlib",
+	"assert", "async_hooks", "buffer", "child_process", "cluster", "console", "constants", "crypto", "dgram",
+	"diagnostics_channel", "dns", "domain", "events", "fs", "http", "http2", "https", "inspector", "module", "net", "os",
+	"path", "perf_hooks", "process", "punycode", "querystring", "readline", "repl", "stream", "string_decoder", "sys",
+	"timers", "tls", "trace_events", "tty", "url", "util", "v8", "vm", "wasi", "worker_threads", "zlib",
 ]);
 
 export type Modules = Record<string, WorkerLoaderModule>;

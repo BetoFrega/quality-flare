@@ -41,6 +41,12 @@ describe("buildModules", () => {
 		expect(modules["test/a.test.ts"].js).not.toContain("t.ts");
 	});
 
+	it("maps every Node built-in to its node: module", async () => {
+		const { modules, unresolved } = await build({ "test/a.test.ts": `import "http2"; import "v8"; import "fs/promises";` });
+		expect(unresolved).toEqual([]);
+		expect(modules["test/a.test.ts"].js).toBe(`import "node:http2"; import "node:v8"; import "node:fs/promises";`);
+	});
+
 	it("finds test files by convention and adds the runtime", async () => {
 		const bundle = await build({
 			"test/a.test.ts": "",

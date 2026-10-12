@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { readLockfile } from "../../../src/checks/tests/lockfile.ts";
 import { buildModules } from "../../../src/checks/tests/modules.ts";
-import { readPackage } from "../../../src/checks/tests/packages.ts";
+import { readPackage, turns } from "../../../src/checks/tests/packages.ts";
 import { walkTarball } from "../../../src/checks/tests/tarball.ts";
 import { tarball } from "./tar.ts";
 
@@ -63,7 +63,7 @@ describe("readPackage", () => {
 
 	it("reads a package over the budget on demand, with what it imports inside the package, in one more download", async () => {
 		const download = registry(NEXT);
-		const files = await readPackage(download, isPackageFile, 10);
+		const files = await readPackage(download, isPackageFile, undefined, 10);
 		expect(files.get("package.json")).toBe(NEXT["package.json"]);
 		expect(files.has("dist/a.js")).toBe(true);
 		expect(files.get("dist/a.js")).toBeUndefined();
@@ -84,7 +84,7 @@ describe("readPackage", () => {
 
 	it("gathers the requests of one moment into one download", async () => {
 		const download = registry(NEXT);
-		const files = await readPackage(download, isPackageFile, 10);
+		const files = await readPackage(download, isPackageFile, undefined, 10);
 		await Promise.all([files.load!(["dist/b.js"]), files.load!(["dist/unused.js"])]);
 		expect(files.get("dist/unused.js")).toBe(NEXT["dist/unused.js"]);
 		expect(download).toHaveBeenCalledTimes(2);
@@ -98,7 +98,7 @@ describe("buildModules with a package read on demand", () => {
 			buildModules(new Map([["test/a.test.ts", `import { a } from "next"; export default a;`]]), {
 				runtimeSource: "",
 				lockfile,
-				fetchPackage: () => readPackage(registry(NEXT), isPackageFile, budget),
+				fetchPackage: () => readPackage(registry(NEXT), isPackageFile, undefined, budget),
 			});
 		const [whole, onDemand] = await Promise.all([build(Infinity), build(10)]);
 		expect(onDemand.unresolved).toEqual([]);
@@ -123,7 +123,7 @@ describe("buildModules with a package that fails to download", () => {
 });
 
 describe("readPackage downloads", () => {
-	it("reads at most 4 tarballs at once", async () => {
+	it("reads at most 4 tarballs at once per request", async () => {
 		let open = 0;
 		let most = 0;
 		const download = async () => {
@@ -142,7 +142,8 @@ describe("readPackage downloads", () => {
 				cancel: () => void open--,
 			});
 		};
-		await Promise.all(Array.from({ length: 10 }, () => readPackage(download, isPackageFile)));
+		const inTurn = turns(4);
+		await Promise.all(Array.from({ length: 10 }, () => readPackage(download, isPackageFile, inTurn)));
 		expect(most).toBe(4);
 	});
 });
