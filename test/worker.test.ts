@@ -1,6 +1,8 @@
 import { createHmac, generateKeyPairSync } from "node:crypto";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
+import { setCheckEnabled } from "../src/settings.ts";
+import { fakeKv } from "./fake-kv.ts";
 
 const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const env = {
@@ -8,6 +10,7 @@ const env = {
 	GITHUB_PRIVATE_KEY: privateKey.export({ type: "pkcs1", format: "pem" }).toString(),
 	GITHUB_WEBHOOK_SECRET: "s3cret",
 	NO_ISSUE_LABEL: "no-issue",
+	ACCESS_AUD: "aud",
 } as Env;
 
 const pr = { number: 7, body: "Some change", head: { sha: "abc123" }, labels: [] as { name: string }[] };
@@ -44,8 +47,12 @@ function mockGitHub({ linked = [] as { number: number; repository: { nameWithOwn
 	return { checkRuns, fetchMock };
 }
 
-const run = (req: Request) => worker.fetch(req as Parameters<typeof worker.fetch>[0], env);
+const ctx = {} as ExecutionContext;
+const run = (req: Request) => worker.fetch(req as Parameters<typeof worker.fetch>[0], env, ctx);
 
+beforeEach(() => {
+	env.SETTINGS = fakeKv();
+});
 afterEach(() => vi.unstubAllGlobals());
 
 describe("webhook handler", () => {
@@ -86,6 +93,21 @@ describe("webhook handler", () => {
 			}),
 		);
 		expect(checkRuns[0]).toMatchObject({ conclusion: "success", output: { title: "Closes #5" } });
+	});
+
+	it("reports a disabled check as neutral without running it", async () => {
+		await setCheckEnabled(env.SETTINGS, "Octo/Repo", "closes-issue", false);
+		const { checkRuns, fetchMock } = mockGitHub();
+		await run(delivery("pull_request", { action: "opened", pull_request: pr }));
+		expect(checkRuns[0]).toMatchObject({ name: "Closes an issue", conclusion: "neutral", output: { title: "Desativado" } });
+		expect(fetchMock.mock.calls.some(([url]) => url.endsWith("/graphql"))).toBe(false);
+	});
+
+	it("does not treat admin requests as webhooks", async () => {
+		const { fetchMock } = mockGitHub();
+		const res = await run(new Request("https://worker.example/admin", { method: "POST" }));
+		expect(res.status).toBe(403);
+		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
 	it.each([
