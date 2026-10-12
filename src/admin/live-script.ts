@@ -51,7 +51,7 @@ export const LIVE_SCRIPT = `(() => {
 			progress(event.runId).total = event.total;
 			for (const test of event.tests) addTest(test);
 		}
-		if (event.type === "collected") progress(event.runId).total = event.total;
+		if (event.type === "collected") progress(event.runId).total = (progress(event.runId).total || 0) + event.total;
 		if (event.type === "test") addTest(event);
 		render(event.runId);
 	}

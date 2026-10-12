@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { tests } from "../src/checks/tests/index.ts";
-import type { GitHubClient } from "../src/github.ts";
+import type { GitHubClient, PullRequest } from "../src/github.ts";
 import { d1RunStore } from "../src/runs.ts";
 import { fakeD1 } from "./fake-d1.ts";
 
@@ -29,20 +29,20 @@ describe.skipIf(inWorkers)("test run history", () => {
 
 	it("is filled by the Tests check, even when the tests can't run", async () => {
 		const RUNS = await fakeD1();
-		const github = { getTarball: () => Promise.reject(new Error("403 Resource not accessible")) } as unknown as GitHubClient;
-		const pr = { number: 7, body: null, head: { sha: "abc" }, labels: [] };
-		const result = await tests.run({ github, repo: "octo/app", pr, env: { RUNS } as Env });
+		const github = { listFiles: () => Promise.reject(new Error("403 Resource not accessible")) } as unknown as GitHubClient;
+		const pr = { number: 7, body: null, head: { sha: "abc" }, labels: [] } as unknown as PullRequest;
+		const result = await tests.run({ github, repo: "octo/app", pr, env: { RUNS } as Env, installationId: 1 });
 
 		expect(result).toMatchObject({ conclusion: "failure", title: "Não foi possível rodar os testes" });
 		const [run] = await d1RunStore(RUNS).list();
 		expect(run).toMatchObject({ repo: "octo/app", pr: 7, sha: "abc", status: "completed", conclusion: "failure" });
 	});
 
-	it("still reports the check when the history is unavailable", async () => {
-		const github = { getTarball: () => Promise.reject(new Error("offline")) } as unknown as GitHubClient;
-		const pr = { number: 7, body: null, head: { sha: "abc" }, labels: [] };
+	it("fails the check when D1, which coordinates the shards, is unavailable", async () => {
+		const github = { listFiles: () => Promise.resolve(["a.test.ts"]) } as unknown as GitHubClient;
+		const pr = { number: 7, body: null, head: { sha: "abc" }, labels: [] } as unknown as PullRequest;
 		const broken = { prepare: () => { throw new Error("D1 down"); }, batch: () => Promise.reject(new Error("D1 down")) } as unknown as D1Database;
-		const result = await tests.run({ github, repo: "octo/app", pr, env: { RUNS: broken } as Env });
-		expect(result.conclusion).toBe("failure");
+		const result = await tests.run({ github, repo: "octo/app", pr, env: { RUNS: broken } as Env, installationId: 1 });
+		expect(result).toMatchObject({ conclusion: "failure", summary: expect.stringContaining("D1") });
 	});
 });

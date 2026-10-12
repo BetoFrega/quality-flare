@@ -1,5 +1,7 @@
 import { ADMIN_PATH, handleAdmin } from "./admin/index.ts";
 import { checks as allChecks } from "./checks/index.ts";
+import { runTestShards } from "./checks/tests/index.ts";
+import type { TestShard } from "./checks/tests/jobs.ts";
 import type { Check, CheckResult } from "./checks/types.ts";
 import { verifySignature } from "./crypto.ts";
 import { GitHubClient, type PullRequest } from "./github.ts";
@@ -64,7 +66,11 @@ export default {
 		ctx.waitUntil(runPlan(plan, repo, payload.installation.id, settings, env));
 		return new Response(`Running ${plan.checks.length} check(s) on ${plan.pullRequests.length} pull request(s)\n`);
 	},
-} satisfies ExportedHandler<Env>;
+	// Shards of Tests runs, enqueued by the Tests check.
+	async queue(batch, env) {
+		await runTestShards(batch, env);
+	},
+} satisfies ExportedHandler<Env, TestShard>;
 
 async function runPlan(plan: Plan, repo: string, installationId: number, settings: RepoSettings, env: Env): Promise<void> {
 	const github = await GitHubClient.forInstallation({ appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY }, installationId);
@@ -72,8 +78,8 @@ async function runPlan(plan: Plan, repo: string, installationId: number, setting
 		// Re-run requests only carry the PR number; fetch it so labels and body are current.
 		const pr = typeof target === "number" ? await github.getPullRequest(repo, target) : target;
 		for (const check of plan.checks) {
-			const result = settings.enabledChecks.has(check.id) ? await check.run({ github, repo, pr, env }) : DISABLED_RESULT;
-			await github.createCheckRun(repo, pr.head.sha, check.name, result);
+			const result = settings.enabledChecks.has(check.id) ? await check.run({ github, repo, pr, env, installationId }) : DISABLED_RESULT;
+			if (result) await github.createCheckRun(repo, pr.head.sha, check.name, result);
 		}
 	}
 }

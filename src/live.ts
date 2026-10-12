@@ -17,7 +17,7 @@ interface RunProgress {
 
 const HUB = "runs";
 /** Progress of a run that never finished (the Worker ran out of time) is dropped after this. */
-const FORGET_AFTER_MS = 10 * 60_000;
+const FORGET_AFTER_MS = 30 * 60_000;
 
 /**
  * One Durable Object relays every test run's progress to the admin pages watching it.
@@ -57,7 +57,8 @@ export class RunsHub {
 			else if (event.type === "finished") touched.set(event.runId, null);
 			else {
 				const progress = await load(event.runId);
-				if (progress && event.type === "collected") progress.total = event.total;
+				// Each shard of a run reports its own count.
+				if (progress && event.type === "collected") progress.total = (progress.total ?? 0) + event.total;
 				if (progress && event.type === "test") progress.tests.push(event);
 			}
 			const message = JSON.stringify(event);

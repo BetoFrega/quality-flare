@@ -2,7 +2,7 @@ import type { TestRun, TestRunDetail } from "../runs.ts";
 import { esc, layout, renderHeader } from "./page.ts";
 
 /** A run still "running" after this long was cut off (waitUntil ran out) and will never finish. */
-export const STALE_AFTER_MS = 2 * 60_000;
+export const STALE_AFTER_MS = 30 * 60_000;
 
 const ICON = { success: "✓", failure: "✗", neutral: "–", running: "●", stale: "!" } as const;
 

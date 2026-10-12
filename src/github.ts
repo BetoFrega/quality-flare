@@ -87,6 +87,36 @@ export class GitHubClient {
 		return res.body;
 	}
 
+	/** Every file path in the repository at `ref` (no contents). */
+	async listFiles(repo: string, ref: string): Promise<string[]> {
+		const tree = await request<{ tree: { path: string; type: string }[]; truncated: boolean }>(
+			this.token,
+			"GET",
+			`/repos/${repo}/git/trees/${ref}?recursive=1`,
+		);
+		if (tree.truncated) throw new Error(`O repositório ${repo} tem arquivos demais para listar pela API do GitHub.`);
+		return tree.tree.filter((e) => e.type === "blob").map((e) => e.path);
+	}
+
+	/** Creates an in-progress check run, to be completed later with `completeCheckRun`. Resolves to its id. */
+	async startCheckRun(repo: string, headSha: string, name: string, title: string): Promise<number> {
+		const run = await request<{ id: number }>(this.token, "POST", `/repos/${repo}/check-runs`, {
+			name,
+			head_sha: headSha,
+			status: "in_progress",
+			output: { title, summary: title },
+		});
+		return run.id;
+	}
+
+	completeCheckRun(repo: string, checkRunId: number, result: CheckResult): Promise<unknown> {
+		return request(this.token, "PATCH", `/repos/${repo}/check-runs/${checkRunId}`, {
+			status: "completed",
+			conclusion: result.conclusion,
+			output: { title: result.title, summary: result.summary },
+		});
+	}
+
 	createCheckRun(repo: string, headSha: string, name: string, result: CheckResult): Promise<unknown> {
 		return request(this.token, "POST", `/repos/${repo}/check-runs`, {
 			name,

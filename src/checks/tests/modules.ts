@@ -8,6 +8,7 @@ import type { LockedPackage, Lockfile } from "./lockfile.ts";
 export const RUNTIME_MODULE = "__qf/runtime.js";
 export const MAIN_MODULE = "__qf/main.js";
 const VITEST_MODULE = "__qf/vitest.js";
+const PROCESS_MODULE = "__qf/process.js";
 /** npm packages are laid out under this folder, one subfolder per locked package. */
 const PACKAGES_DIR = "node_modules/.qf";
 
@@ -41,6 +42,8 @@ export interface BuildOptions {
 	lockfile?: Lockfile;
 	/** Downloads a package's files, keyed by their path inside the package. */
 	fetchPackage: (pkg: LockedPackage) => Promise<Map<string, string>>;
+	/** Only these test files (repository paths), for one shard of a run; all of them when omitted. */
+	testFiles?: string[];
 }
 
 interface Package {
@@ -68,11 +71,13 @@ type Kind = "esm" | "cjs" | "json";
  */
 export async function buildModules(repoFiles: Map<string, string>, options: BuildOptions): Promise<TestBundle> {
 	// Playwright specs share the *.spec.ts name but need a browser; they are not ours to run.
-	const testFiles = [...repoFiles.keys()].filter((p) => isTestFile(p) && !isPlaywrightSpec(repoFiles.get(p)!)).sort();
+	const candidates = options.testFiles?.filter((p) => repoFiles.has(p)) ?? [...repoFiles.keys()];
+	const testFiles = candidates.filter((p) => isTestFile(p) && !isPlaywrightSpec(repoFiles.get(p)!)).sort();
 	const aliases = tsconfigPaths(repoFiles);
 	const modules: Modules = {
 		[RUNTIME_MODULE]: { js: options.runtimeSource },
 		[VITEST_MODULE]: { js: `export * from "/${RUNTIME_MODULE}";` },
+		[PROCESS_MODULE]: { js: `import process from "node:process";\nexport default process;` },
 		[MAIN_MODULE]: {
 			js: `import { handleRequest } from "/${RUNTIME_MODULE}";
 export default { fetch: handleRequest };`,
@@ -166,6 +171,8 @@ export default { fetch: handleRequest };`,
 	/** The replacement for one import, enqueuing the module it points at. */
 	const link = async (specifier: string, from: string, importer: Kind): Promise<string> => {
 		if (specifier === "vitest") return `/${VITEST_MODULE}`;
+		// workerd can't require() node:process from CommonJS, though ESM imports it fine.
+		if (importer === "cjs" && (specifier === "process" || specifier === "node:process")) return `/${PROCESS_MODULE}`;
 		if (/^(node|cloudflare|workerd):/.test(specifier)) return specifier;
 		if (NODE_BUILTINS.has(specifier.split("/")[0])) return `node:${specifier}`;
 		const target = await resolve(specifier, from);
@@ -230,13 +237,29 @@ ${names.length ? `export const { ${names.join(", ")} } = __qf_cjs ?? {};` : ""}`
 	return { testFiles: testFiles.map((p) => `/${p}`), modules, unresolved };
 }
 
+/** Bytes of code in a bundle, as the Worker Loader counts them against its size limit (roughly). */
+export function bundleSize(bundle: TestBundle): number {
+	let size = 0;
+	for (const module of Object.values(bundle.modules)) {
+		const m = module as { js?: string; cjs?: string; json?: unknown };
+		size += (m.js ?? m.cjs ?? JSON.stringify(m.json) ?? "").length;
+	}
+	return size;
+}
+
 const REQUIRE = /\brequire\s*\(\s*(['"])([^'"\n]+)\1\s*\)/g;
 
 function importsOf(source: string) {
 	return parse(source)[0].filter((imp) => imp.n !== undefined && imp.d !== -2 && (imp.d === -1 || /^["'`]/.test(source.slice(imp.s, imp.e))));
 }
 
-/** Replaces every static and literal dynamic import specifier with `map(specifier)`. */
+/** `with { type: "json" }` after a static import's closing quote. */
+const JSON_ATTRIBUTES = /^(["'])\s*(?:with|assert)\s*\{\s*type\s*:\s*(["'])json\2\s*,?\s*\}/;
+
+/**
+ * Replaces every static and literal dynamic import specifier with `map(specifier)`. JSON import
+ * attributes are dropped: the Worker Loader rejects them, and `.json` files load as JSON anyway.
+ */
 function rewriteImports(source: string, map: (specifier: string) => string): string {
 	let out = "";
 	let last = 0;
@@ -244,6 +267,11 @@ function rewriteImports(source: string, map: (specifier: string) => string): str
 		const replacement = map(imp.n!);
 		out += source.slice(last, imp.s) + (imp.d > -1 ? JSON.stringify(replacement) : replacement);
 		last = imp.e;
+		const attributes = imp.d === -1 ? JSON_ATTRIBUTES.exec(source.slice(imp.e, imp.e + 64)) : null;
+		if (attributes) {
+			out += attributes[1];
+			last += attributes[0].length;
+		}
 	}
 	return out + source.slice(last);
 }

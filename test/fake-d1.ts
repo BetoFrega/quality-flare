@@ -7,8 +7,8 @@ export async function fakeD1(): Promise<D1Database> {
 		first: async () => (db.prepare(sql).get(...(params as never[])) as unknown) ?? null,
 		all: async () => ({ results: db.prepare(sql).all(...(params as never[])) }),
 		run: async () => {
-			db.prepare(sql).run(...(params as never[]));
-			return { success: true };
+			const { changes } = db.prepare(sql).run(...(params as never[]));
+			return { success: true, meta: { changes: Number(changes) } };
 		},
 	});
 	return {

@@ -23,6 +23,22 @@ export interface TestResult {
 /** Streamed by the Dynamic Worker while tests run, before the final report. */
 export type ProgressEvent = { type: "collected"; total: number } | ({ type: "test"; file: string } & TestResult);
 
+/** Joins the reports of a run's shards, files in path order, and their unresolved imports. */
+export function mergeReports(parts: { report: TestReport; unresolved: { specifier: string; from: string }[] }[]): {
+	report: TestReport;
+	unresolved: { specifier: string; from: string }[];
+} {
+	const files = parts.flatMap((p) => p.report.files).sort((a, b) => a.path.localeCompare(b.path));
+	const seen = new Set<string>();
+	const unresolved = parts
+		.flatMap((p) => p.unresolved)
+		.filter((u) => {
+			const key = `${u.from}\0${u.specifier}`;
+			return !seen.has(key) && seen.add(key);
+		});
+	return { report: { files }, unresolved };
+}
+
 /** GitHub caps a check run summary at 65535 characters. */
 const MAX_SUMMARY = 60_000;
 

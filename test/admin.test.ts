@@ -25,7 +25,7 @@ const history: TestRunDetail[] = [
 			}],
 		},
 	},
-	{ id: 1, repo: "octo/app", pr: 3, sha: "aaaaaaaaaa", status: "running", conclusion: null, title: null, startedAt: NOW - 5 * 60_000, finishedAt: null, summary: null, report: null },
+	{ id: 1, repo: "octo/app", pr: 3, sha: "aaaaaaaaaa", status: "running", conclusion: null, title: null, startedAt: NOW - 45 * 60_000, finishedAt: null, summary: null, report: null },
 ];
 const runs: RunStore = {
 	start: async () => 0,

@@ -12,6 +12,8 @@ export interface CheckContext {
 	repo: string;
 	pr: PullRequest;
 	env: Env;
+	/** The GitHub App installation the delivery came from, for work that continues outside the webhook. */
+	installationId: number;
 }
 
 /** One CI check. Each check reports its own check run on the PR's head commit. */
@@ -22,5 +24,6 @@ export interface Check {
 	name: string;
 	/** `pull_request` actions that run this check; all handled actions when omitted. Re-runs always run it. */
 	pullRequestActions?: ReadonlySet<string>;
-	run(ctx: CheckContext): Promise<CheckResult>;
+	/** The result to report, or null when the check reports its own check run later (Tests, via a queue). */
+	run(ctx: CheckContext): Promise<CheckResult | null>;
 }
