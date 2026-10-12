@@ -1,10 +1,12 @@
 import type { GitHubClient } from "../../github.ts";
+import { livePublisher } from "../../live.ts";
 import { d1RunStore } from "../../runs.ts";
 import type { Check, CheckResult } from "../types.ts";
 import { isLoadable } from "./convention.ts";
 import { readLockfile, type LockedPackage } from "./lockfile.ts";
 import { buildModules, MAIN_MODULE, type TestBundle } from "./modules.ts";
-import { toCheckResult, type TestReport } from "./report.ts";
+import { toCheckResult, type ProgressEvent, type TestReport } from "./report.ts";
+import { readRun } from "./stream.ts";
 import { readTarball } from "./tarball.ts";
 
 const LOCKFILES = new Set(["pnpm-lock.yaml", "package-lock.json"]);
@@ -27,10 +29,14 @@ export const tests: Check = {
 	pullRequestActions: CODE_ACTIONS,
 	async run({ github, repo, pr, env }) {
 		const runs = d1RunStore(env.RUNS);
-		// The history is for visibility only; failing to record must not fail the check.
+		// History and live progress are for visibility only; failing to record must not fail the check.
 		const runId = await runs.start({ repo, pr: pr.number, sha: pr.head.sha }).catch(logError);
-		const { result, report } = await runTests(github, repo, pr.head.sha, env.LOADER);
+		const live = livePublisher(runId === undefined ? undefined : env.LIVE);
+		live.send({ type: "started", runId: runId!, repo, pr: pr.number, sha: pr.head.sha });
+		const { result, report } = await runTests(github, repo, pr.head.sha, env.LOADER, (event) => live.send({ runId: runId!, ...event }));
 		if (runId !== undefined) await runs.finish(runId, result, report).catch(logError);
+		live.send({ type: "finished", runId: runId!, conclusion: result.conclusion, title: result.title });
+		await live.flush();
 		return result;
 	},
 };
@@ -40,6 +46,7 @@ async function runTests(
 	repo: string,
 	sha: string,
 	loader: WorkerLoader,
+	onProgress: (event: ProgressEvent) => void,
 ): Promise<{ result: CheckResult; report?: TestReport }> {
 	try {
 		const files = await readTarball(await github.getTarball(repo, sha), (p) => isLoadable(p) || LOCKFILES.has(p));
@@ -47,7 +54,7 @@ async function runTests(
 		const { default: runtimeSource } = await import("virtual:test-runtime");
 		const bundle = await buildModules(files, { runtimeSource, lockfile: readLockfile(files), fetchPackage });
 		if (!bundle.testFiles.length) return { result: NO_TESTS };
-		const report = await runInDynamicWorker(loader, bundle);
+		const report = await runInDynamicWorker(loader, bundle, onProgress);
 		return { result: toCheckResult(report, bundle.unresolved), report };
 	} catch (error) {
 		return {
@@ -79,7 +86,11 @@ async function fetchPackage({ name, version }: LockedPackage): Promise<Map<strin
 }
 
 /** Loads the bundle as a fresh Dynamic Worker without network access and runs every test file. */
-export async function runInDynamicWorker(loader: WorkerLoader, bundle: TestBundle): Promise<TestReport> {
+export async function runInDynamicWorker(
+	loader: WorkerLoader,
+	bundle: TestBundle,
+	onProgress: (event: ProgressEvent) => void = () => {},
+): Promise<TestReport> {
 	const worker = loader.load({
 		compatibilityDate: COMPATIBILITY_DATE,
 		compatibilityFlags: ["nodejs_compat"],
@@ -90,5 +101,5 @@ export async function runInDynamicWorker(loader: WorkerLoader, bundle: TestBundl
 	});
 	const res = await worker.getEntrypoint().fetch("http://tests/", { method: "POST", body: JSON.stringify(bundle.testFiles) });
 	if (!res.ok) throw new Error(`O Dynamic Worker respondeu ${res.status}: ${await res.text()}`);
-	return res.json();
+	return readRun(res, onProgress);
 }

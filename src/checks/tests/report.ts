@@ -20,6 +20,9 @@ export interface TestResult {
 	errors?: string[];
 }
 
+/** Streamed by the Dynamic Worker while tests run, before the final report. */
+export type ProgressEvent = { type: "collected"; total: number } | ({ type: "test"; file: string } & TestResult);
+
 /** GitHub caps a check run summary at 65535 characters. */
 const MAX_SUMMARY = 60_000;
 

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { buildModules, MAIN_MODULE, type TestBundle } from "../../../src/checks/tests/modules.ts";
-import type { TestReport } from "../../../src/checks/tests/report.ts";
+import type { ProgressEvent, TestReport } from "../../../src/checks/tests/report.ts";
+import { readRun } from "../../../src/checks/tests/stream.ts";
+import { serveWorkerd } from "../../workerd.ts";
 
 /** A small repository: one passing file, one with failures, one that can't load. */
 const REPO = {
@@ -44,7 +46,8 @@ describe.skipIf(inWorkers)("tests in a Dynamic Worker", () => {
 			runtimeSource,
 			fetchPackage: () => Promise.reject(new Error("offline")),
 		});
-		const report = await runInWorkerd(bundle);
+		const progress: ProgressEvent[] = [];
+		const report = await runInWorkerd(bundle, (event) => progress.push(event));
 
 		const byPath = Object.fromEntries(report.files.map((f) => [f.path, f]));
 		expect(Object.keys(byPath)).toEqual(["test/broken.test.ts", "test/fail.test.ts", "test/math.test.ts"]);
@@ -60,62 +63,28 @@ describe.skipIf(inWorkers)("tests in a Dynamic Worker", () => {
 		expect(assertion).toMatchObject({ state: "fail", errors: [expect.stringContaining("expected 2 to be 3")] });
 		expect(count).toMatchObject({ state: "fail", errors: [expect.stringContaining("expected number of assertions to be 2, but got 1")] });
 		expect(byPath["test/broken.test.ts"]).toMatchObject({ state: "fail", errors: [expect.stringContaining("left-pad")] });
+
+		// Each test is streamed as it finishes, with the same name the report uses.
+		expect(progress[0]).toEqual({ type: "collected", total: 8 });
+		expect(progress).toContainEqual(expect.objectContaining({ type: "test", file: "test/math.test.ts", name: "add › adds", state: "pass" }));
+		expect(progress).toContainEqual(expect.objectContaining({ type: "test", file: "test/fail.test.ts", name: "fails an assertion", state: "fail" }));
 	}, 30_000);
 });
 
 /** Serves a host Worker with a Worker Loader binding on workerd and has it run the bundle. */
-async function runInWorkerd(bundle: TestBundle): Promise<TestReport> {
-	const [{ spawn }, { mkdtemp, writeFile, rm }, { tmpdir }, { join }, { createServer }, { createRequire }] = await Promise.all([
-		import("node:child_process"),
-		import("node:fs/promises"),
-		import("node:os"),
-		import("node:path"),
-		import("node:net"),
-		import("node:module"),
-	]);
-	const port = await new Promise<number>((resolve) => {
-		const server = createServer().listen(0, "127.0.0.1", () => {
-			const { port } = server.address() as { port: number };
-			server.close(() => resolve(port));
-		});
-	});
-	const dir = await mkdtemp(join(tmpdir(), "qf-workerd-"));
-	await writeFile(join(dir, "bundle.json"), JSON.stringify(bundle));
-	await writeFile(
-		join(dir, "host.js"),
-		`import bundle from "bundle.json";
+async function runInWorkerd(bundle: TestBundle, onProgress: (event: ProgressEvent) => void): Promise<TestReport> {
+	const host = `import bundle from "bundle.json";
 export default { async fetch(request, env) {
+	if (new URL(request.url).pathname !== "/") return new Response("up");
 	const worker = env.LOADER.load({ compatibilityDate: "2026-10-06", compatibilityFlags: ["nodejs_compat"], mainModule: ${JSON.stringify(MAIN_MODULE)}, modules: bundle.modules, globalOutbound: null });
 	return worker.getEntrypoint().fetch("http://tests/", { method: "POST", body: JSON.stringify(bundle.testFiles) });
-} };`,
-	);
-	await writeFile(
-		join(dir, "config.capnp"),
-		`using Workerd = import "/workerd/workerd.capnp";
-const config :Workerd.Config = (
-	services = [(name = "host", worker = (
-		modules = [(name = "host.js", esModule = embed "host.js"), (name = "bundle.json", json = embed "bundle.json")],
-		compatibilityDate = "2026-10-06",
-		bindings = [(name = "LOADER", workerLoader = ())],
-	))],
-	sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "host")],
-);`,
-	);
-	const binary: string = createRequire(import.meta.url)("workerd").default;
-	const child = spawn(binary, ["serve", join(dir, "config.capnp"), "--experimental"], { stdio: "ignore" });
+} };`;
+	const server = await serveWorkerd({ "host.js": host, "bundle.json": JSON.stringify(bundle) }, `bindings = [(name = "LOADER", workerLoader = ())],`);
 	try {
-		for (let attempt = 0; ; attempt++) {
-			try {
-				const res = await fetch(`http://127.0.0.1:${port}/`);
-				if (!res.ok) throw new Error(`host Worker answered ${res.status}: ${await res.text()}`);
-				return (await res.json()) as TestReport;
-			} catch (error) {
-				if (attempt > 100 || (error instanceof Error && error.message.startsWith("host Worker"))) throw error;
-				await new Promise((r) => setTimeout(r, 100));
-			}
-		}
+		const res = await fetch(`${server.url}/`);
+		if (!res.ok) throw new Error(`host Worker answered ${res.status}: ${await res.text()}`);
+		return await readRun(res, onProgress);
 	} finally {
-		child.kill();
-		await rm(dir, { recursive: true, force: true });
+		await server.stop();
 	}
 }

@@ -72,8 +72,8 @@ export async function buildModules(repoFiles: Map<string, string>, options: Buil
 		[RUNTIME_MODULE]: { js: options.runtimeSource },
 		[VITEST_MODULE]: { js: `export * from "/${RUNTIME_MODULE}";` },
 		[MAIN_MODULE]: {
-			js: `import { runTests } from "/${RUNTIME_MODULE}";
-export default { async fetch(request) { return Response.json(await runTests(await request.json())); } };`,
+			js: `import { handleRequest } from "/${RUNTIME_MODULE}";
+export default { fetch: handleRequest };`,
 		},
 	};
 	const unresolved: TestBundle["unresolved"] = [];

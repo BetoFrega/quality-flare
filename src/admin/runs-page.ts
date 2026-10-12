@@ -6,6 +6,10 @@ export const STALE_AFTER_MS = 2 * 60_000;
 
 const ICON = { success: "✓", failure: "✗", neutral: "–", running: "●", stale: "!" } as const;
 
+const LIVE = '<script src="/admin/live.js" defer></script>';
+/** Without JavaScript (or if the socket fails), running pages still reload on their own. */
+const FALLBACK = '<noscript><meta http-equiv="refresh" content="5"></noscript>';
+
 export function renderRunsPage(runs: TestRun[], email: string | undefined, now: number): string {
 	const running = runs.some((r) => state(r, now) === "running");
 	const rows = runs
@@ -14,7 +18,7 @@ export function renderRunsPage(runs: TestRun[], email: string | undefined, now: 
 			return `<tr>
 				<td class="state ${s}"><a href="/admin/runs/${run.id}">${ICON[s]} ${LABEL[s]}</a></td>
 				<td><a href="https://github.com/${esc(run.repo)}/pull/${run.pr}">${esc(run.repo)}#${run.pr}</a> <span class="mono">${esc(run.sha.slice(0, 7))}</span></td>
-				<td>${esc(run.title ?? "")}</td>
+				<td>${s === "running" ? `<span data-progress="${run.id}">Preparando…</span>` : esc(run.title ?? "")}</td>
 				<td class="num">${when(run.startedAt, now)}</td>
 				<td class="num">${duration(run, now)}</td>
 			</tr>`;
@@ -26,12 +30,12 @@ export function renderRunsPage(runs: TestRun[], email: string | undefined, now: 
 	return layout(
 		"Execuções de testes",
 		`${renderHeader(email, "runs")}
-		<main>
+		<main data-live="all">
 			<h2>Execuções de testes</h2>
-			<p class="hint">As 50 execuções mais recentes do check Tests.${running ? " A página se atualiza sozinha enquanto há testes rodando." : ""}</p>
+			<p class="hint">As 50 execuções mais recentes do check Tests. A página acompanha ao vivo os testes que estão rodando.</p>
 			${table}
 		</main>`,
-		running ? '<meta http-equiv="refresh" content="5">' : "",
+		`${LIVE}${running ? FALLBACK : ""}`,
 	);
 }
 
@@ -58,7 +62,7 @@ export function renderRunPage(run: TestRunDetail, email: string | undefined, now
 		.join("");
 	const body =
 		s === "running"
-			? "<p>Os testes ainda estão rodando. A página se atualiza sozinha.</p>"
+			? `<p data-progress="${run.id}">Preparando os testes…</p><ul class="tests" data-tests="${run.id}"></ul>`
 			: s === "stale"
 				? "<p>A execução foi interrompida antes de terminar (o Worker passou do tempo). Rode de novo com <strong>Re-run</strong> na PR.</p>"
 				: files.length
@@ -67,7 +71,7 @@ export function renderRunPage(run: TestRunDetail, email: string | undefined, now
 	return layout(
 		`Execução ${run.id}`,
 		`${renderHeader(email, "runs")}
-		<main>
+		<main${s === "running" ? ` data-live="${run.id}"` : ""}>
 			<p class="hint"><a href="/admin/runs">← Execuções de testes</a></p>
 			<h2 class="state ${s}">${ICON[s]} ${esc(run.title ?? LABEL[s])}</h2>
 			<p class="meta">
@@ -78,7 +82,7 @@ export function renderRunPage(run: TestRunDetail, email: string | undefined, now
 			</p>
 			${body}
 		</main>`,
-		s === "running" ? '<meta http-equiv="refresh" content="5">' : "",
+		s === "running" ? `${LIVE}${FALLBACK}` : "",
 	);
 }
 

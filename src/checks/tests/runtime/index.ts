@@ -19,7 +19,7 @@ import {
 } from "@vitest/expect";
 import { getCurrentTest, startTests, type File, type Task, type Test, type VitestRunner } from "@vitest/runner";
 import { clearAllMocks, fn, isMockFunction, resetAllMocks, restoreAllMocks, spyOn } from "@vitest/spy";
-import type { TestReport, TestResult } from "../report.ts";
+import type { ProgressEvent, TestReport, TestResult } from "../report.ts";
 
 export {
 	afterAll,
@@ -121,6 +121,8 @@ export const vi = {
 };
 
 class WorkerRunner implements VitestRunner {
+	constructor(private readonly onProgress: (event: ProgressEvent) => void) {}
+
 	config: VitestRunner["config"] = {
 		root: "/",
 		setupFiles: [],
@@ -144,6 +146,14 @@ class WorkerRunner implements VitestRunner {
 		return import(filepath);
 	}
 
+	onCollected(files: File[]) {
+		this.onProgress({ type: "collected", total: files.reduce((n, f) => n + countTests(f), 0) });
+	}
+
+	onAfterRunTask(test: Test) {
+		this.onProgress({ type: "test", file: path(test.file), ...testResult(test, testName(test)) });
+	}
+
 	onBeforeTryTask(test: Test) {
 		setState(freshState(test.fullTestName ?? test.name), expect);
 	}
@@ -164,9 +174,31 @@ class WorkerRunner implements VitestRunner {
 }
 
 /** Runs the given test files (module paths, e.g. "/test/a.test.ts") and reports every test. */
-export async function runTests(paths: string[]): Promise<TestReport> {
-	const files = await startTests(paths, new WorkerRunner());
+export async function runTests(paths: string[], onProgress: (event: ProgressEvent) => void = () => {}): Promise<TestReport> {
+	const files = await startTests(paths, new WorkerRunner(onProgress));
 	return { files: files.map(reportFile) };
+}
+
+/**
+ * The Dynamic Worker's entry point: runs the files posted as a JSON array and streams
+ * newline-delimited JSON back: progress events as tests finish, then `{ type: "report" }`.
+ */
+export function handleRequest(request: Request): Response {
+	const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+	const writer = writable.getWriter();
+	const encoder = new TextEncoder();
+	const send = (event: object) => writer.write(encoder.encode(`${JSON.stringify(event)}\n`)).catch(() => {});
+	(async () => {
+		try {
+			const report = await runTests(await request.json(), send);
+			await send({ type: "report", report });
+		} catch (error) {
+			await send({ type: "error", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			await writer.close().catch(() => {});
+		}
+	})();
+	return new Response(readable, { headers: { "Content-Type": "application/x-ndjson" } });
 }
 
 function reportFile(file: File): TestReport["files"][number] {
@@ -174,15 +206,27 @@ function reportFile(file: File): TestReport["files"][number] {
 	const walk = (task: Task, prefix: string[]) => {
 		const name = [...prefix, task.name];
 		if (task.type === "suite") for (const child of task.tasks) walk(child, name);
-		else tests.push({ name: name.join(" › "), state: task.result?.state ?? task.mode, errors: task.result?.errors?.map(formatError) });
+		else tests.push(testResult(task, name.join(" › ")));
 	};
 	for (const task of file.tasks) walk(task, []);
-	return {
-		path: file.filepath.replace(/^\//, ""),
-		state: file.result?.state ?? "skip",
-		errors: file.result?.errors?.map(formatError),
-		tests,
-	};
+	return { path: path(file), state: file.result?.state ?? "skip", errors: file.result?.errors?.map(formatError), tests };
+}
+
+function testResult(task: Task, name: string): TestResult {
+	return { name, state: task.result?.state ?? task.mode, errors: task.result?.errors?.map(formatError) };
+}
+
+const path = (file: File) => file.filepath.replace(/^\//, "");
+
+/** "suite › nested › test", the same name the final report uses. */
+function testName(test: Test): string {
+	const names = [test.name];
+	for (let suite = test.suite; suite && suite !== test.file; suite = suite.suite) names.unshift(suite.name);
+	return names.join(" › ");
+}
+
+function countTests(task: Task): number {
+	return task.type === "suite" ? task.tasks.reduce((n, t) => n + countTests(t), 0) : 1;
 }
 
 function formatError(error: { message?: string; stack?: string; diff?: string; name?: string }): string {
