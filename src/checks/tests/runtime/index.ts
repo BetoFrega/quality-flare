@@ -417,6 +417,14 @@ export async function runTests(run: RunRequest | string[], onProgress: (event: P
 	const { files: paths, globals, ...options } = Array.isArray(run) ? { files: run } : run;
 	if (globals) Object.assign(globalThis, GLOBALS);
 	await loadTimers();
+	// What vitest sets in each worker.
+	Object.assign(env(), { TEST: "true", VITEST: "true", VITEST_POOL_ID: "1", VITEST_WORKER_ID: "1" });
+	env().NODE_ENV ??= "test";
+	// Vite's import.meta.env in vitest: process.env plus the mode's flags.
+	const flags: Record<string, unknown> = { MODE: "test", DEV: true, PROD: false, SSR: true, BASE_URL: "/" };
+	(globalThis as Record<string, unknown>).__qf_import_meta_env = new Proxy(env(), {
+		get: (vars, key) => (typeof key === "string" && !(key in vars) ? flags[key] : Reflect.get(vars, key)),
+	});
 	hideUnimplemented();
 	deferCodeGeneration();
 	await allowRandomnessWhileImporting();

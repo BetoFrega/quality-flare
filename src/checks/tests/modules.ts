@@ -13,8 +13,12 @@ const VITEST_MODULE = "__qf/vitest.js";
 const PROCESS_MODULE = "__qf/process.js";
 const EMPTY_MODULE = "__qf/empty.js";
 const RESET_MODULES = /\bvi\s*\.\s*resetModules\s*\(/;
-/** Fresh copies per module for files that call vi.resetModules(): resets past the last reuse it. */
-const FRESH_COPIES = 3;
+/**
+ * Fresh copies per module for files that call vi.resetModules(): one per test of the file that
+ * has the most (a reset in beforeEach), within these bounds; resets past the last reuse it.
+ */
+const FRESH_COPIES = { min: 3, max: 32 };
+const TEST_CALL = /(?<![\w$.])(?:it|test)(?:\s*\.\s*\w+)*\s*\(/g;
 /**
  * workerd's path.resolve() and relative() resolve against "/", not process.cwd() ("/bundle"),
  * so `resolve("docs")` misses the repository. This node:path resolves against the cwd.
@@ -445,6 +449,10 @@ export default { fetch: handleRequest };`,
 		const m = esm.get(path)!;
 		return importsOf(m.js).filter((i) => i.d > -1).map((i) => target(m, i.n!)).filter(isRepoModule).map((link) => link.slice(1));
 	});
+	const copies = Math.min(
+		FRESH_COPIES.max,
+		Math.max(FRESH_COPIES.min, ...resetting.map((path) => (esm.get(path)!.js.match(TEST_CALL)?.length ?? 0) + 1)),
+	);
 	while (stack.length) {
 		const name = stack.pop()!;
 		if (fresh.has(name)) continue;
@@ -454,11 +462,11 @@ export default { fetch: handleRequest };`,
 	}
 	for (const [name, m] of esm) {
 		const dynamic = resetting.includes(name)
-			? (s: string) => (fresh.has(target(m, s).slice(1)) ? `__qf_fresh(${JSON.stringify(target(m, s))}, ${FRESH_COPIES})` : undefined)
+			? (s: string) => (fresh.has(target(m, s).slice(1)) ? `__qf_fresh(${JSON.stringify(target(m, s))}, ${copies})` : undefined)
 			: undefined;
 		modules[name] = { js: rewriteImports(m.js, (s) => target(m, s), dynamic) };
 		if (!fresh.has(name)) continue;
-		for (let copy = 0; copy < FRESH_COPIES; copy++) {
+		for (let copy = 0; copy < copies; copy++) {
 			modules[`__qf/fresh/${copy}/${name}`] = {
 				js: rewriteImports(m.js, (s) => (fresh.has(target(m, s).slice(1)) ? `/__qf/fresh/${copy}${target(m, s)}` : target(m, s))),
 			};
@@ -594,7 +602,8 @@ function rewriteImports(source: string, map: (specifier: string) => string, dyna
 }
 
 /**
- * Dynamic Workers leave `import.meta.url` and `dirname` undefined. Every module is also a file
+ * Dynamic Workers leave `import.meta.url` and `dirname` undefined, and there is no Vite to give
+ * `import.meta.env`. Every module is also a file
  * under /bundle (process.cwd()) in workerd's node:fs, so these point there.
  */
 function replaceImportMeta(js: string, name: string): string {
@@ -603,9 +612,10 @@ function replaceImportMeta(js: string, name: string): string {
 	// The lexer finds the real `import.meta`s (d === -2), not those in strings and comments.
 	for (const imp of parse(js)[0]) {
 		if (imp.d !== -2) continue;
-		const key = /^\s*\.\s*(url|dirname|filename)\b/.exec(js.slice(imp.e, imp.e + 32));
+		const key = /^\s*\.\s*(url|dirname|filename|env)\b/.exec(js.slice(imp.e, imp.e + 32));
 		if (!key) continue;
-		out += js.slice(last, imp.s) + JSON.stringify(importMeta(name, key[1]));
+		// Vite's import.meta.env: the runtime's view of process.env (see runtime/index.ts).
+		out += js.slice(last, imp.s) + (key[1] === "env" ? "globalThis.__qf_import_meta_env" : JSON.stringify(importMeta(name, key[1])));
 		last = imp.e + key[0].length;
 	}
 	return out + js.slice(last);
@@ -620,7 +630,6 @@ function importMeta(name: string, key: string): string {
 	return key === "filename" ? filename : filename.slice(0, filename.lastIndexOf("/"));
 }
 
-/** The names an import or re-export statement takes: `import a, { b, c as d } from`, `export { e } from`. */
 /** The local bindings an import statement declares: `a`, `* as b`, `{ c, d as e }`. */
 function localNames(statement: string): string[] {
 	const clause = /^import\s+(?:type\s+)?([\s\S]*?)\s+from\b/.exec(statement)?.[1] ?? "";
@@ -632,6 +641,7 @@ function localNames(statement: string): string[] {
 	return names;
 }
 
+/** The names an import or re-export statement takes: `import a, { b, c as d } from`, `export { e } from`. */
 function importedNames(statement: string): string[] {
 	const braces = /\{([^}]*)\}/.exec(statement);
 	if (!braces) return [];

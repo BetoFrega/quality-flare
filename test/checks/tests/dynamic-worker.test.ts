@@ -222,7 +222,7 @@ describe.skipIf(inWorkers)("tests in a Dynamic Worker", () => {
 		]);
 	}, 30_000);
 
-	it("imports modules that generate code or draw random values as they load", async () => {
+	it("imports modules that generate code or draw random values as they load, in vitest's environment", async () => {
 		const { default: runtimeSource } = await import("virtual:test-runtime");
 		const repo = {
 			// Like protobufjs, loaded by firebase-admin: compiles functions it calls only when encoding.
@@ -238,6 +238,9 @@ describe.skipIf(inWorkers)("tests in a Dynamic Worker", () => {
 					expect([id, bytes]).toEqual([expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4/), 4]);
 					expect(() => encode(1)).toThrow(EvalError);
 					expect(() => Function("return 1")).toThrow(EvalError);
+				});
+				it("sets the environment vitest sets", () => {
+					expect([process.env.NODE_ENV, process.env.VITEST, import.meta.env.MODE, import.meta.env.DEV, import.meta.env.VITEST]).toEqual(["test", "true", "test", true, "true"]);
 				});`,
 		};
 		const bundle = await buildModules(new Map(Object.entries(repo)), { runtimeSource, fetchPackage: () => Promise.reject(new Error("offline")) });

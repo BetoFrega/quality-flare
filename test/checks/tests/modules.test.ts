@@ -47,11 +47,11 @@ describe("buildModules", () => {
 		expect(modules["test/a.test.ts"].js).toBe(`import "node:http2"; import "node:v8"; import "node:fs/promises";`);
 	});
 
-	it("points import.meta.url and dirname under /bundle, leaving strings and comments alone", async () => {
+	it("points import.meta.url and dirname under /bundle and env at the runtime, leaving strings and comments alone", async () => {
 		const { modules } = await build({
-			"test/a.test.ts": `const u = import.meta.url; const d = import.meta .dirname; const s = "import.meta.url"; // import.meta.url`,
+			"test/a.test.ts": `const u = import.meta.url; const d = import.meta .dirname; const s = "import.meta.url"; // import.meta.url\nconst m = import.meta.env.MODE;`,
 		});
-		expect(modules["test/a.test.ts"].js).toBe(`const u = "file:///bundle/test/a.test.ts"; const d = "/bundle/test"; const s = "import.meta.url"; // import.meta.url`);
+		expect(modules["test/a.test.ts"].js).toBe(`const u = "file:///bundle/test/a.test.ts"; const d = "/bundle/test"; const s = "import.meta.url"; // import.meta.url\nconst m = globalThis.__qf_import_meta_env.MODE;`);
 	});
 
 	it("finds test files by convention and adds the runtime", async () => {
