@@ -59,6 +59,20 @@ export class GitHubClient {
 		);
 	}
 
+	/**
+	 * Turns on auto-merge for the PR (GraphQL `enablePullRequestAutoMerge`). Resolves to GitHub's
+	 * error messages, empty when it worked, since refusals such as "clean status" are expected outcomes.
+	 */
+	async enableAutoMerge(pullRequestNodeId: string, mergeMethod: MergeMethod): Promise<string[]> {
+		const data = await request<{ errors?: { message: string }[] }>(this.token, "POST", "/graphql", {
+			query: `mutation($id: ID!, $method: PullRequestMergeMethod!) {
+				enablePullRequestAutoMerge(input: { pullRequestId: $id, mergeMethod: $method }) { clientMutationId }
+			}`,
+			variables: { id: pullRequestNodeId, method: mergeMethod },
+		});
+		return data.errors?.map((e) => e.message) ?? [];
+	}
+
 	/** The repository's files at `ref`, as GitHub's gzipped tarball. */
 	async getTarball(repo: string, ref: string): Promise<ReadableStream<Uint8Array>> {
 		const res = await fetch(`${API}/repos/${repo}/tarball/${ref}`, { headers: headers(this.token) });
@@ -77,8 +91,12 @@ export class GitHubClient {
 	}
 }
 
+export type MergeMethod = "MERGE" | "SQUASH" | "REBASE";
+
 export interface PullRequest {
 	number: number;
+	node_id: string;
+	user: { login: string };
 	body: string | null;
 	head: { sha: string };
 	labels: { name: string }[];

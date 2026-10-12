@@ -10,6 +10,7 @@ Toda a infraestrutura é Cloudflare: um único Worker, um namespace KV com as co
 | --- | --- |
 | [Closes an issue](src/checks/closes-issue) | Exige que a PR feche uma issue |
 | [Tests](src/checks/tests) | Roda os testes do repositório num Dynamic Worker |
+| [Dependabot auto-merge](src/checks/dependabot-automerge) | Habilita auto-merge (squash) nas PRs do Dependabot |
 
 Para adicionar um check, implemente a interface `Check` de [`src/checks/types.ts`](src/checks/types.ts) e registre em [`src/checks/index.ts`](src/checks/index.ts).
 
@@ -33,6 +34,16 @@ A convenção, sem configuração por repositório:
 - Roda quando a PR é aberta, reaberta, recebe commits ou sai de draft (não em mudanças de label ou descrição), e no **Re-run**.
 
 Um teste que só funciona no Node pode se pular no Workers com `describe.skipIf(navigator.userAgent === "Cloudflare-Workers")`.
+
+### Dependabot auto-merge
+
+Faz o mesmo que o workflow `gh pr merge --auto --squash` para PRs do Dependabot, sem GitHub Actions.
+
+- ✅ Numa PR aberta por `dependabot[bot]`, habilita o auto-merge com squash (GraphQL `enablePullRequestAutoMerge`). A PR é mergeada quando os checks exigidos passarem.
+- ⚪ Neutro em PRs de outros autores, e numa PR do Dependabot que já pode ser mergeada: o GitHub só aceita auto-merge enquanto há checks exigidos pendentes. Quando a branch base muda, o Dependabot faz rebase e o check tenta de novo.
+- ❌ Falha se o GitHub recusar, com a mensagem e como corrigir (por exemplo, auto-merge desligado no repositório).
+- Roda quando a PR é aberta, reaberta, recebe commits ou sai de draft, e no **Re-run**.
+- Requisitos: **Allow auto-merge** ligado em Settings → General do repositório, e a App com Contents e Pull requests em **Read and write**. Para o auto-merge esperar algo, o repositório precisa exigir pelo menos um check na proteção de branch.
 
 ## Como funciona
 
@@ -83,8 +94,8 @@ Em **Settings → Developer settings → GitHub Apps → New GitHub App**:
 - **Webhook secret:** um valor aleatório; o mesmo vai em `GITHUB_WEBHOOK_SECRET`.
 - **Permissões do repositório:**
   - Checks: **Read and write**
-  - Contents: **Read-only** (o check Tests baixa o código da PR)
-  - Pull requests: **Read-only**
+  - Contents: **Read and write** (o check Tests baixa o código da PR; o Dependabot auto-merge precisa de escrita para mergear)
+  - Pull requests: **Read and write** (o Dependabot auto-merge habilita o auto-merge)
   - Issues: **Read-only**
   - Metadata: **Read-only**
 - **Eventos:** Pull request, Check run, Check suite.

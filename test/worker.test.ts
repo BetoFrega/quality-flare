@@ -78,6 +78,7 @@ describe("webhook handler", () => {
 		expect(checkRuns).toEqual([
 			expect.objectContaining({ name: "Closes an issue", head_sha: "abc123", status: "completed", conclusion: "failure" }),
 			expect.objectContaining({ name: "Tests", conclusion: "neutral", output: expect.objectContaining({ title: "Desativado" }) }),
+			expect.objectContaining({ name: "Dependabot auto-merge", conclusion: "neutral", output: expect.objectContaining({ title: "Desativado" }) }),
 		]);
 	});
 
