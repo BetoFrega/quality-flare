@@ -6,6 +6,7 @@ import { isLoadable, isTestFile } from "./convention.ts";
 import { d1JobStore, type JobStore, type ShardResult, type TestShard } from "./jobs.ts";
 import { readLockfile, type LockedPackage } from "./lockfile.ts";
 import { buildModules, bundleSize, MAIN_MODULE, type TestBundle } from "./modules.ts";
+import { type PackageFiles, readPackage } from "./packages.ts";
 import { mergeReports, toCheckResult, type ProgressEvent, type TestReport } from "./report.ts";
 import { readRun } from "./stream.ts";
 import { readTarball } from "./tarball.ts";
@@ -235,12 +236,14 @@ const NO_TESTS: CheckResult = {
 };
 
 /** Downloads a package from the npm registry. Tarballs never change, so Cloudflare's cache keeps them. */
-async function fetchPackage({ name, version }: LockedPackage): Promise<Map<string, string>> {
-	const res = await fetch(`https://registry.npmjs.org/${name}/-/${name.split("/").pop()}-${version}.tgz`, {
-		cf: { cacheEverything: true, cacheTtl: 7 * 24 * 3600 },
-	});
-	if (!res.ok || !res.body) throw new Error(`npm: ${name}@${version} → ${res.status}`);
-	return readTarball(res.body, (p) => PACKAGE_FILE.test(p));
+function fetchPackage({ name, version }: LockedPackage): Promise<PackageFiles> {
+	return readPackage(async () => {
+		const res = await fetch(`https://registry.npmjs.org/${name}/-/${name.split("/").pop()}-${version}.tgz`, {
+			cf: { cacheEverything: true, cacheTtl: 7 * 24 * 3600 },
+		});
+		if (!res.ok || !res.body) throw new Error(`npm: ${name}@${version} → ${res.status}`);
+		return res.body;
+	}, (p) => PACKAGE_FILE.test(p));
 }
 
 /** Loads the bundle as a fresh Dynamic Worker without network access and runs every test file. */
