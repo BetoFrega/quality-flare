@@ -1,4 +1,4 @@
-import { bindings, defineConfig } from "cf/config";
+import { bindings, defineConfig, exports } from "cf/config";
 import * as entrypoint from "./src/index.ts" with { type: "cf-worker" };
 
 export default defineConfig({
@@ -8,6 +8,10 @@ export default defineConfig({
 		entrypoint,
 		// Keep Workers Logs on; deploys from this config would otherwise turn them off.
 		observability: { enabled: true },
+		exports: {
+			// Relays live test progress to the admin over WebSockets.
+			RunsHub: exports.durableObject({ storage: "sqlite" }),
+		},
 		env: {
 			// GitHub App ID (or Client ID), used as the JWT issuer.
 			GITHUB_APP_ID: bindings.secret(),
@@ -21,6 +25,8 @@ export default defineConfig({
 			SETTINGS: bindings.kv({ id: "a5795e2f7f424adb8edb5576967d0087" }),
 			// History of Tests check runs, shown in the admin.
 			RUNS: bindings.d1({ id: "f30a90b8-1c92-44b0-9fe2-dcc87418b046" }),
+			// The RunsHub Durable Object (see exports).
+			LIVE: bindings.durableObject({ worker: "quality-flare", exportName: "RunsHub" }),
 			// Loads Dynamic Workers that run each repository's tests (the "Tests" check).
 			LOADER: bindings.workerLoader(),
 			// Audience tag of the Cloudflare Access application that protects /admin.

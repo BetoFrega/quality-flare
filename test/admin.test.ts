@@ -132,7 +132,7 @@ describe("admin", () => {
 		expect(page).not.toContain('http-equiv="refresh"');
 	});
 
-	it("refreshes the list while tests are running", async () => {
+	it("falls back to reloading without JavaScript while tests are running", async () => {
 		const { env } = setup();
 		const fresh = { ...history[1], startedAt: NOW - 10_000 };
 		const store = { ...runs, list: async () => [fresh] };
@@ -149,5 +149,24 @@ describe("admin", () => {
 		expect(page).toContain("a › &#60;subtracts&#62;");
 		expect(page).toContain("<pre>AssertionError: expected 1 to be 2</pre>");
 		expect((await call(new Request("https://worker.example/admin/runs/9"))).status).toBe(404);
+	});
+
+	it("serves the live script and only accepts same-origin WebSockets for live updates", async () => {
+		const { call } = setup();
+		const script = await call(new Request("https://worker.example/admin/live.js"));
+		expect(script.headers.get("Content-Type")).toContain("javascript");
+		expect(await script.text()).toContain("/admin/live?run=");
+		expect((await call(new Request("https://worker.example/admin/live"))).status).toBe(426);
+		const foreign = new Request("https://worker.example/admin/live?run=all", { headers: { Upgrade: "websocket", Origin: "https://evil.example" } });
+		expect((await call(foreign)).status).toBe(403);
+	});
+
+	it("loads the live script on run pages", async () => {
+		const { call } = setup();
+		const res = await call(new Request("https://worker.example/admin/runs"));
+		expect(res.headers.get("Content-Security-Policy")).toContain("script-src 'self'");
+		const page = await res.text();
+		expect(page).toContain('<main data-live="all">');
+		expect(page).toContain('<script src="/admin/live.js" defer></script>');
 	});
 });

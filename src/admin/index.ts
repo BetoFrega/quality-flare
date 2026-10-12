@@ -2,7 +2,9 @@ import { checks as allChecks } from "../checks/index.ts";
 import type { Check } from "../checks/types.ts";
 import { GitHubClient, type InstalledRepo } from "../github.ts";
 import { getRepoSettings, setChecksEnabled, setRepoEnabled } from "../settings.ts";
+import { hub } from "../live.ts";
 import { d1RunStore, type RunStore } from "../runs.ts";
+import { LIVE_SCRIPT } from "./live-script.ts";
 import { renderAdminPage, renderMessage } from "./page.ts";
 import { renderRunPage, renderRunsPage } from "./runs-page.ts";
 
@@ -41,6 +43,17 @@ export async function handleAdmin(
 		);
 		const identity = await access.getIdentity();
 		return html(renderAdminPage({ email: identity?.email, checks, rows, open: url.searchParams.get("open") }));
+	}
+
+	if (request.method === "GET" && path === `${ADMIN_PATH}/live.js`) {
+		return new Response(LIVE_SCRIPT, { headers: { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache" } });
+	}
+
+	if (request.method === "GET" && path === `${ADMIN_PATH}/live`) {
+		if (request.headers.get("Upgrade") !== "websocket") return html(renderMessage("Esperava um WebSocket", ""), 426);
+		// The browser sends Origin on WebSocket handshakes; refuse other sites.
+		if (request.headers.get("Origin") !== url.origin) return html(renderMessage("Origem inválida", ""), 403);
+		return hub(env.LIVE).fetch(request);
 	}
 
 	if (request.method === "GET" && path === `${ADMIN_PATH}/runs`) {
@@ -96,7 +109,8 @@ function html(body: string, status = 200): Response {
 		headers: {
 			"Content-Type": "text/html; charset=utf-8",
 			"Cache-Control": "no-store",
-			"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+			"Content-Security-Policy":
+				"default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
 		},
 	});
 }
