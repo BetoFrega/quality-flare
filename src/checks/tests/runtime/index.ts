@@ -17,7 +17,7 @@ import {
 	type ExpectStatic,
 	type MatcherState,
 } from "@vitest/expect";
-import { getCurrentTest, startTests, type File, type Task, type Test, type VitestRunner } from "@vitest/runner";
+import { getCurrentTest, startTests, type File, type Suite, type Task, type Test, type VitestRunner } from "@vitest/runner";
 import { clearAllMocks, fn, isMockFunction, resetAllMocks, restoreAllMocks, spyOn } from "@vitest/spy";
 import {
 	afterAll,
@@ -32,7 +32,9 @@ import {
 	test,
 } from "@vitest/runner";
 import type { ProgressEvent, RunRequest, TestReport, TestResult } from "../report.ts";
+import { activateMocks, mock, mockFacade, prepareMocks } from "./mocks.ts";
 
+export { mockFacade };
 export { afterAll, afterEach, beforeAll, beforeEach, describe, it, onTestFailed, onTestFinished, suite, test };
 
 chai.use(JestExtend);
@@ -89,6 +91,8 @@ export const expect = createExpect();
 (globalThis as Record<symbol, unknown>)[GLOBAL_EXPECT] = expect;
 
 const stubbedGlobals = new Map<PropertyKey, PropertyDescriptor | undefined>();
+const stubbedEnv = new Map<string, string | undefined>();
+const env = () => (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env ?? {};
 
 const unsupported = (name: string) => () => {
 	throw new Error(`vi.${name}() não é suportado ao rodar testes no quality-flare.`);
@@ -116,9 +120,49 @@ export const vi = {
 		stubbedGlobals.clear();
 		return vi;
 	},
-	mock: unsupported("mock"),
+	stubEnv(name: string, value: string | boolean | undefined) {
+		const vars = env();
+		if (!stubbedEnv.has(name)) stubbedEnv.set(name, vars[name]);
+		if (value === undefined) delete vars[name];
+		else vars[name] = typeof value === "boolean" ? (value ? "1" : "") : value;
+		return vi;
+	},
+	unstubAllEnvs() {
+		const vars = env();
+		for (const [name, original] of stubbedEnv) {
+			if (original === undefined) delete vars[name];
+			else vars[name] = original;
+		}
+		stubbedEnv.clear();
+		return vi;
+	},
+	async waitFor<T>(callback: () => T | Promise<T>, options: number | { timeout?: number; interval?: number } = {}) {
+		const { timeout = 1000, interval = 50 } = typeof options === "number" ? { timeout: options } : options;
+		const deadline = Date.now() + timeout;
+		for (;;) {
+			try {
+				return await callback();
+			} catch (error) {
+				if (Date.now() >= deadline) throw error;
+				await new Promise((resolve) => setTimeout(resolve, interval));
+			}
+		}
+	},
+	async waitUntil<T>(callback: () => T | Promise<T>, options: number | { timeout?: number; interval?: number } = {}) {
+		return vi.waitFor(async () => {
+			const value = await callback();
+			if (!value) throw new Error("vi.waitUntil: a condição não ficou verdadeira a tempo.");
+			return value;
+		}, options);
+	},
+	mock,
+	hoisted: <T>(factory: () => T): T => factory(),
+	importActual: unsupported("importActual com especificador que não é um texto literal"),
 	doMock: unsupported("doMock"),
+	unmock: unsupported("unmock"),
+	resetModules: unsupported("resetModules"),
 	useFakeTimers: unsupported("useFakeTimers"),
+	useRealTimers: () => vi,
 };
 
 class WorkerRunner implements VitestRunner {
@@ -149,8 +193,14 @@ class WorkerRunner implements VitestRunner {
 		strictTags: false,
 	};
 
-	importFile(filepath: string) {
+	async importFile(filepath: string) {
+		await prepareMocks(filepath);
 		return import(filepath);
+	}
+
+	onBeforeRunSuite(suite: Suite) {
+		// Every file is collected before any test runs: point the mocks back at this file's.
+		if ("filepath" in suite) activateMocks((suite as File).filepath);
 	}
 
 	onCollected(files: File[]) {
