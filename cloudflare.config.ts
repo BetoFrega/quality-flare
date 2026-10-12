@@ -6,6 +6,8 @@ export default defineConfig({
 		name: "quality-flare",
 		compatibilityDate: "2026-10-06",
 		entrypoint,
+		// Keep Workers Logs on; deploys from this config would otherwise turn them off.
+		observability: { enabled: true },
 		env: {
 			// GitHub App ID (or Client ID), used as the JWT issuer.
 			GITHUB_APP_ID: bindings.secret(),
