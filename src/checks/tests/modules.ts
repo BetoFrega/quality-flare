@@ -3,6 +3,7 @@ import { exports as packageExports, imports as packageImports } from "resolve.ex
 import { transform } from "sucrase";
 import { isLoadable, isPlaywrightSpec, isTestFile } from "./convention.ts";
 import type { LockedPackage, Lockfile } from "./lockfile.ts";
+import type { PackageFiles } from "./packages.ts";
 
 /** Module names reserved for the test runtime inside the Dynamic Worker. */
 export const RUNTIME_MODULE = "__qf/runtime.js";
@@ -41,7 +42,7 @@ export interface BuildOptions {
 	/** Exact versions for bare imports; without one, only relative imports and `vitest` resolve. */
 	lockfile?: Lockfile;
 	/** Downloads a package's files, keyed by their path inside the package. */
-	fetchPackage: (pkg: LockedPackage) => Promise<Map<string, string>>;
+	fetchPackage: (pkg: LockedPackage) => Promise<PackageFiles>;
 	/** Only these test files (repository paths), for one shard of a run; all of them when omitted. */
 	testFiles?: string[];
 }
@@ -49,7 +50,7 @@ export interface BuildOptions {
 interface Package {
 	locked: LockedPackage;
 	dir: string;
-	files: Map<string, string>;
+	files: PackageFiles;
 	json: PackageJson;
 }
 
@@ -98,6 +99,11 @@ export default { fetch: handleRequest };`,
 	const sourceOf = (name: string) => {
 		const pkg = packageOf(name);
 		return pkg ? pkg.files.get(name.slice(pkg.dir.length + 1)) : repoFiles.get(name);
+	};
+	/** Brings a package file into memory; a file that fails to download stays missing. */
+	const fetchSource = async (name: string) => {
+		const pkg = packageOf(name);
+		await pkg?.files.load?.([name.slice(pkg.dir.length + 1)]).catch(() => {});
 	};
 	const exists = (name: string) => {
 		const pkg = packageOf(name);
@@ -183,6 +189,7 @@ export default { fetch: handleRequest };`,
 			return `/${name}`;
 		}
 		enqueue(target);
+		await fetchSource(target);
 		if (importer === "cjs") (cjsEdges.get(from) ?? cjsEdges.set(from, new Map()).get(from)!).set(specifier, target);
 		if (importer === "esm" && kindOf(target) === "cjs") {
 			const facade = `__qf/cjs/${target}`;
@@ -202,9 +209,12 @@ export default { fetch: handleRequest };`,
 	};
 
 	const load = async (name: string) => {
-		const source = sourceOf(name)!;
+		await fetchSource(name);
+		const source = sourceOf(name);
 		const kind = kindOf(name);
-		if (kind === "json") {
+		if (source === undefined) {
+			modules[name] = { js: `throw new Error(${JSON.stringify(`Não foi possível baixar ${name}`)});` };
+		} else if (kind === "json") {
 			modules[name] = { json: JSON.parse(source) };
 		} else if (kind === "cjs") {
 			const requires = [...new Set([...source.matchAll(REQUIRE)].map((m) => m[2]))];
@@ -329,6 +339,28 @@ const RESERVED = new Set(
 	"default __esModule break case catch class const continue debugger delete do else enum export extends false finally for function if import in instanceof new null return super switch this throw true try typeof var void while with yield let static implements interface package private protected public await arguments eval".split(" "),
 );
 const isExportableName = (name: string) => /^[A-Za-z_$][\w$]*$/.test(name) && !RESERVED.has(name);
+
+/** The specifiers a module imports or requires with a string literal. */
+export function importSpecifiers(source: string): string[] {
+	const specifiers = new Set([...source.matchAll(REQUIRE)].map((m) => m[2]));
+	try {
+		for (const imp of importsOf(source)) specifiers.add(imp.n!);
+	} catch {
+		// Not parseable as ESM: its require() calls are all there is.
+	}
+	return [...specifiers];
+}
+
+/**
+ * The file an import loads when it stays inside the importer's package, as the bundle resolves
+ * it: a relative import, or one through the package's own name (`next/dist/x` from inside
+ * `next`) when the package has no `exports` map, passed as `self`.
+ */
+export function packageFileOf(from: string, specifier: string, exists: (path: string) => boolean, self?: string): string | undefined {
+	if (specifier.startsWith(".")) return probeFile(join(dirname(from), specifier), exists, false);
+	if (self && specifier.startsWith(`${self}/`)) return probeFile(specifier.slice(self.length + 1), exists, false);
+	return undefined;
+}
 
 /** Finds the file an import points at, trying the extensions Node and bundlers try. */
 function probeFile(
