@@ -130,7 +130,8 @@ describe("admin", () => {
 		expect(page).toContain("2.5 s");
 		expect(page).toContain('<a href="/admin/runs/1">! Interrompida</a>');
 		// No ever-growing duration for a run that died.
-		expect(page).not.toContain("45 min");
+		expect(page).not.toContain("45 min 0 s");
+		expect(page).toContain(`<td class="num">—</td>`);
 		expect(page).not.toContain('http-equiv="refresh"');
 	});
 
