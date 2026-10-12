@@ -42,11 +42,12 @@ describe.skipIf(inWorkers)("Tests check shards", () => {
 		const startCheckRun = vi.fn(async () => 55);
 		const github = { listFiles: async () => [...files, "src/a.ts", "README.md"], startCheckRun } as unknown as GitHubClient;
 		const sendBatch = vi.fn(async () => {});
-		const env = { RUNS, TESTS_QUEUE: { sendBatch } } as unknown as Env;
+		const env = { RUNS, TESTS_QUEUE: { sendBatch }, PUBLIC_URL: "https://qf.example" } as unknown as Env;
 
 		expect(await tests.run({ github, repo: "octo/app", pr, env, installationId: 9 })).toBeNull();
-		expect(startCheckRun).toHaveBeenCalledWith("octo/app", "abc", "Tests", "Rodando 25 arquivos de teste");
 		const bodies = (sendBatch.mock.calls[0] as unknown as [{ body: TestShard }[]])[0].map((m) => m.body);
+		// "View more details" on GitHub opens this run in the admin.
+		expect(startCheckRun).toHaveBeenCalledWith("octo/app", "abc", "Tests", "Rodando 25 arquivos de teste", `https://qf.example/admin/runs/${bodies[0].runId}`);
 		expect(bodies.map((b) => [b.shard, b.files.length])).toEqual([["0", SHARD_SIZE], ["1", 5]]);
 		expect(bodies[0]).toMatchObject({ repo: "octo/app", sha: "abc", installationId: 9 });
 		expect(await d1JobStore(RUNS).get(bodies[0].runId)).toEqual({ checkRunId: 55, installationId: 9 });

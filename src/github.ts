@@ -98,12 +98,16 @@ export class GitHubClient {
 		return tree.tree.filter((e) => e.type === "blob").map((e) => e.path);
 	}
 
-	/** Creates an in-progress check run, to be completed later with `completeCheckRun`. Resolves to its id. */
-	async startCheckRun(repo: string, headSha: string, name: string, title: string): Promise<number> {
+	/**
+	 * Creates an in-progress check run, to be completed later with `completeCheckRun`. Resolves to
+	 * its id. `detailsUrl` is where "View more details" leads; GitHub uses the App's homepage without it.
+	 */
+	async startCheckRun(repo: string, headSha: string, name: string, title: string, detailsUrl?: string): Promise<number> {
 		const run = await request<{ id: number }>(this.token, "POST", `/repos/${repo}/check-runs`, {
 			name,
 			head_sha: headSha,
 			status: "in_progress",
+			details_url: detailsUrl,
 			output: { title, summary: title },
 		});
 		return run.id;

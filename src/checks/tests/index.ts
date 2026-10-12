@@ -59,7 +59,8 @@ export const tests: Check = {
 			const shards = chunk(testFiles, SHARD_SIZE).map(
 				(files, i): TestShard => ({ runId, shard: String(i), repo, installationId, sha, files }),
 			);
-			checkRunId = await github.startCheckRun(repo, sha, NAME, `Rodando ${count(testFiles.length, "arquivo")} de teste`);
+			const title = `Rodando ${count(testFiles.length, "arquivo")} de teste`;
+			checkRunId = await github.startCheckRun(repo, sha, NAME, title, `${env.PUBLIC_URL}/admin/runs/${runId}`);
 			await d1JobStore(env.RUNS).create(runId, { shards: shards.length, checkRunId, installationId });
 			await enqueue(env.TESTS_QUEUE, shards);
 			live.send({ type: "status", runId, text: `${count(testFiles.length, "arquivo")} de teste na fila, em ${count(shards.length, "lote")}` });

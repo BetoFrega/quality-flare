@@ -10,12 +10,15 @@ export interface PackageFiles {
 	load?(paths: string[]): Promise<void>;
 }
 
+// Every package.json stays: a folder's "main" decides what importing the folder loads.
+const isPackageJson = (path: string) => path === "package.json" || path.endsWith("/package.json");
+
 /** Text kept per package before it switches to loading files on demand. */
 export const EAGER_PACKAGE_CHARS = 8 * 1024 * 1024;
 
 /**
  * Reads a package tarball. Small packages are kept whole. Past `budget` characters (`next`
- * unpacks to ~186 MB, beyond a Worker's 128 MB) only package.json, the file list and each
+ * unpacks to ~186 MB, beyond a Worker's 128 MB) only the package.json files, the file list and each
  * module's import specifiers stay; files are read from a fresh download of the tarball when
  * the bundle asks for them.
  */
@@ -37,13 +40,13 @@ export async function readPackage(
 		if (!isPackageFile(path)) return undefined;
 		paths.add(path);
 		return (text) => {
-			if (lazy && path !== "package.json") return index(path, text);
+			if (lazy && !isPackageJson(path)) return index(path, text);
 			files.set(path, text);
 			size += text.length;
 			if (lazy || size <= budget) return;
 			lazy = true;
 			for (const [kept, keptText] of files) {
-				if (kept === "package.json") continue;
+				if (isPackageJson(kept)) continue;
 				index(kept, keptText);
 				files.delete(kept);
 			}
@@ -96,7 +99,7 @@ function onDemand(
 			wait = pass!;
 			requested.set(path, wait);
 			for (const specifier of imports.get(path) ?? []) {
-				const file = packageFileOf(path, specifier, exists, self);
+				const file = packageFileOf(path, specifier, exists, (p) => files.get(p), self);
 				if (file && !files.has(file)) request(file, waits);
 			}
 		}
