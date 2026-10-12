@@ -19,9 +19,7 @@ import {
 } from "@vitest/expect";
 import { getCurrentTest, startTests, type File, type Task, type Test, type VitestRunner } from "@vitest/runner";
 import { clearAllMocks, fn, isMockFunction, resetAllMocks, restoreAllMocks, spyOn } from "@vitest/spy";
-import type { ProgressEvent, TestReport, TestResult } from "../report.ts";
-
-export {
+import {
 	afterAll,
 	afterEach,
 	beforeAll,
@@ -33,6 +31,9 @@ export {
 	suite,
 	test,
 } from "@vitest/runner";
+import type { ProgressEvent, RunRequest, TestReport, TestResult } from "../report.ts";
+
+export { afterAll, afterEach, beforeAll, beforeEach, describe, it, onTestFailed, onTestFinished, suite, test };
 
 chai.use(JestExtend);
 chai.use(JestChaiExpect);
@@ -121,7 +122,13 @@ export const vi = {
 };
 
 class WorkerRunner implements VitestRunner {
-	constructor(private readonly onProgress: (event: ProgressEvent) => void) {}
+	constructor(
+		private readonly onProgress: (event: ProgressEvent) => void,
+		options: Omit<RunRequest, "files" | "globals"> = {},
+	) {
+		this.config.setupFiles = options.setupFiles ?? [];
+		if (options.testTimeout) this.config.testTimeout = options.testTimeout;
+	}
 
 	config: VitestRunner["config"] = {
 		root: "/",
@@ -173,9 +180,14 @@ class WorkerRunner implements VitestRunner {
 	}
 }
 
+/** What vitest's `globals: true` exposes. */
+const GLOBALS = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFailed, onTestFinished, suite, test, vi };
+
 /** Runs the given test files (module paths, e.g. "/test/a.test.ts") and reports every test. */
-export async function runTests(paths: string[], onProgress: (event: ProgressEvent) => void = () => {}): Promise<TestReport> {
-	const files = await startTests(paths, new WorkerRunner(onProgress));
+export async function runTests(run: RunRequest | string[], onProgress: (event: ProgressEvent) => void = () => {}): Promise<TestReport> {
+	const { files: paths, globals, ...options } = Array.isArray(run) ? { files: run } : run;
+	if (globals) Object.assign(globalThis, GLOBALS);
+	const files = await startTests(paths, new WorkerRunner(onProgress, options));
 	return { files: files.map(reportFile) };
 }
 

@@ -40,7 +40,7 @@ describe.skipIf(inWorkers)("Tests check shards", () => {
 		const RUNS = await fakeD1();
 		const files = Array.from({ length: SHARD_SIZE + 5 }, (_, i) => `test/t${String(i).padStart(2, "0")}.test.ts`);
 		const startCheckRun = vi.fn(async () => 55);
-		const github = { listFiles: async () => [...files, "src/a.ts", "README.md"], startCheckRun } as unknown as GitHubClient;
+		const github = { listFiles: async () => [...files, "src/a.ts", "README.md"], getFileText: async () => undefined, startCheckRun } as unknown as GitHubClient;
 		const sendBatch = vi.fn(async () => {});
 		const env = { RUNS, TESTS_QUEUE: { sendBatch }, PUBLIC_URL: "https://qf.example" } as unknown as Env;
 
@@ -53,9 +53,25 @@ describe.skipIf(inWorkers)("Tests check shards", () => {
 		expect(await d1JobStore(RUNS).get(bodies[0].runId)).toEqual({ checkRunId: 55, installationId: 9 });
 	});
 
+	it("runs the files quality-flare.json includes, and hands its config to every shard", async () => {
+		const RUNS = await fakeD1();
+		const config = { include: ["src/**/*.test.{ts,tsx}"], exclude: ["**/*.integration.test.ts"], setupFiles: ["setup.ts"], globals: true };
+		const github = {
+			listFiles: async () => ["src/a.test.ts", "src/b.test.tsx", "src/c.integration.test.ts", "test/d.test.ts"],
+			getFileText: async (_repo: string, _ref: string, path: string) => (path === "quality-flare.json" ? JSON.stringify({ tests: config }) : undefined),
+			startCheckRun: async () => 55,
+		} as unknown as GitHubClient;
+		const sendBatch = vi.fn(async () => {});
+		const env = { RUNS, TESTS_QUEUE: { sendBatch }, PUBLIC_URL: "https://qf.example" } as unknown as Env;
+
+		await tests.run({ github, repo: "octo/app", pr, env, installationId: 9 });
+		const [body] = (sendBatch.mock.calls[0] as unknown as [{ body: TestShard }[]])[0].map((m) => m.body);
+		expect(body).toMatchObject({ files: ["src/a.test.ts", "src/b.test.tsx"], config });
+	});
+
 	it("reports no tests right away", async () => {
 		const RUNS = await fakeD1();
-		const github = { listFiles: async () => ["src/a.ts"] } as unknown as GitHubClient;
+		const github = { listFiles: async () => ["src/a.ts"], getFileText: async () => undefined } as unknown as GitHubClient;
 		const result = await tests.run({ github, repo: "octo/app", pr, env: { RUNS } as Env, installationId: 9 });
 		expect(result).toMatchObject({ conclusion: "neutral", title: "Nenhum teste encontrado" });
 		expect((await d1RunStore(RUNS).list())[0]).toMatchObject({ status: "completed", conclusion: "neutral" });

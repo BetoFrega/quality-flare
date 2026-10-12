@@ -27,6 +27,26 @@ O check roda quando a PR é aberta, reaberta, recebe commits ou sai de draft, e 
 - **Pacotes do npm:** vêm do lockfile na raiz do repositório, `pnpm-lock.yaml` (v9) ou `package-lock.json` (v2/v3), na versão exata, baixados de `registry.npmjs.org`. Pacotes com mais de 8 MB de código (como o `next`) não ficam inteiros na memória: só os arquivos que os testes alcançam são lidos, numa nova leitura do tarball. Em monorepo pnpm, cada pasta de `importers` usa as próprias dependências. Pacotes do próprio workspace (npm/pnpm workspaces, `link:`) são carregados direto do repositório, pelo `exports`/`main` do `package.json` deles, e podem apontar para `.ts`. Entre as condições de `exports`, `workerd`/`worker`/`import`/`node` têm preferência sobre `require`. Imports nomeados de pacotes CommonJS funcionam quando os nomes aparecem de forma estática (`exports.x =`, `module.exports = { x }`, saída do esbuild/tsc).
 - **Node:** `node:crypto`, `node:buffer`, `node:events` etc. (e também sem o prefixo `node:`) funcionam com o que o `nodejs_compat` do Workers oferece.
 
+## Configuração
+
+Sem configuração, vale a convenção acima. Um `quality-flare.json` na raiz do repositório espelha o config do Vitest que a suíte usa:
+
+```json
+{
+  "tests": {
+    "include": ["src/**/*.test.{ts,tsx}", "bin/**/*.test.ts"],
+    "exclude": ["**/*.integration.test.{ts,tsx}", "**/*.runtime.test.ts"],
+    "setupFiles": ["vitest.setup.ts"],
+    "globals": true,
+    "testTimeout": 20000
+  }
+}
+```
+
+- **`include`/`exclude`:** globs como os do Vitest (`**`, `*`, `?`, `{a,b}`), relativos à raiz. Com `include`, a convenção `*.test.*` deixa de valer. `node_modules` sempre fica de fora.
+- **`setupFiles`:** rodam antes dos arquivos de teste, uma vez por Dynamic Worker (não uma vez por arquivo, como no Vitest com isolamento).
+- **`globals`:** `describe`, `it`, `test`, `expect`, `vi`, `beforeEach` e os demais hooks ficam globais.
+
 ## Limitações
 
 - **Sem rede:** o Dynamic Worker roda com `globalOutbound: null`. Qualquer `fetch` real falha; faça stub com `vi.stubGlobal("fetch", vi.fn(...))`.
@@ -34,7 +54,7 @@ O check roda quando a PR é aberta, reaberta, recebe commits ou sai de draft, e 
 - **Sem snapshots** (`toMatchSnapshot`, `toMatchInlineSnapshot`) e sem `expect.poll`.
 - **Playwright fica de fora:** `*.spec.ts` que importa `@playwright/test` não é rodado. Specs que só importam fixtures locais do Playwright ainda são pegos; mova-os para uma pasta ignorada ou renomeie.
 - **Lotes:** os arquivos de teste rodam em lotes de 20, cada lote num Dynamic Worker próprio, só com o código que aqueles arquivos importam. Os lotes passam por uma Cloudflare Queue (`quality-flare-tests`) e rodam em paralelo. Um lote que passa de 48 MB de código, ou cujo Worker cai, se divide ao meio até caber ou até isolar o arquivo culpado. Um arquivo sozinho com mais de 64 MB de imports (Next.js inteiro, por exemplo) aparece como falha com o tamanho.
-- **Sem arquivo de config do Vitest:** `vitest.config.*`, `setupFiles`, `globals: true`, aliases do Vite e `environment` (jsdom/happy-dom) são ignorados. Cada teste importa o que usa de `"vitest"`.
+- **Sem arquivo de config do Vitest:** `vitest.config.*` não é lido; aliases do Vite e `environment` (jsdom/happy-dom) são ignorados. `include`, `exclude`, `setupFiles`, `globals` e `testTimeout` vêm do `quality-flare.json` (veja Configuração).
 - **Runtime do Workers, não o Node:** não há sistema de arquivos real, nem `child_process`, nem processos; `Date.now()` só avança em I/O. APIs do Node que o `nodejs_compat` não implementa falham.
 - **Pacotes:** só os que estão no lockfile e no registry público do npm. Sem lockfile, ou com yarn/bun, só imports relativos e `vitest` funcionam. Registries privados e dependências git não são resolvidos. Pacotes que precisam de binário nativo ou de WebAssembly compilado em runtime não funcionam.
 - **Limites:** 30 s de CPU por lote no Dynamic Worker e 128 MB de memória no Worker que monta o lote. Um lote que derruba o Worker três vezes é reportado como falha.
