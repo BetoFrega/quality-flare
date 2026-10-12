@@ -1,4 +1,5 @@
 import type { CheckResult } from "../types.ts";
+import type { Unresolved } from "./modules.ts";
 
 /** What the Dynamic Worker sends back after running the tests. */
 export interface TestReport {
@@ -28,9 +29,9 @@ export type ProgressEvent =
 	| { type: "status"; text: string };
 
 /** Joins the reports of a run's shards, files in path order, and their unresolved imports. */
-export function mergeReports(parts: { report: TestReport; unresolved: { specifier: string; from: string }[] }[]): {
+export function mergeReports(parts: { report: TestReport; unresolved: Unresolved[] }[]): {
 	report: TestReport;
-	unresolved: { specifier: string; from: string }[];
+	unresolved: Unresolved[];
 } {
 	const files = parts.flatMap((p) => p.report.files).sort((a, b) => a.path.localeCompare(b.path));
 	const seen = new Set<string>();
@@ -46,7 +47,7 @@ export function mergeReports(parts: { report: TestReport; unresolved: { specifie
 /** GitHub caps a check run summary at 65535 characters. */
 const MAX_SUMMARY = 60_000;
 
-export function toCheckResult(report: TestReport, unresolved: { specifier: string; from: string }[] = []): CheckResult {
+export function toCheckResult(report: TestReport, unresolved: Unresolved[] = []): CheckResult {
 	const tests = report.files.flatMap((f) => f.tests);
 	const passed = tests.filter((t) => t.state === "pass").length;
 	const skipped = tests.filter((t) => t.state === "skip" || t.state === "todo").length;
@@ -64,7 +65,7 @@ export function toCheckResult(report: TestReport, unresolved: { specifier: strin
 
 	const sections = [
 		...(unresolved.length
-			? [`### Imports não resolvidos\n\n${unresolved.map((u) => `- \`${u.specifier}\` em \`${u.from}\``).join("\n")}`]
+			? [`### Imports não resolvidos\n\n${unresolved.map((u) => `- \`${u.specifier}\` em \`${u.from}\`${u.reason ? `: ${u.reason}` : ""}`).join("\n")}`]
 			: []),
 		...brokenFiles.map((f) => `### \`${f.path}\`\n\n${f.errors!.map(codeBlock).join("\n")}`),
 		...failedTests.map((t) => `### ${t.name}\n\`${t.file}\`\n\n${(t.errors ?? []).map(codeBlock).join("\n")}`),

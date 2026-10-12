@@ -1,3 +1,4 @@
+import type { Unresolved } from "./modules.ts";
 import type { TestReport } from "./report.ts";
 
 /**
@@ -21,7 +22,7 @@ export interface TestShard {
 
 export interface ShardResult {
 	report: TestReport;
-	unresolved: { specifier: string; from: string }[];
+	unresolved: Unresolved[];
 }
 
 export interface RunJob {

@@ -28,6 +28,8 @@ export default defineConfig({
 			GITHUB_PRIVATE_KEY: bindings.secret(),
 			// The webhook secret configured on the GitHub App.
 			GITHUB_WEBHOOK_SECRET: bindings.secret(),
+			// Where people open the admin; check runs link to their run there.
+			PUBLIC_URL: bindings.text("https://quality-flare.frega.dev"),
 			// Label that exempts a PR from the "Closes an issue" check.
 			NO_ISSUE_LABEL: bindings.text("no-issue"),
 			// Per-repository check settings, edited in the admin UI.
