@@ -109,4 +109,45 @@ describe("buildModules", () => {
 		]);
 		expect(modules["__qf/missing/left-pad.js"].js).toContain("lockfile");
 	});
+
+	it("follows tsconfig paths and workspace packages", async () => {
+		const files = {
+			"package-lock.json": JSON.stringify({
+				packages: { "node_modules/@app/shared": { resolved: "packages/shared", link: true } },
+			}),
+			"tsconfig.json": `{
+				// comments and trailing commas, as tsc allows
+				"compilerOptions": { "paths": { "@/*": ["./src/*"], "~config": ["./config/index.ts"], }, },
+			}`,
+			"packages/shared/package.json": JSON.stringify({ exports: { ".": "./index.ts", "./util": "./util.ts" } }),
+			"packages/shared/index.ts": "export const shared = 1;",
+			"packages/shared/util.ts": `import { a } from "@/a"; export const util = a;`,
+			"packages/shared/tsconfig.json": JSON.stringify({ compilerOptions: { paths: { "@/*": ["./*"] } } }),
+			"packages/shared/a.ts": "export const a = 'shared';",
+			"src/a.ts": "export const a = 'root';",
+			"config/index.ts": "export default {};",
+			"test/a.test.ts": `import { a } from "@/a"; import config from "~config"; import { shared } from "@app/shared"; import { util } from "@app/shared/util"; console.log(a, config, shared, util);`,
+		};
+		const { modules, unresolved } = await buildModules(new Map(Object.entries(files)), {
+			runtimeSource: "",
+			lockfile: readLockfile(new Map(Object.entries(files))),
+			fetchPackage,
+		});
+		expect(unresolved).toEqual([]);
+		const test = modules["test/a.test.ts"].js!;
+		expect(test).toContain('from "/src/a.ts"');
+		expect(test).toContain('from "/config/index.ts"');
+		expect(test).toContain('from "/packages/shared/index.ts"');
+		expect(test).toContain('from "/packages/shared/util.ts"');
+		// Inside the workspace package, its own tsconfig wins.
+		expect(modules["packages/shared/util.ts"].js).toContain('from "/packages/shared/a.ts"');
+	});
+
+	it("leaves Playwright specs out", async () => {
+		const { testFiles } = await build({
+			"e2e/home.spec.ts": `import { test } from "@playwright/test";`,
+			"test/a.test.ts": "",
+		});
+		expect(testFiles).toEqual(["/test/a.test.ts"]);
+	});
 });

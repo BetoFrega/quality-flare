@@ -15,3 +15,6 @@ const SKIPPED_DIR = /(^|\/)(node_modules|dist|build|coverage|\.[^/]+)\//;
 export const isTestFile = (path: string) => TEST_FILE.test(path) && !SKIPPED_DIR.test(path);
 
 export const isLoadable = (path: string) => MODULE_FILE.test(path) && !SKIPPED_DIR.test(path) && !path.endsWith(".d.ts");
+
+/** Playwright end-to-end specs: they also use `*.spec.ts`, but drive a browser. */
+export const isPlaywrightSpec = (source: string) => /(?:from\s*|require\(\s*)["']@playwright\/test["']/.test(source);

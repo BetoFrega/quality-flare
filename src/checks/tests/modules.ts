@@ -1,7 +1,7 @@
 import { parse } from "es-module-lexer/js";
 import { exports as packageExports, imports as packageImports } from "resolve.exports";
 import { transform } from "sucrase";
-import { isLoadable, isTestFile } from "./convention.ts";
+import { isLoadable, isPlaywrightSpec, isTestFile } from "./convention.ts";
 import type { LockedPackage, Lockfile } from "./lockfile.ts";
 
 /** Module names reserved for the test runtime inside the Dynamic Worker. */
@@ -67,7 +67,9 @@ type Kind = "esm" | "cjs" | "json";
  * from the registry at the versions in the lockfile.
  */
 export async function buildModules(repoFiles: Map<string, string>, options: BuildOptions): Promise<TestBundle> {
-	const testFiles = [...repoFiles.keys()].filter(isTestFile).sort();
+	// Playwright specs share the *.spec.ts name but need a browser; they are not ours to run.
+	const testFiles = [...repoFiles.keys()].filter((p) => isTestFile(p) && !isPlaywrightSpec(repoFiles.get(p)!)).sort();
+	const aliases = tsconfigPaths(repoFiles);
 	const modules: Modules = {
 		[RUNTIME_MODULE]: { js: options.runtimeSource },
 		[VITEST_MODULE]: { js: `export * from "/${RUNTIME_MODULE}";` },
@@ -103,7 +105,7 @@ export default { fetch: handleRequest };`,
 		if (name.endsWith(".json")) kind = "json";
 		else if (/\.(m?ts|mjs)$/.test(name)) kind = "esm";
 		else if (name.endsWith(".cjs")) kind = "cjs";
-		else if ((packageOf(name)?.json ?? rootJson(repoFiles)).type === "module") kind = "esm";
+		else if ((packageOf(name)?.json ?? nearestPackageJson(repoFiles, name)).type === "module") kind = "esm";
 		else kind = hasModuleSyntax(sourceOf(name)!) ? "esm" : "cjs";
 		kinds.set(name, kind);
 		return kind;
@@ -138,16 +140,26 @@ export default { fetch: handleRequest };`,
 			if (!target || !target.startsWith("./")) return target ? resolve(target, from) : undefined;
 			return probe(join(pkg ? `${pkg.dir}/` : "", target));
 		}
+		if (!pkg) {
+			// tsconfig "paths" come first, as in TypeScript and bundlers.
+			for (const path of aliases(specifier, from)) {
+				const target = probe(path);
+				if (target) return target;
+			}
+		}
 		const [, name, subpath] = /^((?:@[^/]+\/)?[^/]+)(\/.*)?$/.exec(specifier) ?? [];
 		if (!name || !options.lockfile) return undefined;
+		const workspace = pkg ? undefined : options.lockfile.workspace(from, name);
+		if (workspace !== undefined) {
+			// A package of this repository (npm/pnpm workspaces): its files are loaded like the repo's own.
+			const json = readJson(repoFiles.get(`${workspace}/package.json`));
+			const entry = entryOf(json, subpath);
+			return entry ? probe(join(`${workspace}/`, entry)) : undefined;
+		}
 		const locked = pkg ? options.lockfile.fromPackage(pkg.locked, name) : options.lockfile.fromRepo(from, name);
 		const target = locked && (await loadPackage(locked));
 		if (!target) return undefined;
-		const entry = target.json.exports
-			? resolveConditions((conditions) => packageExports(target.json, `.${subpath ?? ""}`, { conditions, unsafe: true }))
-			: subpath
-				? `.${subpath}`
-				: (target.json.module ?? target.json.main ?? "./index.js");
+		const entry = entryOf(target.json, subpath);
 		return entry ? probeFile(join(`${target.dir}/`, entry), exists, false) : undefined;
 	};
 
@@ -300,6 +312,76 @@ function probeFile(path: string, exists: (name: string) => boolean, typescript: 
 		`${path}/index.js`, `${path}/index.mjs`, `${path}/index.cjs`, `${path}/index.json`,
 	];
 	return candidates.find(exists);
+}
+
+/** The file a package import points at, relative to the package: `exports`, else `module`/`main`. */
+function entryOf(json: PackageJson, subpath: string | undefined): string | undefined {
+	if (json.exports) {
+		return resolveConditions((conditions) => packageExports(json, `.${subpath ?? ""}`, { conditions, unsafe: true }));
+	}
+	return subpath ? `.${subpath}` : (json.module ?? json.main ?? "./index.js");
+}
+
+interface TsConfig {
+	compilerOptions?: { baseUrl?: string; paths?: Record<string, string[]> };
+}
+
+/**
+ * The repository's tsconfig `paths` aliases, such as `"@/*": ["./src/*"]`: for an import, the
+ * candidate files, from the nearest tsconfig.json above the importer that declares `paths`.
+ * `extends` is not followed.
+ */
+function tsconfigPaths(files: Map<string, string>): (specifier: string, from: string) => string[] {
+	const byDir = new Map<string, { base: string; paths: [string, string[]][] } | null>();
+	const configFor = (dir: string): { base: string; paths: [string, string[]][] } | null => {
+		let config = byDir.get(dir);
+		if (config !== undefined) return config;
+		const options = (readJson(files.get(`${dir}tsconfig.json`)) as TsConfig).compilerOptions;
+		if (options?.paths) {
+			config = { base: join(dir, options.baseUrl ?? "."), paths: Object.entries(options.paths) };
+		} else {
+			config = dir ? configFor(dir.slice(0, dir.lastIndexOf("/", dir.length - 2) + 1)) : null;
+		}
+		byDir.set(dir, config);
+		return config;
+	};
+	return (specifier, from) => {
+		const config = configFor(dirname(from));
+		if (!config) return [];
+		for (const [pattern, targets] of config.paths) {
+			const star = pattern.indexOf("*");
+			const [prefix, suffix] = star === -1 ? [pattern, ""] : [pattern.slice(0, star), pattern.slice(star + 1)];
+			const matches = star === -1 ? specifier === pattern : specifier.startsWith(prefix) && specifier.endsWith(suffix) && specifier.length >= prefix.length + suffix.length;
+			if (!matches) continue;
+			const wildcard = star === -1 ? "" : specifier.slice(prefix.length, specifier.length - suffix.length);
+			return targets.map((target) => join(config.base ? `${config.base}/` : "", target.replace("*", wildcard)));
+		}
+		return [];
+	};
+}
+
+/** Parses package.json or tsconfig.json, which may have comments and trailing commas. */
+function readJson(source: string | undefined): PackageJson & TsConfig {
+	if (!source) return {};
+	try {
+		return JSON.parse(source);
+	} catch {
+		try {
+			const stripped = source.replace(/("(?:[^"\\]|\\.)*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (m, string) => string ?? "");
+			return JSON.parse(stripped.replace(/,(\s*[}\]])/g, "$1"));
+		} catch {
+			return {};
+		}
+	}
+}
+
+/** The package.json that governs a repository file: the closest one above it. */
+function nearestPackageJson(files: Map<string, string>, path: string): PackageJson {
+	for (let i = path.lastIndexOf("/"); i > 0; i = path.lastIndexOf("/", i - 1)) {
+		const json = files.get(`${path.slice(0, i)}/package.json`);
+		if (json) return readJson(json);
+	}
+	return rootJson(files);
 }
 
 function resolveConditions(fn: (conditions: string[]) => string[] | void): string | undefined {
