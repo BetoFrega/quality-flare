@@ -39,6 +39,10 @@ Vincular uma issue pela barra lateral não gera webhook. Depois de vincular, cli
 
 ### 1. Publicar o Worker
 
+O deploy é automático: o Worker está conectado a este repositório pelo [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/), e cada push na `main` roda `pnpm typecheck && pnpm test` e depois `pnpm exec cf deploy`. Pushes em outras branches não publicam.
+
+Para publicar manualmente:
+
 ```sh
 pnpm add --global cf
 pnpm install
@@ -47,7 +51,7 @@ export CLOUDFLARE_API_TOKEN=...  # token com permissão "Workers Scripts: Edit"
 cf deploy --secrets-file .dev.vars
 ```
 
-A URL publicada (`https://quality-flare.<subdomínio>.workers.dev`) é a URL do webhook.
+A URL publicada (`https://quality-flare.<subdomínio>.workers.dev`) é a URL do webhook. Os secrets (`GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`) ficam no Worker e são mantidos entre deploys.
 
 ### 2. Criar a GitHub App
 
