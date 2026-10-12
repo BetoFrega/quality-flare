@@ -59,6 +59,13 @@ export class GitHubClient {
 		);
 	}
 
+	/** The repository's files at `ref`, as GitHub's gzipped tarball. */
+	async getTarball(repo: string, ref: string): Promise<ReadableStream<Uint8Array>> {
+		const res = await fetch(`${API}/repos/${repo}/tarball/${ref}`, { headers: headers(this.token) });
+		if (!res.ok || !res.body) throw new Error(`GitHub GET tarball of ${repo}@${ref} failed: ${res.status}`);
+		return res.body;
+	}
+
 	createCheckRun(repo: string, headSha: string, name: string, result: CheckResult): Promise<unknown> {
 		return request(this.token, "POST", `/repos/${repo}/check-runs`, {
 			name,
@@ -113,15 +120,18 @@ async function paginate<T>(token: string, path: string, items: (page: unknown) =
 async function request<T>(token: string, method: string, path: string, body?: unknown): Promise<T> {
 	const res = await fetch(`${API}${path}`, {
 		method,
-		headers: {
-			Accept: "application/vnd.github+json",
-			Authorization: `Bearer ${token}`,
-			"User-Agent": "quality-flare",
-			"X-GitHub-Api-Version": "2022-11-28",
-			...(body ? { "Content-Type": "application/json" } : {}),
-		},
+		headers: { ...headers(token), ...(body ? { "Content-Type": "application/json" } : {}) },
 		body: body ? JSON.stringify(body) : undefined,
 	});
 	if (!res.ok) throw new Error(`GitHub ${method} ${path} failed: ${res.status} ${await res.text()}`);
 	return res.json() as Promise<T>;
+}
+
+function headers(token: string): Record<string, string> {
+	return {
+		Accept: "application/vnd.github+json",
+		Authorization: `Bearer ${token}`,
+		"User-Agent": "quality-flare",
+		"X-GitHub-Api-Version": "2022-11-28",
+	};
 }

@@ -2,13 +2,17 @@ import { checks as allChecks } from "../checks/index.ts";
 import type { Check } from "../checks/types.ts";
 import { GitHubClient, type InstalledRepo } from "../github.ts";
 import { getRepoSettings, setChecksEnabled, setRepoEnabled } from "../settings.ts";
+import { d1RunStore, type RunStore } from "../runs.ts";
 import { renderAdminPage, renderMessage } from "./page.ts";
+import { renderRunPage, renderRunsPage } from "./runs-page.ts";
 
 export const ADMIN_PATH = "/admin";
 
 export interface AdminDeps {
 	checks?: Check[];
 	listRepos?: (env: Env) => Promise<InstalledRepo[]>;
+	runs?: (env: Env) => RunStore;
+	now?: () => number;
 }
 
 const listInstalledRepos = (env: Env) =>
@@ -22,7 +26,7 @@ export async function handleAdmin(
 	request: Request,
 	env: Env,
 	access: CloudflareAccessContext | undefined,
-	{ checks = allChecks, listRepos = listInstalledRepos }: AdminDeps = {},
+	{ checks = allChecks, listRepos = listInstalledRepos, runs = (e) => d1RunStore(e.RUNS), now = Date.now }: AdminDeps = {},
 ): Promise<Response> {
 	if (!access || access.aud !== env.ACCESS_AUD) {
 		return html(renderMessage("Acesso negado", "Entre pelo Cloudflare Access para usar o admin."), 403);
@@ -37,6 +41,19 @@ export async function handleAdmin(
 		);
 		const identity = await access.getIdentity();
 		return html(renderAdminPage({ email: identity?.email, checks, rows, open: url.searchParams.get("open") }));
+	}
+
+	if (request.method === "GET" && path === `${ADMIN_PATH}/runs`) {
+		const identity = await access.getIdentity();
+		return html(renderRunsPage(await runs(env).list(), identity?.email, now()));
+	}
+
+	const runMatch = request.method === "GET" ? new RegExp(`^${ADMIN_PATH}/runs/(\\d+)$`).exec(path) : null;
+	if (runMatch) {
+		const run = await runs(env).get(Number(runMatch[1]));
+		if (!run) return html(renderMessage("Execução não encontrada", ""), 404);
+		const identity = await access.getIdentity();
+		return html(renderRunPage(run, identity?.email, now()));
 	}
 
 	if (request.method === "POST" && path.startsWith(`${ADMIN_PATH}/`)) {

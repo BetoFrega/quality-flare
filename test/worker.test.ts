@@ -47,8 +47,14 @@ function mockGitHub({ linked = [] as { number: number; repository: { nameWithOwn
 	return { checkRuns, fetchMock };
 }
 
-const ctx = {} as ExecutionContext;
-const run = (req: Request) => worker.fetch(req as Parameters<typeof worker.fetch>[0], env, ctx);
+/** Runs a request and waits for the work it left in ctx.waitUntil. */
+async function run(req: Request) {
+	const pending: Promise<unknown>[] = [];
+	const ctx = { waitUntil: (p: Promise<unknown>) => pending.push(p) } as unknown as ExecutionContext;
+	const res = await worker.fetch(req as Parameters<typeof worker.fetch>[0], env, ctx);
+	await Promise.all(pending);
+	return res;
+}
 
 beforeEach(async () => {
 	env.SETTINGS = fakeKv();
@@ -71,6 +77,7 @@ describe("webhook handler", () => {
 		expect(res.status).toBe(200);
 		expect(checkRuns).toEqual([
 			expect.objectContaining({ name: "Closes an issue", head_sha: "abc123", status: "completed", conclusion: "failure" }),
+			expect.objectContaining({ name: "Tests", conclusion: "neutral", output: expect.objectContaining({ title: "Desativado" }) }),
 		]);
 	});
 
