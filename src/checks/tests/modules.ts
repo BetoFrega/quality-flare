@@ -136,7 +136,7 @@ export default { fetch: handleRequest };`,
 	/** Resolves an import to a module name, or undefined if it can't be found. */
 	const resolve = async (specifier: string, from: string): Promise<string | undefined> => {
 		const pkg = packageOf(from);
-		const probe = (path: string) => probeFile(path, exists, !pkg);
+		const probe = (path: string) => probeFile(path, exists, !pkg, sourceOf);
 		if (specifier.startsWith(".")) return probe(join(dirname(from), specifier));
 		if (specifier.startsWith("/")) return probe(pkg ? `${pkg.dir}${specifier}` : specifier.slice(1));
 		if (specifier.startsWith("#")) {
@@ -165,7 +165,7 @@ export default { fetch: handleRequest };`,
 		const target = locked && (await loadPackage(locked));
 		if (!target) return undefined;
 		const entry = entryOf(target.json, subpath);
-		return entry ? probeFile(join(`${target.dir}/`, entry), exists, false) : undefined;
+		return entry ? probeFile(join(`${target.dir}/`, entry), exists, false, sourceOf) : undefined;
 	};
 
 	/** The replacement for one import, enqueuing the module it points at. */
@@ -331,15 +331,24 @@ const RESERVED = new Set(
 const isExportableName = (name: string) => /^[A-Za-z_$][\w$]*$/.test(name) && !RESERVED.has(name);
 
 /** Finds the file an import points at, trying the extensions Node and bundlers try. */
-function probeFile(path: string, exists: (name: string) => boolean, typescript: boolean): string | undefined {
+function probeFile(
+	path: string,
+	exists: (name: string) => boolean,
+	typescript: boolean,
+	source: (name: string) => string | undefined,
+): string | undefined {
 	const stem = path.replace(/\.(m?js)$/, "");
 	const candidates = [
 		path,
 		...(typescript ? [`${stem}.ts`, `${stem}.mts`, `${path}.ts`, `${path}/index.ts`] : []),
 		`${path}.js`, `${path}.mjs`, `${path}.cjs`, `${path}.json`,
-		`${path}/index.js`, `${path}/index.mjs`, `${path}/index.cjs`, `${path}/index.json`,
 	];
-	return candidates.find(exists);
+	const file = candidates.find(exists);
+	if (file) return file;
+	// A folder: its package.json "main" (e.g. next/dist/compiled/*), then its index file, as Node does.
+	const main = exists(`${path}/package.json`) ? readJson(source(`${path}/package.json`)).main : undefined;
+	const entry = main && probeFile(join(`${path}/`, main), exists, typescript, source);
+	return entry || [`${path}/index.js`, `${path}/index.mjs`, `${path}/index.cjs`, `${path}/index.json`].find(exists);
 }
 
 /** The file a package import points at, relative to the package: `exports`, else `module`/`main`. */

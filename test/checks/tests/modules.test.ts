@@ -24,6 +24,8 @@ const PACKAGES: Record<string, Record<string, string>> = {
 		"package.json": JSON.stringify({ main: "lib/index.js" }),
 		"lib/index.js": `const util = require("./util"); exports.helper = () => util.name; Object.defineProperty(exports, "version", { value: 2 }); module.exports.__esModule = true;`,
 		"lib/util.js": "module.exports = { name: 'cjs', other: 1 };",
+		"compiled/parser/package.json": JSON.stringify({ main: "parser.js" }),
+		"compiled/parser/parser.js": "module.exports = { parse: () => 'parsed' };",
 	},
 };
 
@@ -99,6 +101,12 @@ describe("buildModules", () => {
 		const facade = modules["__qf/cjs/node_modules/.qf/node_modules_cjs-pkg/lib/index.js"].js!;
 		expect(facade).toContain("export const { helper, version } = __qf_cjs ?? {};");
 		expect(fetchPackage).toHaveBeenCalledTimes(2);
+	});
+
+	it("loads a folder through its package.json main, as Node does", async () => {
+		const { modules, unresolved } = await build({ "test/a.test.ts": `import { parse } from "cjs-pkg/compiled/parser"; console.log(parse);` });
+		expect(unresolved).toEqual([]);
+		expect(modules["test/a.test.ts"].js).toContain("node_modules_cjs-pkg/compiled/parser/parser.js");
 	});
 
 	it("turns unresolvable imports into modules that explain what is missing", async () => {
