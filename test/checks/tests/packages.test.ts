@@ -7,11 +7,13 @@ import { tarball } from "./tar.ts";
 
 const NEXT = {
 	"package.json": JSON.stringify({ name: "next", main: "./index.js" }),
-	"dist/a.js": `exports.a = require("./b").b + require("next/dist/c").c;`,
+	"dist/a.js": `exports.a = require("./b").b + require("next/dist/c").c + require("next/dist/compiled/ua").ua;`,
 	"index.js": `module.exports = require("./dist/a");`,
 	"dist/b.js": "exports.b = 'b';",
 	"dist/c.js": "exports.c = 'c';",
 	"dist/unused.js": "exports.unused = true;",
+	"dist/compiled/ua/package.json": JSON.stringify({ name: "ua", main: "ua.js" }),
+	"dist/compiled/ua/ua.js": "exports.ua = 'ua';",
 	"README.md": "# next",
 };
 
@@ -67,10 +69,12 @@ describe("readPackage", () => {
 
 		await files.load!(["index.js"]);
 		expect(files.get("index.js")).toBe(NEXT["index.js"]);
-		// "./dist/a" from index.js, then "./b" and "next/dist/c" from dist/a.js, though dist/a.js comes first.
+		// "./dist/a" from index.js, then "./b", "next/dist/c" and "next/dist/compiled/ua" from dist/a.js, though dist/a.js comes first.
 		expect(files.get("dist/a.js")).toBe(NEXT["dist/a.js"]);
 		expect(files.get("dist/b.js")).toBe(NEXT["dist/b.js"]);
 		expect(files.get("dist/c.js")).toBe(NEXT["dist/c.js"]);
+		// A folder import, through the folder's own package.json "main".
+		expect(files.get("dist/compiled/ua/ua.js")).toBe(NEXT["dist/compiled/ua/ua.js"]);
 		expect(files.get("dist/unused.js")).toBeUndefined();
 		expect(download).toHaveBeenCalledTimes(2);
 

@@ -356,9 +356,15 @@ export function importSpecifiers(source: string): string[] {
  * it: a relative import, or one through the package's own name (`next/dist/x` from inside
  * `next`) when the package has no `exports` map, passed as `self`.
  */
-export function packageFileOf(from: string, specifier: string, exists: (path: string) => boolean, self?: string): string | undefined {
-	if (specifier.startsWith(".")) return probeFile(join(dirname(from), specifier), exists, false);
-	if (self && specifier.startsWith(`${self}/`)) return probeFile(specifier.slice(self.length + 1), exists, false);
+export function packageFileOf(
+	from: string,
+	specifier: string,
+	exists: (path: string) => boolean,
+	source: (path: string) => string | undefined,
+	self?: string,
+): string | undefined {
+	if (specifier.startsWith(".")) return probeFile(join(dirname(from), specifier), exists, false, source);
+	if (self && specifier.startsWith(`${self}/`)) return probeFile(specifier.slice(self.length + 1), exists, false, source);
 	return undefined;
 }
 
