@@ -79,11 +79,14 @@ Em cada repositório: **Settings → Rules** (ou Branch protection) → exigir o
 
 ## Admin
 
-Em [`/admin`](https://quality-flare.frega.workers.dev/admin) dá para ativar e desativar cada check por repositório. A lista vem das instalações da App, e todo check começa ativo.
+Em [`/admin`](https://quality-flare.frega.workers.dev/admin) ficam os repositórios onde a App está instalada. Tudo começa desativado:
+
+- O interruptor **Ativar checks** de cada repositório liga o quality-flare nele. Enquanto estiver desligado, o Worker ignora os webhooks desse repositório e não cria check runs.
+- Clicar no repositório abre a lista dos checks, cada um com seu interruptor, e os botões **Ativar todos** e **Desativar todos**.
+- Num repositório ativo, um check desativado não roda e é publicado com conclusão `neutral` ("Desativado"), para que um check exigido pela proteção de branch não trave o merge.
 
 - **Login:** uma aplicação self-hosted do Cloudflare Access cobre `quality-flare.frega.workers.dev/admin` e `/admin/*`. O Worker ainda confere `ctx.access` e exige que o `aud` seja o dessa aplicação (`ACCESS_AUD`), então o admin recusa qualquer pedido que não passou pelo Access.
-- **Armazenamento:** KV `quality-flare-settings` (binding `SETTINGS`), chave `repo:<owner/repo>` com `{ "disabledChecks": ["closes-issue"] }`.
-- **Check desativado:** o Worker não roda o check e publica o check run com conclusão `neutral` ("Desativado"), para que um check exigido pela proteção de branch não trave o merge.
+- **Armazenamento:** KV `quality-flare-settings` (binding `SETTINGS`), chave `repo:<owner/repo>` com `{ "enabled": true, "enabledChecks": ["closes-issue"] }`.
 
 Cada check tem um `id` estável (por exemplo `closes-issue`) que é o que fica salvo; não mude o `id` de um check já publicado.
 
