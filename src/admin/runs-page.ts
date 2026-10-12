@@ -64,7 +64,7 @@ export function renderRunPage(run: TestRunDetail, email: string | undefined, now
 		s === "running"
 			? `<p data-progress="${run.id}">Preparando os testes…</p><ul class="tests" data-tests="${run.id}"></ul>`
 			: s === "stale"
-				? "<p>A execução foi interrompida antes de terminar (o Worker passou do tempo). Rode de novo com <strong>Re-run</strong> na PR.</p>"
+				? "<p>A execução foi interrompida antes de terminar: o Worker parou (limite de memória ou de tempo) sem registrar o resultado. Nada continua rodando. Rode de novo com <strong>Re-run</strong> na PR.</p>"
 				: files.length
 					? `<table><thead><tr><th></th><th>Arquivo</th><th class="num">Passaram</th></tr></thead><tbody>${fileRows}</tbody></table>${details}`
 					: `<pre>${esc(run.summary ?? "")}</pre>`;
@@ -105,6 +105,8 @@ const testIcon = (s: string) => (s === "pass" ? ICON.success : s === "fail" ? IC
 const testClass = (s: string) => (s === "pass" ? "success" : s === "fail" ? "failure" : "skip");
 
 function duration(run: TestRun, now: number): string {
+	// An interrupted run never ended; the time since it started is not how long anything ran.
+	if (state(run, now) === "stale") return "—";
 	const ms = (run.finishedAt ?? now) - run.startedAt;
 	return ms < 1000 ? `${ms} ms` : ms < 60_000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.floor(ms / 60_000)} min ${Math.round((ms % 60_000) / 1000)} s`;
 }
