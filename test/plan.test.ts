@@ -35,6 +35,24 @@ describe("planDelivery", () => {
 		expect(plan).toEqual({ pullRequests: [7], checks });
 	});
 
+	it("runs checks that listed a review event on the PR it carries", () => {
+		const reviews = { ...fake("R"), events: new Set(["pull_request_review_thread", "issue_comment"]) };
+		expect(planDelivery("pull_request_review_thread", { action: "resolved", pull_request: pr }, [...checks, reviews])).toEqual({
+			pullRequests: [pr],
+			checks: [reviews],
+		});
+		expect(planDelivery("pull_request_review", { action: "submitted", pull_request: pr }, [...checks, reviews])).toBeNull();
+	});
+
+	it("runs issue_comment checks only on PR comments, fetching the PR", () => {
+		const reviews = { ...fake("R"), events: new Set(["issue_comment"]) };
+		expect(planDelivery("issue_comment", { action: "edited", issue: { number: 7, pull_request: {} } }, [...checks, reviews])).toEqual({
+			pullRequests: [7],
+			checks: [reviews],
+		});
+		expect(planDelivery("issue_comment", { action: "created", issue: { number: 8 } }, [reviews])).toBeNull();
+	});
+
 	it("ignores check runs that belong to someone else", () => {
 		expect(
 			planDelivery("check_run", { action: "rerequested", check_run: { name: "C", pull_requests: [] } }, checks),
