@@ -61,6 +61,7 @@ export const tests: Check = {
 			checkRunId = await github.startCheckRun(repo, sha, NAME, `Rodando ${count(testFiles.length, "arquivo")} de teste`);
 			await d1JobStore(env.RUNS).create(runId, { shards: shards.length, checkRunId, installationId });
 			await enqueue(env.TESTS_QUEUE, shards);
+			live.send({ type: "status", runId, text: `${count(testFiles.length, "arquivo")} de teste na fila, em ${count(shards.length, "lote")}` });
 			await live.flush();
 			return null;
 		} catch (error) {
@@ -162,7 +163,10 @@ async function runShard(
 	shard: TestShard,
 	onProgress: (event: ProgressEvent) => void,
 ): Promise<ShardResult> {
+	const label = `Lote ${shard.shard}`;
+	onProgress({ type: "status", text: `${label}: baixando o código` });
 	const files = await readTarball(await github.getTarball(shard.repo, shard.sha), (p) => isLoadable(p) || LOCKFILES.has(p));
+	onProgress({ type: "status", text: `${label}: montando ${count(shard.files.length, "arquivo")} de teste e as dependências` });
 	// Imported lazily: the bundled runtime is only needed when tests actually run.
 	const { default: runtimeSource } = await import("virtual:test-runtime");
 	const bundle = await buildModules(files, { runtimeSource, lockfile: readLockfile(files), fetchPackage, testFiles: shard.files });
@@ -172,6 +176,7 @@ async function runShard(
 	if (!bundle.testFiles.length) return { report: { files: [] }, unresolved };
 	const size = bundleSize(bundle);
 	if (size > MAX_CODE_BYTES) throw new TooLarge(size);
+	onProgress({ type: "status", text: `${label}: rodando` });
 	try {
 		return { report: await runInDynamicWorker(loader, bundle, onProgress), unresolved };
 	} catch (error) {

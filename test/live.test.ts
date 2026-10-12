@@ -42,16 +42,17 @@ export default { fetch(request, env) {
 			const other = await watch(server.url, "2");
 			await publish([
 				{ type: "started", runId: 1, repo: "octo/app", pr: 4, sha: "abc" },
+				{ type: "status", runId: 1, text: "Lote 0: rodando" },
 				{ type: "collected", runId: 1, total: 2 },
 				{ type: "test", runId: 1, file: "test/a.test.ts", name: "adds", state: "pass" },
 			]);
-			await until(() => list.messages.length === 3);
-			expect(list.messages.map((m) => m.type)).toEqual(["started", "collected", "test"]);
+			await until(() => list.messages.length === 4);
+			expect(list.messages.map((m) => m.type)).toEqual(["started", "status", "collected", "test"]);
 
 			// A page opened mid-run starts from the progress so far.
 			const late = await watch(server.url, "1");
 			await until(() => late.messages.length === 1);
-			expect(late.messages[0]).toMatchObject({ type: "snapshot", runId: 1, total: 2, tests: [{ name: "adds", state: "pass" }] });
+			expect(late.messages[0]).toMatchObject({ type: "snapshot", runId: 1, total: 2, status: "Lote 0: rodando", tests: [{ name: "adds", state: "pass" }] });
 
 			await publish([{ type: "finished", runId: 1, conclusion: "success", title: "2 testes passaram" }]);
 			await until(() => late.messages.length === 2);

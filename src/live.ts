@@ -12,6 +12,8 @@ interface RunProgress {
 	runId: number;
 	startedAt: number;
 	total?: number;
+	/** Latest status line, shown until tests start reporting. */
+	status?: string;
 	tests: Extract<LiveEvent, { type: "test" }>[];
 }
 
@@ -60,6 +62,7 @@ export class RunsHub {
 				// Each shard of a run reports its own count.
 				if (progress && event.type === "collected") progress.total = (progress.total ?? 0) + event.total;
 				if (progress && event.type === "test") progress.tests.push(event);
+				if (progress && event.type === "status") progress.status = event.text;
 			}
 			const message = JSON.stringify(event);
 			for (const tag of ["all", String(event.runId)]) {
@@ -93,7 +96,8 @@ export class RunsHub {
 	webSocketMessage() {}
 
 	webSocketClose(ws: WebSocket, code: number) {
-		ws.close(code === 1005 ? 1000 : code, "closing");
+		// 1005 and 1006 report how the page went away; they can't be sent back.
+		ws.close(code === 1005 || code === 1006 ? 1000 : code, "closing");
 	}
 }
 
