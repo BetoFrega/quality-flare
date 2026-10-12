@@ -1,7 +1,9 @@
 /**
- * vitest's `jsdom` environment, per test file: a fresh JSDOM whose window's DOM globals are
- * installed on globalThis while the file is collected and while its tests run, and removed for
- * files in the `node` environment. Mirrors vitest's populateGlobal (bindFunctions on).
+ * vitest's `jsdom` environment: a JSDOM whose window's DOM globals are installed on globalThis
+ * while a file is collected and while its tests run, and removed for files in the `node`
+ * environment. Mirrors vitest's populateGlobal (bindFunctions on). Packages are evaluated once per
+ * batch and keep the document they first saw (`screen` of @testing-library/dom binds
+ * `document.body`), so files of one environment share a window, emptied before each file's tests.
  */
 
 // vitest's KEYS (LIVING_KEYS + OTHER_KEYS): the window members that replace globals of the same name.
@@ -16,7 +18,9 @@ const SELF_KEYS = ["window", "self", "top", "parent"];
 const environmentModule = (name: string): string => `/__qf/env/${name}.js`;
 
 type Window = Record<string, unknown> & { close?(): void };
+/** Environment name → its window; test file → its environment name. */
 const windows = new Map<string, Window>();
+const environments = new Map<string, string>();
 let installed: { keys: string[]; originals: Map<string, PropertyDescriptor> } | undefined;
 const scope = globalThis as unknown as Record<string, unknown>;
 
@@ -24,16 +28,33 @@ const scope = globalThis as unknown as Record<string, unknown>;
 export async function setUpEnvironment(file: string, environment: string | undefined): Promise<void> {
 	uninstall();
 	if (!environment || environment === "node") return;
-	const window = await createWindow(environment);
-	windows.set(file, window);
+	environments.set(file, environment);
+	let window = windows.get(environment);
+	if (!window) {
+		window = await createWindow(environment);
+		windows.set(environment, window);
+	}
 	install(window);
 }
 
 /** Installs the environment `file` was collected in, before its tests run. */
 export function activateEnvironment(file: string): void {
 	uninstall();
-	const window = windows.get(file);
-	if (window) install(window);
+	const window = windows.get(environments.get(file)!);
+	if (!window) return;
+	reset(window);
+	install(window);
+}
+
+/** Empties the document and storage the previous file left, keeping the same body element. */
+function reset(window: Window) {
+	const document = window.document as Record<string, any> | undefined;
+	for (const element of [document?.head, document?.body, document?.documentElement]) {
+		for (const attribute of [...(element?.attributes ?? [])]) element.removeAttribute(attribute.name);
+	}
+	document?.head?.replaceChildren();
+	document?.body?.replaceChildren();
+	for (const key of ["localStorage", "sessionStorage"]) (window[key] as { clear?(): void } | undefined)?.clear?.();
 }
 
 async function createWindow(environment: string): Promise<Window> {

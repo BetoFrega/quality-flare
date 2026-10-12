@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readLockfile } from "../../../src/checks/tests/lockfile.ts";
 import { buildModules, MAIN_MODULE, type TestBundle } from "../../../src/checks/tests/modules.ts";
 import type { ProgressEvent, RunRequest, TestReport } from "../../../src/checks/tests/report.ts";
 import { readRun } from "../../../src/checks/tests/stream.ts";
@@ -170,6 +171,54 @@ describe.skipIf(inWorkers)("tests in a Dynamic Worker", () => {
 			["test/c.test.ts", "pass", undefined, [["never loads the mocked module", "pass", undefined]]],
 			["test/d.test.ts", "pass", undefined, [["stubs env and waits", "pass", undefined], ["reads repository files from the working directory", "pass", undefined], ["fakes timers and the clock", "pass", undefined]]],
 			["test/e.test.ts", "pass", undefined, [["evaluates modules again after vi.resetModules", "pass", undefined]]],
+		]);
+	}, 30_000);
+
+	it("shares packages between files as vitest would load them per file", async () => {
+		const { default: runtimeSource } = await import("virtual:test-runtime");
+		const lockfile = readLockfile(
+			new Map([["package-lock.json", JSON.stringify({ packages: { "node_modules/cleanup": { version: "1.0.0" }, "node_modules/styles": { version: "1.0.0" } } })]]),
+		);
+		const packages: Record<string, Record<string, string>> = {
+			// Like @testing-library/react: registers a hook as it is imported.
+			cleanup: {
+				"package.json": JSON.stringify({ main: "index.js" }),
+				"index.js": "const mounted = []; afterEach(() => { mounted.length = 0; }); exports.mount = (x) => { mounted.push(x); return mounted.length; };",
+			},
+			// Like ansi-styles: module.exports through a getter.
+			styles: { "package.json": JSON.stringify({ main: "index.js" }), "index.js": "Object.defineProperty(module, 'exports', { get: () => ({ gray: 'g' }) });" },
+		};
+		const mountTwice = (name: string) => `
+				import { expect, it } from "vitest";
+				import { mount } from "cleanup";
+				import styles from "styles";
+				it("${name} mounts", () => expect(mount(1)).toBe(1));
+				it("${name} is cleaned up", () => expect([mount(2), styles.gray]).toEqual([1, "g"]));`;
+		const repo = {
+			"src/broken.ts": "throw new Error('cannot load here'); export const value = 1;",
+			"test/a.test.ts": mountTwice("a"),
+			"test/b.test.ts": mountTwice("b"),
+			"test/c.test.ts": `
+				import { expect, it } from "vitest";
+				import { value } from "../src/broken";
+				it("fails only where the module is used", () => expect(() => value + 1).toThrow("cannot load here"));`,
+			"test/d.test.ts": `
+				import { expect, it, vi } from "vitest";
+				import { value } from "../src/broken";
+				vi.mock("../src/broken", () => ({ value: 2 }));
+				it("mocks it", () => expect(value).toBe(2));`,
+		};
+		const bundle = await buildModules(new Map(Object.entries(repo)), {
+			runtimeSource,
+			lockfile,
+			fetchPackage: async ({ name }) => new Map(Object.entries(packages[name])),
+		});
+		const report = await runInWorkerd(bundle, () => {}, { globals: true });
+		expect(report.files.map((f) => [f.path, f.state, f.errors ?? f.tests.flatMap((t) => t.errors ?? [])])).toEqual([
+			["test/a.test.ts", "pass", []],
+			["test/b.test.ts", "pass", []],
+			["test/c.test.ts", "pass", []],
+			["test/d.test.ts", "pass", []],
 		]);
 	}, 30_000);
 });

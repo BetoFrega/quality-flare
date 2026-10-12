@@ -189,4 +189,17 @@ describe("buildModules", () => {
 		);
 		expect(modules["test/a.test.js"]).toEqual({ cjs: `__filename = "/bundle/test/a.test.js"; __dirname = "/bundle/test";require("/__qf/process.js"); require("/__qf/process.js");` });
 	});
+
+	it("gives a vi.mock factory with JSX the JSX runtime import", async () => {
+		const { modules } = await build({ "test/a.test.tsx": `import { vi } from "vitest";\nvi.mock("../src/Box", () => ({ Box: () => <i /> }));` });
+		expect(modules["test/__qf_mocks__a.test.tsx.js"].js).toMatch(/^import \{ vi \} from "[^"]+";import \{jsx as _jsx\} from "[^"]+";\n/);
+	});
+
+	it("assigns a getter defined on module.exports, which workerd ignores", async () => {
+		const { modules } = await buildModules(
+			new Map([["test/a.test.js", `Object.defineProperty(module, 'exports', { get: f });`]]),
+			{ runtimeSource: "", fetchPackage },
+		);
+		expect(modules["test/a.test.js"].cjs).toContain(`((m, d) => { m.exports = d.get ? d.get() : d.value; })(module, { get: f });`);
+	});
 });

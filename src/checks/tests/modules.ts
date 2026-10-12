@@ -338,7 +338,9 @@ export default { fetch: handleRequest };`,
 				.replace(REQUIRE_RESOLVE, (call, quote, s: string) => {
 					const target = resolved.get(s);
 					return target ? JSON.stringify(`${BUNDLE_ROOT}/${target}`) : `(() => { throw new Error(${JSON.stringify(`Cannot find module '${s}'`)}); })()`;
-				});
+				})
+				// workerd ignores a getter defined on module.exports (ansi-styles does it): assign its value.
+				.replace(DEFINE_EXPORTS, "((m, d) => { m.exports = d.get ? d.get() : d.value; })(module, ");
 			// After a "use strict" directive, which must stay first; on its line, so line numbers hold.
 			const directive = /^\s*(['"])use strict\1;?/.exec(cjs)?.[0] ?? "";
 			const filename = `${BUNDLE_ROOT}/${name}`;
@@ -365,7 +367,9 @@ export default { fetch: handleRequest };`,
 				const keys = await Promise.all(split.specs.map((s) => link(s, name, "esm")));
 				const hoisted = rewriteImportActual(split.hoisted).replace(/__QF_MOCK_(\d+)__/g, (_, i: string) => JSON.stringify(keys[Number(i)]));
 				const exported = split.names.length ? `export { ${split.names.join(", ")} };` : "";
-				repoFiles.set(path, `import { vi } from "vitest";\n${hoisted}\n${exported}\n`);
+				// JSX in a mock factory needs the runtime import sucrase added to the test file.
+				const jsxImports = js.match(JSX_RUNTIME_IMPORT)?.join("") ?? "";
+				repoFiles.set(path, `import { vi } from "vitest";${jsxImports}\n${hoisted}\n${exported}\n`);
 				realOnly.add(path);
 				enqueue(path);
 				for (const key of keys) mockKeys.add(key);
@@ -538,6 +542,8 @@ export function bundleSize(bundle: TestBundle): number {
 }
 
 const REQUIRE = /\brequire\s*\(\s*(['"])([^'"\n]+)\1\s*\)/g;
+const JSX_RUNTIME_IMPORT = /\bimport\s*\{[^}]*\}\s*from\s*["']react\/jsx-runtime["'];?/g;
+const DEFINE_EXPORTS = /\bObject\.defineProperty\s*\(\s*module\s*,\s*(['"])exports\1\s*,\s*/g;
 const REQUIRE_RESOLVE = /\brequire\.resolve\s*\(\s*(['"])([^'"\n]+)\1\s*\)/g;
 
 function importsOf(source: string) {

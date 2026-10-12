@@ -20,10 +20,10 @@ import {
 import { getCurrentTest, startTests, type File, type Suite, type Task, type Test, type VitestRunner } from "@vitest/runner";
 import { clearAllMocks, fn, isMockFunction, resetAllMocks, restoreAllMocks, spyOn } from "@vitest/spy";
 import {
-	afterAll,
-	afterEach,
-	beforeAll,
-	beforeEach,
+	afterAll as runnerAfterAll,
+	afterEach as runnerAfterEach,
+	beforeAll as runnerBeforeAll,
+	beforeEach as runnerBeforeEach,
 	describe,
 	it,
 	onTestFailed,
@@ -37,7 +37,36 @@ import { activateMocks, fileEntry, mock, mockFacade, prepareMocks } from "./mock
 import { loadTimers, timers } from "./timers.ts";
 
 export { mockFacade };
-export { afterAll, afterEach, beforeAll, beforeEach, describe, it, onTestFailed, onTestFinished, suite, test };
+export { describe, it, onTestFailed, onTestFinished, suite, test };
+
+/**
+ * A package evaluates once per batch, not once per file as in vitest, so hooks it registers on
+ * import (@testing-library/react's `afterEach(cleanup)`) are given again to each file collected
+ * after it.
+ */
+const packageHooks: (() => void)[] = [];
+
+function fromPackages<Hook extends (...args: any[]) => void>(hook: Hook): Hook {
+	return ((...args: unknown[]) => {
+		if (calledByPackage()) packageHooks.push(() => hook(...args));
+		return hook(...args);
+	}) as Hook;
+}
+
+/** Whether the code calling the runtime is in a module under node_modules/, from the stack. */
+function calledByPackage(): boolean {
+	for (const frame of (new Error().stack ?? "").split("\n").slice(1)) {
+		const at = /\(?([^\s()]+):\d+:\d+\)?$/.exec(frame.trim())?.[1];
+		if (!at || at.startsWith("__qf/") || at.startsWith("/__qf/")) continue;
+		return /(^|\/)node_modules\//.test(at);
+	}
+	return false;
+}
+
+export const afterAll = fromPackages(runnerAfterAll);
+export const afterEach = fromPackages(runnerAfterEach);
+export const beforeAll = fromPackages(runnerBeforeAll);
+export const beforeEach = fromPackages(runnerBeforeEach);
 
 chai.use(JestExtend);
 chai.use(JestChaiExpect);
@@ -210,9 +239,12 @@ class WorkerRunner implements VitestRunner {
 	/** The test file being collected: setup files run in its environment, with its mocks. */
 	private collecting = "";
 	private readonly ready = new Set<string>();
+	/** How many package hooks were registered before the file being collected started. */
+	private inherited = 0;
 
 	onCollectStart(file: File) {
 		this.collecting = file.filepath;
+		this.inherited = packageHooks.length;
 		timers.useRealTimers();
 		resets = 0;
 	}
@@ -224,6 +256,7 @@ class WorkerRunner implements VitestRunner {
 			this.ready.add(file);
 			await setUpEnvironment(file, entry?.environment);
 			if (entry) await prepareMocks(file, entry);
+			for (const register of packageHooks.slice(0, this.inherited)) register();
 		}
 		return import(source === "setup" ? (entry?.setup?.[filepath] ?? filepath) : filepath);
 	}

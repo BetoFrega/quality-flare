@@ -40,8 +40,7 @@ let registering: Map<string, Factory> | undefined;
 export function mockFacade(key: string, apply: (ns: Namespace) => void): void {
 	facades.set(key, apply);
 	const value = current.get(key);
-	if (value instanceof Error) throw value;
-	if (value) apply(value);
+	if (value) apply(value instanceof Error ? failing(value) : value);
 }
 
 /** `vi.mock(key, factory)` as the bundle rewrote it: `key` is the mocked module's name in the bundle. */
@@ -70,8 +69,17 @@ export async function prepareMocks(file: string, entry: FileEntry): Promise<void
 			value = error instanceof Error ? error : new Error(String(error));
 		}
 		values.set(key, value);
-		if (!(value instanceof Error)) facades.get(key)?.(value);
+		facades.get(key)?.(value instanceof Error ? failing(value) : value);
 	}
+}
+
+/** A namespace whose every export throws `error` when used, so a file that uses it sees why. */
+function failing(error: Error): Namespace {
+	const fail = () => {
+		throw error;
+	};
+	const value = new Proxy(function () {}, { get: fail, apply: fail, construct: fail });
+	return new Proxy({}, { get: () => value });
 }
 
 /** Points every facade at what `file` sees, before its tests run. */
@@ -84,7 +92,7 @@ function activate(values: Map<string, Namespace | Error>) {
 	current = values;
 	for (const [key, apply] of facades) {
 		const value = values.get(key);
-		if (value && !(value instanceof Error)) apply(value);
+		if (value) apply(value instanceof Error ? failing(value) : value);
 	}
 }
 
