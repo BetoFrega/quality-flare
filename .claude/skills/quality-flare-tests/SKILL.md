@@ -57,6 +57,8 @@ Use import dinâmico dentro do teste para módulos que não existem no Workers o
 
 ## Ler uma falha
 
+Cada execução fica registrada em **Execuções de testes** no admin (`/admin/runs`): enquanto roda, depois com o resultado, cada arquivo, cada teste e a mensagem de cada falha. Uma execução que fica "rodando" por mais de 2 minutos aparece como interrompida (o Worker passou do tempo); use **Re-run** na PR.
+
 O check run mostra uma tabela por arquivo e uma seção por falha:
 
 - **Teste que falhou:** nome completo (`suite › teste`), arquivo e a mensagem do `expect`, com diff.

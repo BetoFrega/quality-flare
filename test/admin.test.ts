@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { handleAdmin } from "../src/admin/index.ts";
 import type { Check } from "../src/checks/types.ts";
+import type { RunStore, TestRunDetail } from "../src/runs.ts";
 import { getRepoSettings, setChecksEnabled, setRepoEnabled } from "../src/settings.ts";
 import { fakeKv } from "./fake-kv.ts";
 
@@ -12,10 +13,31 @@ const repos = [
 ];
 const access = { aud: "aud", getIdentity: async () => ({ email: "me@example.com" }) } as unknown as CloudflareAccessContext;
 
+const NOW = 10 * 60_000;
+const history: TestRunDetail[] = [
+	{
+		id: 2, repo: "octo/app", pr: 4, sha: "bbbbbbbbbb", status: "completed", conclusion: "failure", title: "1 falha em 2 testes",
+		startedAt: NOW - 90_000, finishedAt: NOW - 87_500, summary: "",
+		report: {
+			files: [{
+				path: "test/a.test.ts", state: "fail",
+				tests: [{ name: "a › adds", state: "pass" }, { name: "a › <subtracts>", state: "fail", errors: ["AssertionError: expected 1 to be 2"] }],
+			}],
+		},
+	},
+	{ id: 1, repo: "octo/app", pr: 3, sha: "aaaaaaaaaa", status: "running", conclusion: null, title: null, startedAt: NOW - 5 * 60_000, finishedAt: null, summary: null, report: null },
+];
+const runs: RunStore = {
+	start: async () => 0,
+	finish: async () => {},
+	list: async () => history,
+	get: async (id) => history.find((r) => r.id === id) ?? null,
+};
+
 function setup() {
 	const env = { ACCESS_AUD: "aud", SETTINGS: fakeKv() } as Env;
 	const callAs = (ctxAccess: CloudflareAccessContext | undefined, req: Request) =>
-		handleAdmin(req, env, ctxAccess, { checks, listRepos: async () => repos });
+		handleAdmin(req, env, ctxAccess, { checks, listRepos: async () => repos, runs: () => runs, now: () => NOW });
 	return { env, callAs, call: (req: Request) => callAs(access, req) };
 }
 
@@ -98,5 +120,34 @@ describe("admin", () => {
 	])("rejects unknown repositories and checks: %s", async (path, fields) => {
 		const { call } = setup();
 		expect((await call(post(path, fields))).status).toBe(400);
+	});
+
+	it("lists test runs, flagging runs that never finished", async () => {
+		const { call } = setup();
+		const page = await (await call(new Request("https://worker.example/admin/runs"))).text();
+		expect(page).toContain('<a href="/admin/runs/2">✗ Falhou</a>');
+		expect(page).toContain("1 falha em 2 testes");
+		expect(page).toContain("2.5 s");
+		expect(page).toContain('<a href="/admin/runs/1">! Interrompida</a>');
+		expect(page).not.toContain('http-equiv="refresh"');
+	});
+
+	it("refreshes the list while tests are running", async () => {
+		const { env } = setup();
+		const fresh = { ...history[1], startedAt: NOW - 10_000 };
+		const store = { ...runs, list: async () => [fresh] };
+		const res = await handleAdmin(new Request("https://worker.example/admin/runs"), env, access, { checks, runs: () => store, now: () => NOW });
+		const page = await res.text();
+		expect(page).toContain("● Rodando");
+		expect(page).toContain('<meta http-equiv="refresh" content="5">');
+	});
+
+	it("shows each test of a run, escaping names and errors", async () => {
+		const { call } = setup();
+		const page = await (await call(new Request("https://worker.example/admin/runs/2"))).text();
+		expect(page).toContain("test/a.test.ts");
+		expect(page).toContain("a › &#60;subtracts&#62;");
+		expect(page).toContain("<pre>AssertionError: expected 1 to be 2</pre>");
+		expect((await call(new Request("https://worker.example/admin/runs/9"))).status).toBe(404);
 	});
 });

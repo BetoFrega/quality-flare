@@ -18,10 +18,7 @@ export function renderAdminPage({ email, checks, rows, open }: AdminPageData): s
 		: `<p class="empty">A App ainda não está instalada em nenhum repositório. <a href="${INSTALL_URL}">Instalar</a></p>`;
 	return layout(
 		"Repositórios",
-		`<header>
-			<h1>quality-flare</h1>
-			${email ? `<span class="who">${esc(email)}</span>` : ""}
-		</header>
+		`${renderHeader(email, "repos")}
 		<main>
 			<h2>Repositórios</h2>
 			<p class="hint">Repositórios e checks começam desativados. Ative o repositório e depois os checks que ele deve rodar. Um check desativado num repositório ativo aparece na PR como <em>neutral</em>, para não travar branches que o exigem.</p>
@@ -29,6 +26,17 @@ export function renderAdminPage({ email, checks, rows, open }: AdminPageData): s
 			<p class="hint"><a href="${INSTALL_URL}">Conectar outros repositórios</a></p>
 		</main>`,
 	);
+}
+
+/** The admin's top bar: name, the two sections, and who is signed in. */
+export function renderHeader(email: string | undefined, current: "repos" | "runs"): string {
+	const link = (href: string, id: typeof current, text: string) =>
+		`<a href="${href}"${id === current ? ' aria-current="page"' : ""}>${text}</a>`;
+	return `<header>
+			<h1>quality-flare</h1>
+			<nav>${link("/admin", "repos", "Repositórios")}${link("/admin/runs", "runs", "Execuções de testes")}</nav>
+			${email ? `<span class="who">${esc(email)}</span>` : ""}
+		</header>`;
 }
 
 function renderRepo(repo: InstalledRepo, settings: RepoSettings, checks: Check[], open: boolean): string {
@@ -87,13 +95,14 @@ export function renderMessage(title: string, detail: string): string {
 	return layout(title, `<main><h2>${esc(title)}</h2>${detail ? `<p>${esc(detail)}</p>` : ""}</main>`);
 }
 
-function layout(title: string, body: string): string {
+export function layout(title: string, body: string, head = ""): string {
 	return `<!doctype html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · quality-flare</title>
+${head}
 <style>
 	:root { --bg: #fff; --fg: #1f2328; --muted: #59636e; --line: #d1d9e0; --panel: #f6f8fa; --on: #1a7f37; --off: #818b98; --link: #0969da; color-scheme: light dark; }
 	@media (prefers-color-scheme: dark) { :root { --bg: #0d1117; --fg: #f0f6fc; --muted: #9198a1; --line: #3d444d; --panel: #151b23; --on: #3fb950; --off: #656c76; --link: #4493f8; } }
@@ -101,6 +110,20 @@ function layout(title: string, body: string): string {
 	body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
 	header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
 	h1 { font-size: 16px; margin: 0; }
+	nav { display: flex; gap: 16px; margin-right: auto; font-size: 14px; }
+	nav a { color: var(--muted); text-decoration: none; }
+	nav a[aria-current] { color: var(--fg); font-weight: 600; }
+	table { width: 100%; border-collapse: collapse; font-size: 14px; }
+	th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+	th { color: var(--muted); font-weight: 500; font-size: 13px; }
+	.num { text-align: right; white-space: nowrap; }
+	.mono { font-family: ui-monospace, monospace; font-size: 13px; }
+	.state { white-space: nowrap; font-weight: 600; }
+	.success { color: var(--on); } .failure { color: #cf222e; } .neutral, .skip { color: var(--muted); } .running { color: #9a6700; }
+	.meta { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+	h3 { font-size: 15px; margin: 24px 0 6px; overflow-wrap: anywhere; }
+	pre { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow-x: auto; font-size: 12px; margin: 6px 0 0; white-space: pre-wrap; }
+	.tests li { padding: 4px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
 	h2 { font-size: 20px; margin: 0 0 4px; }
 	main { max-width: 860px; margin: 0 auto; padding: 24px 16px; }
 	a { color: var(--link); }
@@ -151,6 +174,6 @@ ${body}
 </html>`;
 }
 
-function esc(value: string): string {
+export function esc(value: string): string {
 	return value.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }

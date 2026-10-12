@@ -102,8 +102,10 @@ Em [`/admin`](https://quality-flare.frega.workers.dev/admin) ficam os repositór
 - O interruptor **Ativar checks** de cada repositório liga o quality-flare nele. Enquanto estiver desligado, o Worker ignora os webhooks desse repositório e não cria check runs.
 - Clicar no repositório abre a lista dos checks, cada um com seu interruptor, e os botões **Ativar todos** e **Desativar todos**.
 - Num repositório ativo, um check desativado não roda e é publicado com conclusão `neutral` ("Desativado"), para que um check exigido pela proteção de branch não trave o merge.
+- **Execuções de testes** ([`/admin/runs`](https://quality-flare.frega.workers.dev/admin/runs)) lista as 50 execuções mais recentes do check Tests: rodando, passou, falhou, neutro ou interrompida (ficou "rodando" por mais de 2 minutos, o Worker passou do tempo). A lista se atualiza sozinha enquanto há testes rodando. Cada execução abre com os arquivos, cada teste e a mensagem de cada falha.
 
 - **Login:** uma aplicação self-hosted do Cloudflare Access cobre `quality-flare.frega.workers.dev/admin` e `/admin/*`. O Worker ainda confere `ctx.access` e exige que o `aud` seja o dessa aplicação (`ACCESS_AUD`), então o admin recusa qualquer pedido que não passou pelo Access.
+- **Histórico de testes:** D1 `quality-flare-runs` (binding `RUNS`), tabela `test_runs`, criada pelo próprio Worker no primeiro uso (não há migração para rodar).
 - **Armazenamento:** KV `quality-flare-settings` (binding `SETTINGS`), chave `repo:<owner/repo>` com `{ "enabled": true, "enabledChecks": ["closes-issue"] }`.
 
 Cada check tem um `id` estável (por exemplo `closes-issue`) que é o que fica salvo; não mude o `id` de um check já publicado.
