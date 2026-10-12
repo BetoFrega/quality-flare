@@ -14,6 +14,13 @@ describe("planDelivery", () => {
 		});
 	});
 
+	it("skips checks that don't care about the action", () => {
+		const codeOnly = { ...fake("C"), pullRequestActions: new Set(["synchronize"]) };
+		expect(planDelivery("pull_request", { action: "labeled", pull_request: pr }, [checks[0], codeOnly])?.checks).toEqual([checks[0]]);
+		expect(planDelivery("pull_request", { action: "synchronize", pull_request: pr }, [codeOnly])?.checks).toEqual([codeOnly]);
+		expect(planDelivery("pull_request", { action: "labeled", pull_request: pr }, [codeOnly])).toBeNull();
+	});
+
 	it("re-runs only the requested check", () => {
 		const plan = planDelivery(
 			"check_run",

@@ -20,5 +20,7 @@ export interface Check {
 	id: string;
 	/** Check run name shown on the PR; also how "Re-run" requests are routed back to the check. */
 	name: string;
+	/** `pull_request` actions that run this check; all handled actions when omitted. Re-runs always run it. */
+	pullRequestActions?: ReadonlySet<string>;
 	run(ctx: CheckContext): Promise<CheckResult>;
 }
