@@ -13,6 +13,28 @@ export interface PackageFiles {
 // Every package.json stays: a folder's "main" decides what importing the folder loads.
 const isPackageJson = (path: string) => path === "package.json" || path.endsWith("/package.json");
 
+/**
+ * Tarball passes running at once in this isolate, which concurrent queue invocations share. A
+ * Worker keeps 6 connections open; past that, the runtime may cancel a stream left waiting.
+ */
+const MAX_PASSES = 4;
+let running = 0;
+const waiting: (() => void)[] = [];
+
+/** Runs `pass` once fewer than MAX_PASSES are running. */
+async function inTurn<T>(pass: () => Promise<T>): Promise<T> {
+	// A finishing pass hands its slot straight to the next one waiting.
+	if (running < MAX_PASSES) running++;
+	else await new Promise<void>((resolve) => waiting.push(resolve));
+	try {
+		return await pass();
+	} finally {
+		const next = waiting.shift();
+		if (next) next();
+		else running--;
+	}
+}
+
 /** Text kept per package before it switches to loading files on demand. */
 export const EAGER_PACKAGE_CHARS = 8 * 1024 * 1024;
 
@@ -36,7 +58,7 @@ export async function readPackage(
 		// A copy: V8 keeps a whole file's text alive behind any substring of it.
 		if (!path.endsWith(".json")) imports.set(path, JSON.parse(JSON.stringify(importSpecifiers(text))));
 	};
-	await walkTarball(await download(), (path) => {
+	await inTurn(async () => walkTarball(await download(), (path) => {
 		if (!isPackageFile(path)) return undefined;
 		paths.add(path);
 		return (text) => {
@@ -51,7 +73,7 @@ export async function readPackage(
 				files.delete(kept);
 			}
 		};
-	});
+	}));
 	return lazy ? onDemand(paths, files, imports, download) : files;
 }
 
@@ -76,7 +98,7 @@ function onDemand(
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		batch = undefined;
 		let found = 0;
-		await walkTarball(
+		await inTurn(async () => walkTarball(
 			await download(),
 			(path) =>
 				wanted.has(path)
@@ -86,7 +108,7 @@ function onDemand(
 						}
 					: undefined,
 			() => found === wanted.size,
-		);
+		));
 	};
 	const request = (path: string, waits: Set<Promise<void>>) => {
 		let wait = requested.get(path);

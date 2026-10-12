@@ -28,12 +28,19 @@ const NODE_BUILTINS = new Set([
 
 export type Modules = Record<string, WorkerLoaderModule>;
 
+export interface Unresolved {
+	specifier: string;
+	from: string;
+	/** Why, when the package was found in the lockfile but couldn't be downloaded. */
+	reason?: string;
+}
+
 export interface TestBundle {
 	/** Module paths of the test files, e.g. "/test/a.test.ts", in the order they run. */
 	testFiles: string[];
 	modules: Modules;
 	/** Imports that could not be resolved; the importing file fails when it runs. */
-	unresolved: { specifier: string; from: string }[];
+	unresolved: Unresolved[];
 }
 
 export interface BuildOptions {
@@ -85,7 +92,7 @@ export default { fetch: handleRequest };`,
 		},
 	};
 	const unresolved: TestBundle["unresolved"] = [];
-	const packages = new Map<string, Promise<Package | undefined>>();
+	const packages = new Map<string, Promise<Package | DownloadFailed>>();
 	const packageByDir = new Map<string, Package>();
 	const kinds = new Map<string, Kind>();
 	const cjsEdges = new Map<string, Map<string, string>>();
@@ -132,7 +139,7 @@ export default { fetch: handleRequest };`,
 					packageByDir.set(dir, pkg);
 					return pkg;
 				},
-				() => undefined,
+				(error: unknown) => new DownloadFailed(locked, error),
 			);
 			packages.set(locked.key, pending);
 		}
@@ -170,6 +177,7 @@ export default { fetch: handleRequest };`,
 		const locked = pkg ? options.lockfile.fromPackage(pkg.locked, name) : options.lockfile.fromRepo(from, name);
 		const target = locked && (await loadPackage(locked));
 		if (!target) return undefined;
+		if (target instanceof DownloadFailed) throw target;
 		const entry = entryOf(target.json, subpath);
 		return entry ? probeFile(join(`${target.dir}/`, entry), exists, false, sourceOf) : undefined;
 	};
@@ -181,11 +189,15 @@ export default { fetch: handleRequest };`,
 		if (importer === "cjs" && (specifier === "process" || specifier === "node:process")) return `/${PROCESS_MODULE}`;
 		if (/^(node|cloudflare|workerd):/.test(specifier)) return specifier;
 		if (NODE_BUILTINS.has(specifier.split("/")[0])) return `node:${specifier}`;
-		const target = await resolve(specifier, from);
-		if (!target) {
-			unresolved.push({ specifier, from });
+		const target = await resolve(specifier, from).catch((error: unknown) => {
+			if (error instanceof DownloadFailed) return error;
+			throw error;
+		});
+		if (!target || target instanceof DownloadFailed) {
+			const reason = target instanceof DownloadFailed ? target.message : undefined;
+			unresolved.push(reason ? { specifier, from, reason } : { specifier, from });
 			const name = `__qf/missing/${specifier.replace(/[^\w.@-]+/g, "_")}.js`;
-			modules[name] = { js: `throw new Error(${JSON.stringify(missingMessage(specifier, from))});` };
+			modules[name] = { js: `throw new Error(${JSON.stringify(reason ? `"${from}" importa "${specifier}": ${reason}` : missingMessage(specifier, from))});` };
 			return `/${name}`;
 		}
 		enqueue(target);
@@ -483,6 +495,13 @@ function rootJson(files: Map<string, string>): PackageJson {
 		rootJsonCache.set(files, json);
 	}
 	return json;
+}
+
+/** A locked package whose download or reading failed. */
+class DownloadFailed extends Error {
+	constructor(locked: LockedPackage, cause: unknown) {
+		super(`não foi possível baixar ${locked.name}@${locked.version} do npm (${cause instanceof Error ? cause.message : String(cause)})`);
+	}
 }
 
 function missingMessage(specifier: string, from: string): string {

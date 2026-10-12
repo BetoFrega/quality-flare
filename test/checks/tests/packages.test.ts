@@ -107,3 +107,42 @@ describe("buildModules with a package read on demand", () => {
 		expect(Object.keys(onDemand.modules).filter((name) => name.endsWith("dist/c.js"))).toHaveLength(1);
 	});
 });
+
+describe("buildModules with a package that fails to download", () => {
+	it("says why next to the unresolved import", async () => {
+		const lockfile = readLockfile(new Map([["package-lock.json", JSON.stringify({ packages: { "node_modules/next": { version: "16.0.0" } } })]]));
+		const { unresolved } = await buildModules(new Map([["test/a.test.ts", `import { a } from "next/server"; export default a;`]]), {
+			runtimeSource: "",
+			lockfile,
+			fetchPackage: () => Promise.reject(new Error("Network connection lost.")),
+		});
+		expect(unresolved).toEqual([
+			{ specifier: "next/server", from: "test/a.test.ts", reason: "não foi possível baixar next@16.0.0 do npm (Network connection lost.)" },
+		]);
+	});
+});
+
+describe("readPackage downloads", () => {
+	it("reads at most 4 tarballs at once", async () => {
+		let open = 0;
+		let most = 0;
+		const download = async () => {
+			open++;
+			most = Math.max(most, open);
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			// Open until read to the end or cancelled, like a fetch body.
+			const reader = tarball(NEXT, "package").getReader();
+			return new ReadableStream<Uint8Array>({
+				async pull(controller) {
+					const { value, done } = await reader.read();
+					if (!done) return controller.enqueue(value);
+					open--;
+					controller.close();
+				},
+				cancel: () => void open--,
+			});
+		};
+		await Promise.all(Array.from({ length: 10 }, () => readPackage(download, isPackageFile)));
+		expect(most).toBe(4);
+	});
+});

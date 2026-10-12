@@ -244,7 +244,10 @@ function fetchPackage({ name, version }: LockedPackage): Promise<PackageFiles> {
 		});
 		if (!res.ok || !res.body) throw new Error(`npm: ${name}@${version} → ${res.status}`);
 		return res.body;
-	}, (p) => PACKAGE_FILE.test(p));
+	}, (p) => PACKAGE_FILE.test(p)).catch((error: unknown) => {
+		console.error("quality-flare: could not read npm package", `${name}@${version}`, error);
+		throw error;
+	});
 }
 
 /** Loads the bundle as a fresh Dynamic Worker without network access and runs every test file. */
