@@ -3,6 +3,7 @@ import { exports as packageExports, imports as packageImports } from "resolve.ex
 import { transform } from "sucrase";
 import { isLoadable, isPlaywrightSpec, isTestFile } from "./convention.ts";
 import type { LockedPackage, Lockfile } from "./lockfile.ts";
+import { ACTUAL, rewriteImportActual, splitMocks } from "./mocks.ts";
 import type { PackageFiles } from "./packages.ts";
 
 /** Module names reserved for the test runtime inside the Dynamic Worker. */
@@ -10,6 +11,8 @@ export const RUNTIME_MODULE = "__qf/runtime.js";
 export const MAIN_MODULE = "__qf/main.js";
 const VITEST_MODULE = "__qf/vitest.js";
 const PROCESS_MODULE = "__qf/process.js";
+/** Which mocks each test file sees; read by runtime/mocks.ts. */
+const MOCKS_MODULE = "__qf/mocks.js";
 /** npm packages are laid out under this folder, one subfolder per locked package. */
 const PACKAGES_DIR = "node_modules/.qf";
 
@@ -76,6 +79,16 @@ interface PackageJson {
 
 type Kind = "esm" | "cjs" | "json";
 
+interface EsmModule {
+	js: string;
+	/** Specifier → the module name it links to. */
+	links: Map<string, string>;
+	/** Specifier → the names its static imports and re-exports take from it. */
+	names: Map<string, string[]>;
+	/** Links to mocked modules reach the real ones (a test file's hoisted `vi.mock` module). */
+	real: boolean;
+}
+
 /**
  * Turns a repository's files into the modules of a Dynamic Worker: the test files and
  * everything they import, followed the way Node and bundlers do. TypeScript is stripped,
@@ -104,6 +117,13 @@ export default { fetch: handleRequest };`,
 	const kinds = new Map<string, Kind>();
 	const cjsEdges = new Map<string, Map<string, string>>();
 	const facades = new Map<string, string>();
+	const tests = new Set(testFiles);
+	// ESM modules are emitted last: imports of a mocked module go to its facade, known once all are loaded.
+	const esm = new Map<string, EsmModule>();
+	const realOnly = new Set<string>();
+	const mockKeys = new Set<string>();
+	const mocksOf = new Map<string, { module: string; keys: Set<string>; original: boolean }>();
+	const missingNames = new Map<Unresolved, string>();
 
 	const packageOf = (name: string) => {
 		if (!name.startsWith(`${PACKAGES_DIR}/`)) return undefined;
@@ -202,8 +222,10 @@ export default { fetch: handleRequest };`,
 		});
 		if (!target || target instanceof DownloadFailed) {
 			const reason = target instanceof DownloadFailed ? target.message : undefined;
-			unresolved.push(reason ? { specifier, from, reason } : { specifier, from });
+			const entry = reason ? { specifier, from, reason } : { specifier, from };
+			unresolved.push(entry);
 			const name = `__qf/missing/${specifier.replace(/[^\w.@-]+/g, "_")}.js`;
+			missingNames.set(entry, `/${name}`);
 			modules[name] = { js: `throw new Error(${JSON.stringify(reason ? `"${from}" importa "${specifier}": ${reason}` : missingMessage(specifier, from))});` };
 			return `/${name}`;
 		}
@@ -240,10 +262,34 @@ export default { fetch: handleRequest };`,
 			const links = new Map(await Promise.all(requires.map(async (s) => [s, await link(s, name, "cjs")] as const)));
 			modules[name] = { cjs: source.replace(REQUIRE, (call, quote, s) => `require(${JSON.stringify(links.get(s))})`) };
 		} else {
-			const js = /\.m?ts$/.test(name) ? stripTypes(source, name) : source;
-			const specifiers = [...new Set(importsOf(js).map((i) => i.n!))];
-			const links = new Map(await Promise.all(specifiers.map(async (s) => [s, await link(s, name, "esm")] as const)));
-			modules[name] = { js: rewriteImports(js, (s) => links.get(s)!) };
+			let js = /\.m?ts$/.test(name) ? stripTypes(source, name) : source;
+			const split = tests.has(name) ? splitMocks(js) : undefined;
+			if (split) {
+				const file = `__qf_mocks__${name.slice(name.lastIndexOf("/") + 1)}.js`;
+				const path = `${dirname(name)}${file}`;
+				const keys = await Promise.all(split.specs.map((s) => link(s, name, "esm")));
+				const hoisted = rewriteImportActual(split.hoisted).replace(/__QF_MOCK_(\d+)__/g, (_, i: string) => JSON.stringify(keys[Number(i)]));
+				const exported = split.names.length ? `export { ${split.names.join(", ")} };` : "";
+				repoFiles.set(path, `import { vi } from "vitest";\n${hoisted}\n${exported}\n`);
+				realOnly.add(path);
+				enqueue(path);
+				for (const key of keys) mockKeys.add(key);
+				mocksOf.set(name, { module: `/${path}`, keys: new Set(keys), original: /\bimportOriginal\b|\bvi\s*\.\s*importActual\b/.test(split.hoisted) });
+				// On the first line, so line numbers in stack traces still match the file.
+				js = (split.names.length ? `import { ${split.names.join(", ")} } from "./${file}"; ` : "") + split.rest;
+			}
+			js = rewriteImportActual(js).replace(IMPORT_META, (_, key: string) => JSON.stringify(importMeta(name, key)));
+			const imports = importsOf(js);
+			const specifiers = [...new Set(imports.map((i) => i.n!))];
+			const links = new Map(
+				await Promise.all(specifiers.map(async (s) => [s, await link(s.endsWith(ACTUAL) ? s.slice(0, -ACTUAL.length) : s, name, "esm")] as const)),
+			);
+			const names = new Map<string, string[]>();
+			for (const imp of imports) {
+				if (imp.d !== -1) continue;
+				names.set(imp.n!, [...(names.get(imp.n!) ?? []), ...importedNames(js.slice(imp.ss, imp.s))]);
+			}
+			esm.set(name, { js, links, names, real: realOnly.has(name) });
 		}
 	};
 
@@ -260,6 +306,66 @@ export default { fetch: handleRequest };`,
 		queue = [];
 		await Promise.all(wave.map(load));
 	}
+
+	const exportNames = (key: string): string[] => {
+		const cjs = facades.get(key.slice(1));
+		if (cjs) return [...cjsExportNames(cjs, sourceOf, cjsEdges)];
+		const m = esm.get(key.slice(1));
+		try {
+			return m ? parse(m.js)[1].map((e) => e.n) : [];
+		} catch {
+			return [];
+		}
+	};
+	const mockFacade = (key: string) => `__qf/mock/${key.replace(/^\//, "").replace(/[^\w./@-]+/g, "_")}`;
+	const isMockLink = (m: EsmModule, specifier: string) => !m.real && !specifier.endsWith(ACTUAL) && mockKeys.has(m.links.get(specifier)!);
+	for (const [name, m] of esm) {
+		modules[name] = { js: rewriteImports(m.js, (s) => (isMockLink(m, s) ? `/${mockFacade(m.links.get(s)!)}` : m.links.get(s)!)) };
+	}
+	for (const key of mockKeys) {
+		const names = new Set<string>(exportNames(key));
+		for (const m of esm.values()) {
+			for (const [specifier, taken] of m.names) if (m.links.get(specifier) === key) for (const n of taken) names.add(n);
+		}
+		const list = [...names].filter(isExportableName);
+		modules[mockFacade(key)] = {
+			js: `import { mockFacade } from "/${RUNTIME_MODULE}";
+let __qf_default${list.map((n) => `, ${n}`).join("")};
+export { __qf_default as default${list.map((n) => `, ${n}`).join("")} };
+mockFacade(${JSON.stringify(key)}, (__qf_ns) => {
+	__qf_default = __qf_ns.default;${list.map((n) => ` ${n} = __qf_ns.${n};`).join("")}
+});`,
+		};
+	}
+	/**
+	 * Mocked modules a file may import, dependencies first, so each is ready before what imports
+	 * it. A module the file mocks is not entered, unless its factory may load the original.
+	 */
+	const reachOf = (path: string) => {
+		const own = mocksOf.get(path);
+		const out = new Set<string>();
+		const seen = new Set<string>();
+		const visit = (name: string) => {
+			const m = esm.get(name);
+			if (seen.has(name) || !m) return;
+			seen.add(name);
+			for (const [specifier, target] of m.links) {
+				const mocked = isMockLink(m, specifier);
+				if ((!mocked || !own?.keys.has(target) || own.original) && target.startsWith("/")) visit(target.slice(1));
+				if (mocked) out.add(target);
+			}
+		};
+		if (own) visit(own.module.slice(1));
+		visit(path);
+		return [...out];
+	};
+	const registry: Record<string, { mocks?: string; reach: string[] }> = {};
+	if (mockKeys.size) for (const path of [...setupFiles, ...testFiles]) registry[`/${path}`] = { mocks: mocksOf.get(path)?.module, reach: reachOf(path) };
+	modules[MOCKS_MODULE] = { js: `export default ${JSON.stringify(registry)};` };
+	// vitest mocks a module that doesn't resolve (e.g. "server-only") without complaint.
+	const stillMissing = unresolved.filter((u) => !mockKeys.has(missingNames.get(u) ?? ""));
+	unresolved.length = 0;
+	unresolved.push(...stillMissing);
 
 	for (const [facade, target] of facades) {
 		const names = [...cjsExportNames(target, sourceOf, cjsEdges)].filter(isExportableName);
@@ -309,6 +415,29 @@ function rewriteImports(source: string, map: (specifier: string) => string): str
 		}
 	}
 	return out + source.slice(last);
+}
+
+/**
+ * Dynamic Workers leave `import.meta.url` and `dirname` undefined. Every module is also a file
+ * under /bundle (process.cwd()) in workerd's node:fs, so these point there.
+ */
+const IMPORT_META = /\bimport\.meta\.(url|dirname|filename)\b/g;
+const BUNDLE_ROOT = "/bundle";
+
+function importMeta(name: string, key: string): string {
+	const filename = `${BUNDLE_ROOT}/${name}`;
+	if (key === "url") return `file://${filename}`;
+	return key === "filename" ? filename : filename.slice(0, filename.lastIndexOf("/"));
+}
+
+/** The names an import or re-export statement takes: `import a, { b, c as d } from`, `export { e } from`. */
+function importedNames(statement: string): string[] {
+	const braces = /\{([^}]*)\}/.exec(statement);
+	if (!braces) return [];
+	return braces[1]
+		.split(",")
+		.map((item) => item.trim().split(/\s+as\s+/)[0].replace(/^type\s+/, "").replace(/^["']|["']$/g, ""))
+		.filter((n) => n && n !== "default");
 }
 
 function hasModuleSyntax(source: string): boolean {

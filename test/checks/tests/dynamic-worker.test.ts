@@ -84,6 +84,63 @@ describe.skipIf(inWorkers)("tests in a Dynamic Worker", () => {
 		const report = await runInWorkerd(bundle, () => {}, { globals: true });
 		expect(report.files.map((f) => [f.path, f.state, f.errors])).toEqual([["test/globals.test.ts", "pass", undefined]]);
 	}, 30_000);
+
+	it("mocks modules per test file with vi.mock, vi.hoisted and importOriginal", async () => {
+		const { default: runtimeSource } = await import("virtual:test-runtime");
+		const repo = {
+			"src/clock.ts": "export const now = (): string => 'real now'; export const zone = 'America/Sao_Paulo';",
+			"src/greet.ts": `import { now } from "./clock"; export const greet = (name: string) => \`\${name} at \${now()}\`;`,
+			// A module that throws on import: mocking it keeps it from loading.
+			"src/firebase.ts": "throw new Error('firebase must not load'); export const db = 1;",
+			"src/uses-firebase.ts": "import { db } from './firebase'; export const read = () => db;",
+			"test/a.test.ts": `
+				import { expect, it, vi } from "vitest";
+				import { greet } from "../src/greet";
+				const { fake } = vi.hoisted(() => ({ fake: vi.fn(() => "mocked now") }));
+				vi.mock("../src/clock", async (importOriginal) => ({ ...(await importOriginal<typeof import("../src/clock")>()), now: fake }));
+				it("sees the mock through another module", () => {
+					expect(greet("Ana")).toBe("Ana at mocked now");
+					expect(fake).toHaveBeenCalledOnce();
+				});
+				it("keeps what importOriginal brought", async () => {
+					const { zone } = await import("../src/clock");
+					expect(zone).toBe("America/Sao_Paulo");
+					expect((await vi.importActual<typeof import("../src/clock")>("../src/clock")).now()).toBe("real now");
+				});`,
+			"test/b.test.ts": `
+				import { expect, it } from "vitest";
+				import { greet } from "../src/greet";
+				it("sees the real module", () => expect(greet("Bia")).toBe("Bia at real now"));`,
+			"test/c.test.ts": `
+				import { expect, it, vi } from "vitest";
+				import { read } from "../src/uses-firebase";
+				vi.mock("../src/firebase", () => ({ db: "fake db" }));
+				vi.mock("server-only", () => ({}));
+				it("never loads the mocked module", () => expect(read()).toBe("fake db"));`,
+			"test/d.test.ts": `
+				import { expect, it, vi } from "vitest";
+				it("stubs env and waits", async () => {
+					vi.stubEnv("MODE", "test");
+					expect(process.env.MODE).toBe("test");
+					vi.unstubAllEnvs();
+					expect(process.env.MODE).toBeUndefined();
+					let n = 0;
+					expect(await vi.waitFor(() => { if (++n < 3) throw new Error("not yet"); return n; }, { interval: 1 })).toBe(3);
+				});`,
+		};
+		const bundle = await buildModules(new Map(Object.entries(repo)), {
+			runtimeSource,
+			fetchPackage: () => Promise.reject(new Error("offline")),
+		});
+		expect(bundle.unresolved).toEqual([]);
+		const report = await runInWorkerd(bundle, () => {});
+		expect(report.files.map((f) => [f.path, f.state, f.errors, f.tests.map((t) => [t.name, t.state, t.errors])])).toEqual([
+			["test/a.test.ts", "pass", undefined, [["sees the mock through another module", "pass", undefined], ["keeps what importOriginal brought", "pass", undefined]]],
+			["test/b.test.ts", "pass", undefined, [["sees the real module", "pass", undefined]]],
+			["test/c.test.ts", "pass", undefined, [["never loads the mocked module", "pass", undefined]]],
+			["test/d.test.ts", "pass", undefined, [["stubs env and waits", "pass", undefined]]],
+		]);
+	}, 30_000);
 });
 
 /** Serves a host Worker with a Worker Loader binding on workerd and has it run the bundle. */
