@@ -184,6 +184,7 @@ async function runShard(
 		fetchPackage: (pkg) => fetchPackage(pkg, inTurn),
 		testFiles: shard.files,
 		setupFiles: shard.config?.setupFiles,
+		environment: shard.config?.environment,
 	});
 	files.clear();
 	// Imports that fail inside npm packages are usually optional ones that never run.

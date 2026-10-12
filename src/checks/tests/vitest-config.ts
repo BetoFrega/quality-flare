@@ -69,6 +69,7 @@ function testBlock(source: string, code: string, open: number): TestConfig {
 			if (list) config[key] = list;
 		} else if (key === "globals" && /^(true|false)$/.test(text)) config.globals = text === "true";
 		else if (key === "testTimeout" && /^\d[\d_]*$/.test(text)) config.testTimeout = Number(text.replace(/_/g, ""));
+		else if (key === "environment" && /^(["'`])[\w-]+\1$/.test(text)) config.environment = text.slice(1, -1);
 	}
 	return config;
 }
