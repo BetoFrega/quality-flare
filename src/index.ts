@@ -17,11 +17,15 @@ const PULL_REQUEST_ACTIONS = new Set([
 	"ready_for_review",
 ]);
 
+/** Events about a PR's reviews whose payload carries the PR, for checks that list them in `events`. */
+const REVIEW_EVENTS = new Set(["pull_request_review", "pull_request_review_comment", "pull_request_review_thread"]);
+
 interface WebhookPayload {
 	action?: string;
 	installation?: { id: number };
 	repository?: { full_name: string };
 	pull_request?: PullRequest;
+	issue?: { number: number; pull_request?: unknown };
 	check_run?: { name: string; pull_requests: { number: number }[] };
 	check_suite?: { pull_requests: { number: number }[] };
 }
@@ -93,6 +97,12 @@ export function planDelivery(event: string | null, payload: WebhookPayload, chec
 			const interested = checks.filter((c) => !c.pullRequestActions || c.pullRequestActions.has(action));
 			return interested.length ? { pullRequests: [payload.pull_request], checks: interested } : null;
 		}
+		case "issue_comment": {
+			// Comments on plain issues come through here too; the payload has no PR, so fetch it.
+			if (!payload.issue?.pull_request) return null;
+			const interested = checks.filter((c) => c.events?.has(event));
+			return interested.length ? { pullRequests: [payload.issue.number], checks: interested } : null;
+		}
 		case "check_run": {
 			// "Re-run" on one check run: run just that check, if it is ours.
 			const check = checks.find((c) => c.name === payload.check_run?.name);
@@ -102,8 +112,11 @@ export function planDelivery(event: string | null, payload: WebhookPayload, chec
 		case "check_suite":
 			if (payload.action !== "rerequested" || !payload.check_suite) return null;
 			return { pullRequests: payload.check_suite.pull_requests.map((p) => p.number), checks };
-		default:
-			return null;
+		default: {
+			if (!event || !REVIEW_EVENTS.has(event) || !payload.pull_request) return null;
+			const interested = checks.filter((c) => c.events?.has(event));
+			return interested.length ? { pullRequests: [payload.pull_request], checks: interested } : null;
+		}
 	}
 }
 export { RunsHub } from "./live.ts";

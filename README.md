@@ -11,6 +11,7 @@ Toda a infraestrutura é Cloudflare: um único Worker, um namespace KV com as co
 | [Closes an issue](src/checks/closes-issue) | Exige que a PR feche uma issue |
 | [Tests](src/checks/tests) | Roda os testes do repositório num Dynamic Worker |
 | [Dependabot auto-merge](src/checks/dependabot-automerge) | Habilita auto-merge (squash) nas PRs do Dependabot |
+| [Codex review](src/checks/codex-review) | Exige que as sugestões do Codex (`chatgpt-codex-connector`) estejam resolvidas |
 
 Para adicionar um check, implemente a interface `Check` de [`src/checks/types.ts`](src/checks/types.ts) e registre em [`src/checks/index.ts`](src/checks/index.ts).
 
@@ -45,6 +46,16 @@ Faz o mesmo que o workflow `gh pr merge --auto --squash` para PRs do Dependabot,
 - Roda quando a PR é aberta, reaberta, recebe commits ou sai de draft, e no **Re-run**.
 - Requisitos: **Allow auto-merge** ligado em Settings → General do repositório, e a App com Contents e Pull requests em **Read and write**. Para o auto-merge esperar algo, o repositório precisa exigir pelo menos um check na proteção de branch.
 
+### Codex review
+
+Garante que as reviews do [Codex](https://chatgpt.com/codex) (`chatgpt-codex-connector[bot]`) foram tratadas antes do merge.
+
+- ❌ Falha enquanto houver alguma conversa aberta pelo Codex sem **Resolve conversation**, inclusive as que ficaram desatualizadas porque o código mudou. O resumo lista cada sugestão com a prioridade (P0, P1…) e o link.
+- ❌ Falha enquanto o Codex está revisando: o comentário "Codex Review Summary" mostra uma review em andamento, ou (sem esse comentário) o Codex reagiu com 👀 na PR.
+- ✅ Passa quando o Codex revisou e todas as conversas dele estão resolvidas, ou quando ele não deixou sugestões.
+- ⚪ Neutro enquanto o Codex não revisou a PR.
+- Roda nos eventos de PR, a cada review, comentário de review, conversa resolvida ou reaberta e comentário na PR (o Codex edita o resumo quando termina), e no **Re-run**.
+
 ## Como funciona
 
 1. O GitHub envia o webhook para o Worker; a assinatura `X-Hub-Signature-256` é verificada.
@@ -58,6 +69,8 @@ Eventos tratados:
 | Evento | Ações |
 | --- | --- |
 | `pull_request` | `opened`, `reopened`, `edited`, `synchronize`, `labeled`, `unlabeled`, `ready_for_review` |
+| `pull_request_review`, `pull_request_review_comment`, `pull_request_review_thread` | todas (só os checks que pedem esses eventos, como o Codex review) |
+| `issue_comment` | todas, em PRs (idem) |
 | `check_run` | `rerequested` (botão **Re-run**; roda só aquele check) |
 | `check_suite` | `rerequested` (roda todos os checks) |
 
@@ -98,7 +111,7 @@ Em **Settings → Developer settings → GitHub Apps → New GitHub App**:
   - Pull requests: **Read and write** (o Dependabot auto-merge habilita o auto-merge)
   - Issues: **Read-only**
   - Metadata: **Read-only**
-- **Eventos:** Pull request, Check run, Check suite.
+- **Eventos:** Pull request, Check run, Check suite, Pull request review, Pull request review comment, Pull request review thread, Issue comment.
 
 Depois de criar, anote o **App ID**, gere uma **private key** e instale a App nos repositórios desejados. Coloque os três valores no `.dev.vars` e rode `cf deploy --secrets-file .dev.vars` de novo.
 

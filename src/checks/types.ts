@@ -24,6 +24,11 @@ export interface Check {
 	name: string;
 	/** `pull_request` actions that run this check; all handled actions when omitted. Re-runs always run it. */
 	pullRequestActions?: ReadonlySet<string>;
+	/**
+	 * Other webhook events that run this check on the PR they concern, such as `pull_request_review`.
+	 * Only the events listed in `planDelivery` are supported.
+	 */
+	events?: ReadonlySet<string>;
 	/** The result to report, or null when the check reports its own check run later (Tests, via a queue). */
 	run(ctx: CheckContext): Promise<CheckResult | null>;
 }

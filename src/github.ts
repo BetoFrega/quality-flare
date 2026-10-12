@@ -59,6 +59,41 @@ export class GitHubClient {
 		);
 	}
 
+	/** Review threads, reviewers, conversation comments and 👀 reactions on the PR, for review-based checks. */
+	async getReviewActivity(repo: string, number: number): Promise<ReviewActivity> {
+		const [owner, name] = repo.split("/");
+		const data = await request<ReviewActivityResponse>(this.token, "POST", "/graphql", {
+			query: `query($owner: String!, $name: String!, $number: Int!) {
+				repository(owner: $owner, name: $name) {
+					pullRequest(number: $number) {
+						reviewThreads(first: 100) {
+							nodes { isResolved isOutdated comments(first: 1) { nodes { author { login } body url } } }
+						}
+						reviews(last: 100) { nodes { author { login } } }
+						comments(last: 100) { nodes { author { login } body } }
+						reactionGroups { content reactors(first: 20) { nodes { ... on Bot { login } ... on User { login } } } }
+					}
+				}
+			}`,
+			variables: { owner, name, number },
+		});
+		if (data.errors?.length) throw new Error(`GraphQL error: ${data.errors.map((e) => e.message).join("; ")}`);
+		const pr = data.data?.repository?.pullRequest;
+		return {
+			threads: (pr?.reviewThreads.nodes ?? []).flatMap((t) => {
+				const first = t.comments.nodes[0];
+				return first
+					? [{ resolved: t.isResolved, outdated: t.isOutdated, author: first.author?.login, body: first.body, url: first.url }]
+					: [];
+			}),
+			reviewers: (pr?.reviews.nodes ?? []).flatMap((r) => (r.author ? [r.author.login] : [])),
+			comments: (pr?.comments.nodes ?? []).map((c) => ({ author: c.author?.login, body: c.body })),
+			eyesFrom: (pr?.reactionGroups ?? [])
+				.filter((g) => g.content === "EYES")
+				.flatMap((g) => g.reactors.nodes.flatMap((n) => (n.login ? [n.login] : []))),
+		};
+	}
+
 	/**
 	 * Turns on auto-merge for the PR (GraphQL `enablePullRequestAutoMerge`). Resolves to GitHub's
 	 * error messages, empty when it worked, since refusals such as "clean status" are expected outcomes.
@@ -139,6 +174,17 @@ export interface PullRequest {
 	labels: { name: string }[];
 }
 
+export interface ReviewActivity {
+	/** Each review thread, described by its first comment. */
+	threads: { resolved: boolean; outdated: boolean; author?: string; body: string; url: string }[];
+	/** Authors of the PR's reviews. */
+	reviewers: string[];
+	/** The PR's conversation comments, oldest first. */
+	comments: { author?: string; body: string }[];
+	/** Who reacted 👀 to the PR. */
+	eyesFrom: string[];
+}
+
 export interface InstalledRepo {
 	/** "owner/repo" */
 	full_name: string;
@@ -160,6 +206,25 @@ interface LinkedIssuesResponse {
 	};
 	errors?: { message: string }[];
 }
+
+interface ReviewActivityResponse {
+	data?: {
+		repository?: {
+			pullRequest?: {
+				reviewThreads: {
+					nodes: { isResolved: boolean; isOutdated: boolean; comments: { nodes: { author: Author; body: string; url: string }[] } }[];
+				};
+				reviews: { nodes: { author: Author }[] };
+				comments: { nodes: { author: Author; body: string }[] };
+				reactionGroups: { content: string; reactors: { nodes: { login?: string }[] } }[];
+			};
+		};
+	};
+	errors?: { message: string }[];
+}
+
+/** Null when the account was deleted. */
+type Author = { login: string } | null;
 
 /** Follows `page` until a page comes back short. */
 async function paginate<T>(token: string, path: string, items: (page: unknown) => T[]): Promise<T[]> {
