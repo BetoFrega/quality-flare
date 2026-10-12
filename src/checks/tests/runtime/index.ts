@@ -262,11 +262,26 @@ class WorkerRunner implements VitestRunner {
 /** What vitest's `globals: true` exposes. */
 const GLOBALS = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFailed, onTestFinished, suite, test, vi };
 
+/**
+ * workerd defines some APIs only to throw "not implemented". Libraries that check for them
+ * before use (React's dev build calls console.createTask when it exists) then fail; without
+ * them, they take their fallback, as they would on a runtime that lacks the API.
+ */
+function hideUnimplemented() {
+	const console = (globalThis as unknown as { console: { createTask?: (name: string) => unknown } }).console;
+	try {
+		console.createTask?.("quality-flare");
+	} catch {
+		console.createTask = undefined;
+	}
+}
+
 /** Runs the given test files (module paths, e.g. "/test/a.test.ts") and reports every test. */
 export async function runTests(run: RunRequest | string[], onProgress: (event: ProgressEvent) => void = () => {}): Promise<TestReport> {
 	const { files: paths, globals, ...options } = Array.isArray(run) ? { files: run } : run;
 	if (globals) Object.assign(globalThis, GLOBALS);
 	await loadTimers();
+	hideUnimplemented();
 	const files = await startTests(paths, new WorkerRunner(onProgress, options));
 	return { files: files.map(reportFile) };
 }

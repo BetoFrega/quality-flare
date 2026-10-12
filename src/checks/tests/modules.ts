@@ -12,6 +12,19 @@ export const MAIN_MODULE = "__qf/main.js";
 const VITEST_MODULE = "__qf/vitest.js";
 const PROCESS_MODULE = "__qf/process.js";
 const EMPTY_MODULE = "__qf/empty.js";
+/**
+ * workerd's path.resolve() and relative() resolve against "/", not process.cwd() ("/bundle"),
+ * so `resolve("docs")` misses the repository. This node:path resolves against the cwd.
+ */
+const PATH_MODULE = "__qf/path.js";
+const PATH_SHIM = `import path from "node:path";
+import process from "node:process";
+export const resolve = (...paths) => path.posix.resolve(process.cwd(), ...paths);
+export const relative = (from, to) => path.posix.relative(resolve(from), resolve(to));
+export const { basename, delimiter, dirname, extname, format, isAbsolute, join, normalize, parse, sep, toNamespacedPath, win32, matchesGlob } = path;
+export const posix = { ...path.posix, resolve, relative };
+posix.posix = posix;
+export default posix;`;
 const CSS_MODULE = "__qf/css-module.js";
 const STYLESHEET = /\.(css|scss|sass|less|styl|stylus|pcss|postcss)(\?.*)?$/;
 /** Each test file's mocks, environment and setup copies; read by runtime/mocks.ts. */
@@ -236,6 +249,10 @@ export default { fetch: handleRequest };`,
 		if (specifier === "vitest") return `/${VITEST_MODULE}`;
 		// workerd can't require() node:process from CommonJS, though ESM imports it fine.
 		if (importer === "cjs" && (specifier === "process" || specifier === "node:process")) return `/${PROCESS_MODULE}`;
+		if (/^(node:)?path(\/posix)?$/.test(specifier)) {
+			modules[PATH_MODULE] ??= { js: PATH_SHIM };
+			return `/${PATH_MODULE}`;
+		}
 		if (/^(node|cloudflare|workerd):/.test(specifier)) return specifier;
 		if (NODE_BUILTINS.has(specifier.split("/")[0])) return `node:${specifier}`;
 		// As vitest without `css.include`: stylesheets are empty, CSS modules map each class to its name.

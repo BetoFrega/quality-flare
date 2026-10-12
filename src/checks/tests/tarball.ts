@@ -4,8 +4,40 @@
  */
 export async function readTarball(gzipped: ReadableStream<Uint8Array>, keep: (path: string, size: number) => boolean): Promise<Map<string, string>> {
 	const files = new Map<string, string>();
-	await walkTarball(gzipped, (path, size) => (keep(path, size) ? (text) => files.set(path, text) : undefined));
+	const links = new Map<string, string>();
+	await walkTarball(gzipped, (path, size) => (keep(path, size) ? (text) => files.set(path, text) : undefined), undefined, (path, target) => links.set(path, target));
+	followLinks(files, links);
 	return files;
+}
+
+/**
+ * Symbolic links become copies of what they point at inside the repository (a file, or every
+ * file under a folder), so `.claude/skills -> ../.agents/skills` reads as in a checkout.
+ */
+export function followLinks(files: Map<string, string>, links: Map<string, string>): void {
+	for (const [path, target] of links) {
+		const resolved = join(path.slice(0, path.lastIndexOf("/") + 1), target);
+		if (resolved === undefined) continue;
+		const file = files.get(resolved);
+		if (file !== undefined) {
+			files.set(path, file);
+			continue;
+		}
+		for (const [name, text] of [...files]) if (name.startsWith(`${resolved}/`)) files.set(`${path}${name.slice(resolved.length)}`, text);
+	}
+}
+
+/** A link target relative to `dir`; undefined when it leaves the repository. */
+function join(dir: string, target: string): string | undefined {
+	if (target.startsWith("/")) return undefined;
+	const parts: string[] = [];
+	for (const part of `${dir}${target}`.split("/")) {
+		if (part === "..") {
+			if (!parts.length) return undefined;
+			parts.pop();
+		} else if (part !== "." && part !== "") parts.push(part);
+	}
+	return parts.join("/");
 }
 
 /**
@@ -17,10 +49,12 @@ export async function walkTarball(
 	gzipped: ReadableStream<Uint8Array>,
 	visit: (path: string, size: number) => ((text: string) => void) | undefined,
 	done: () => boolean = () => false,
+	onLink?: (path: string, target: string) => void,
 ): Promise<void> {
 	const reader = new ByteReader(gzipped.pipeThrough(new DecompressionStream("gzip")).getReader());
 	const decoder = new TextDecoder();
 	let longName: string | undefined;
+	let longLink: string | undefined;
 	try {
 		while (!done()) {
 			const header = await reader.read(512);
@@ -33,13 +67,18 @@ export async function walkTarball(
 				const body = decoder.decode(await reader.read(size));
 				await reader.skip(padding);
 				// PAX extended header: "<len> path=<value>\n" records for the next entry.
-				longName = type === "x" ? (/(?:^|\n)\d+ path=([^\n]*)\n/.exec(body)?.[1] ?? longName) : body.replace(/\0.*$/s, "");
+				if (type === "x") {
+					longName = /(?:^|\n)\d+ path=([^\n]*)\n/.exec(body)?.[1] ?? longName;
+					longLink = /(?:^|\n)\d+ linkpath=([^\n]*)\n/.exec(body)?.[1] ?? longLink;
+				} else longName = body.replace(/\0.*$/s, "");
 				continue;
 			}
 			const prefix = field(header, 345, 155, decoder);
 			const name = longName ?? (prefix ? `${prefix}/${field(header, 0, 100, decoder)}` : field(header, 0, 100, decoder));
 			longName = undefined;
 			const path = name.slice(name.indexOf("/") + 1);
+			if (type === "2" && path) onLink?.(path, longLink ?? field(header, 157, 100, decoder));
+			longLink = undefined;
 			const onText = (type === "0" || type === "\0") && path ? visit(path, size) : undefined;
 			if (onText) {
 				onText(decoder.decode(await reader.read(size)));

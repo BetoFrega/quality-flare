@@ -117,6 +117,7 @@ describe.skipIf(inWorkers)("tests in a Dynamic Worker", () => {
 				vi.mock("../src/firebase", () => ({ db: "fake db" }));
 				vi.mock("server-only", () => ({}));
 				it("never loads the mocked module", () => expect(read()).toBe("fake db"));`,
+			"docs/a.md": "# A",
 			"test/d.test.ts": `
 				import { expect, it, vi } from "vitest";
 				it("stubs env and waits", async () => {
@@ -126,6 +127,12 @@ describe.skipIf(inWorkers)("tests in a Dynamic Worker", () => {
 					expect(process.env.MODE).toBeUndefined();
 					let n = 0;
 					expect(await vi.waitFor(() => { if (++n < 3) throw new Error("not yet"); return n; }, { interval: 1 })).toBe(3);
+				});
+				it("reads repository files from the working directory", async () => {
+					const { readFileSync } = await import("node:fs");
+					const { resolve } = await import("node:path");
+					expect(resolve("docs/a.md")).toBe("/bundle/docs/a.md");
+					expect(readFileSync(resolve("docs/a.md"), "utf8")).toBe("# A");
 				});
 				it("fakes timers and the clock", async () => {
 					vi.useFakeTimers();
@@ -149,7 +156,7 @@ describe.skipIf(inWorkers)("tests in a Dynamic Worker", () => {
 			["test/a.test.ts", "pass", undefined, [["sees the mock through another module", "pass", undefined], ["keeps what importOriginal brought", "pass", undefined]]],
 			["test/b.test.ts", "pass", undefined, [["sees the real module", "pass", undefined]]],
 			["test/c.test.ts", "pass", undefined, [["never loads the mocked module", "pass", undefined]]],
-			["test/d.test.ts", "pass", undefined, [["stubs env and waits", "pass", undefined], ["fakes timers and the clock", "pass", undefined]]],
+			["test/d.test.ts", "pass", undefined, [["stubs env and waits", "pass", undefined], ["reads repository files from the working directory", "pass", undefined], ["fakes timers and the clock", "pass", undefined]]],
 		]);
 	}, 30_000);
 });
