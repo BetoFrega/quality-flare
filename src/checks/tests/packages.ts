@@ -13,26 +13,29 @@ export interface PackageFiles {
 // Every package.json stays: a folder's "main" decides what importing the folder loads.
 const isPackageJson = (path: string) => path === "package.json" || path.endsWith("/package.json");
 
-/**
- * Tarball passes running at once in this isolate, which concurrent queue invocations share. A
- * Worker keeps 6 connections open; past that, the runtime may cancel a stream left waiting.
- */
-const MAX_PASSES = 4;
-let running = 0;
-const waiting: (() => void)[] = [];
+/** Runs a tarball pass when its turn comes. */
+export type Turns = <T>(pass: () => Promise<T>) => Promise<T>;
 
-/** Runs `pass` once fewer than MAX_PASSES are running. */
-async function inTurn<T>(pass: () => Promise<T>): Promise<T> {
-	// A finishing pass hands its slot straight to the next one waiting.
-	if (running < MAX_PASSES) running++;
-	else await new Promise<void>((resolve) => waiting.push(resolve));
-	try {
-		return await pass();
-	} finally {
-		const next = waiting.shift();
-		if (next) next();
-		else running--;
-	}
+/**
+ * Lets `max` passes run at once. A Worker keeps 6 connections open; past that, the runtime may
+ * cancel a stream left waiting. Create one per request: a promise created in one request and
+ * resolved from another (concurrent queue invocations share an isolate) hangs the first.
+ */
+export function turns(max = 4): Turns {
+	let running = 0;
+	const waiting: (() => void)[] = [];
+	return async (pass) => {
+		// A finishing pass hands its slot straight to the next one waiting.
+		if (running < max) running++;
+		else await new Promise<void>((resolve) => waiting.push(resolve));
+		try {
+			return await pass();
+		} finally {
+			const next = waiting.shift();
+			if (next) next();
+			else running--;
+		}
+	};
 }
 
 /** Text kept per package before it switches to loading files on demand. */
@@ -47,6 +50,7 @@ export const EAGER_PACKAGE_CHARS = 8 * 1024 * 1024;
 export async function readPackage(
 	download: () => Promise<ReadableStream<Uint8Array>>,
 	isPackageFile: (path: string) => boolean,
+	inTurn: Turns = (pass) => pass(),
 	budget = EAGER_PACKAGE_CHARS,
 ): Promise<PackageFiles> {
 	const paths = new Set<string>();
@@ -74,7 +78,7 @@ export async function readPackage(
 			}
 		};
 	}));
-	return lazy ? onDemand(paths, files, imports, download) : files;
+	return lazy ? onDemand(paths, files, imports, download, inTurn) : files;
 }
 
 /**
@@ -87,6 +91,7 @@ function onDemand(
 	files: Map<string, string>,
 	imports: Map<string, string[]>,
 	download: () => Promise<ReadableStream<Uint8Array>>,
+	inTurn: Turns,
 ): PackageFiles {
 	const requested = new Map<string, Promise<void>>();
 	let batch: Set<string> | undefined;

@@ -6,7 +6,7 @@ import { isLoadable, isTestFile } from "./convention.ts";
 import { d1JobStore, type JobStore, type ShardResult, type TestShard } from "./jobs.ts";
 import { readLockfile, type LockedPackage } from "./lockfile.ts";
 import { buildModules, bundleSize, MAIN_MODULE, type TestBundle } from "./modules.ts";
-import { type PackageFiles, readPackage } from "./packages.ts";
+import { type PackageFiles, readPackage, type Turns, turns } from "./packages.ts";
 import { mergeReports, toCheckResult, type ProgressEvent, type TestReport } from "./report.ts";
 import { readRun } from "./stream.ts";
 import { readTarball } from "./tarball.ts";
@@ -171,7 +171,13 @@ async function runShard(
 	onProgress({ type: "status", text: `${label}: montando ${count(shard.files.length, "arquivo")} de teste e as dependências` });
 	// Imported lazily: the bundled runtime is only needed when tests actually run.
 	const { default: runtimeSource } = await import("virtual:test-runtime");
-	const bundle = await buildModules(files, { runtimeSource, lockfile: readLockfile(files), fetchPackage, testFiles: shard.files });
+	const inTurn = turns();
+	const bundle = await buildModules(files, {
+		runtimeSource,
+		lockfile: readLockfile(files),
+		fetchPackage: (pkg) => fetchPackage(pkg, inTurn),
+		testFiles: shard.files,
+	});
 	files.clear();
 	// Imports that fail inside npm packages are usually optional ones that never run.
 	const unresolved = bundle.unresolved.filter((u) => !u.from.startsWith("node_modules/"));
@@ -237,14 +243,14 @@ const NO_TESTS: CheckResult = {
 };
 
 /** Downloads a package from the npm registry. Tarballs never change, so Cloudflare's cache keeps them. */
-function fetchPackage({ name, version }: LockedPackage): Promise<PackageFiles> {
+function fetchPackage({ name, version }: LockedPackage, inTurn: Turns): Promise<PackageFiles> {
 	return readPackage(async () => {
 		const res = await fetch(`https://registry.npmjs.org/${name}/-/${name.split("/").pop()}-${version}.tgz`, {
 			cf: { cacheEverything: true, cacheTtl: 7 * 24 * 3600 },
 		});
 		if (!res.ok || !res.body) throw new Error(`npm: ${name}@${version} → ${res.status}`);
 		return res.body;
-	}, (p) => PACKAGE_FILE.test(p)).catch((error: unknown) => {
+	}, (p) => PACKAGE_FILE.test(p), inTurn).catch((error: unknown) => {
 		console.error("quality-flare: could not read npm package", `${name}@${version}`, error);
 		throw error;
 	});
