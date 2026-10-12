@@ -4,15 +4,19 @@
  */
 
 /** Test files: `*.test.ts`, `*.spec.mjs`, and so on. */
-const TEST_FILE = /\.(test|spec)\.(ts|mts|js|mjs)$/;
+const TEST_FILE = /\.(test|spec)\.(ts|mts|tsx|js|mjs|jsx)$/;
 
 /** Files the Dynamic Worker can load as modules. */
-export const MODULE_FILE = /\.(ts|mts|js|mjs|json)$/;
+export const MODULE_FILE = /\.(ts|mts|tsx|js|mjs|cjs|jsx|json)$/;
 
 /** Directories never scanned: dependencies, build output and tool caches. */
 const SKIPPED_DIR = /(^|\/)(node_modules|dist|build|coverage|\.[^/]+)\//;
 
 export const isTestFile = (path: string) => TEST_FILE.test(path) && !SKIPPED_DIR.test(path);
+
+/** Other repository files tests may read with node:fs: text, at most 1 MB each. */
+export const isAsset = (path: string, size: number) =>
+	size <= 1024 * 1024 && !/(^|\/)(node_modules|\.git)\//.test(path) && !/\.(png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf|eot|pdf|zip|gz|tgz|mp[34]|webm|wasm)$/i.test(path);
 
 export const isLoadable = (path: string) => MODULE_FILE.test(path) && !SKIPPED_DIR.test(path) && !path.endsWith(".d.ts");
 

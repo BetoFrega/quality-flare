@@ -126,6 +126,17 @@ describe.skipIf(inWorkers)("tests in a Dynamic Worker", () => {
 					expect(process.env.MODE).toBeUndefined();
 					let n = 0;
 					expect(await vi.waitFor(() => { if (++n < 3) throw new Error("not yet"); return n; }, { interval: 1 })).toBe(3);
+				});
+				it("fakes timers and the clock", async () => {
+					vi.useFakeTimers();
+					vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+					let fired = false;
+					setTimeout(() => { fired = true; }, 1000);
+					expect(vi.getTimerCount()).toBe(1);
+					await vi.advanceTimersByTimeAsync(1000);
+					expect(fired).toBe(true);
+					expect(new Date().toISOString()).toBe("2026-01-01T00:00:01.000Z");
+					vi.useRealTimers();
 				});`,
 		};
 		const bundle = await buildModules(new Map(Object.entries(repo)), {
@@ -138,7 +149,7 @@ describe.skipIf(inWorkers)("tests in a Dynamic Worker", () => {
 			["test/a.test.ts", "pass", undefined, [["sees the mock through another module", "pass", undefined], ["keeps what importOriginal brought", "pass", undefined]]],
 			["test/b.test.ts", "pass", undefined, [["sees the real module", "pass", undefined]]],
 			["test/c.test.ts", "pass", undefined, [["never loads the mocked module", "pass", undefined]]],
-			["test/d.test.ts", "pass", undefined, [["stubs env and waits", "pass", undefined]]],
+			["test/d.test.ts", "pass", undefined, [["stubs env and waits", "pass", undefined], ["fakes timers and the clock", "pass", undefined]]],
 		]);
 	}, 30_000);
 });

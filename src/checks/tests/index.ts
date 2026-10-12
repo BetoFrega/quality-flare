@@ -4,7 +4,7 @@ import { d1RunStore } from "../../runs.ts";
 import type { Check, CheckResult } from "../types.ts";
 import { CONFIG_FILE, readTestConfig, selectTestFiles, type TestConfig } from "./config.ts";
 import { readVitestConfig } from "./vitest-config.ts";
-import { isLoadable, isTestFile } from "./convention.ts";
+import { isAsset, isLoadable, isTestFile } from "./convention.ts";
 import { d1JobStore, type JobStore, type ShardResult, type TestShard } from "./jobs.ts";
 import { readLockfile, type LockedPackage } from "./lockfile.ts";
 import { buildModules, bundleSize, MAIN_MODULE, type TestBundle } from "./modules.ts";
@@ -15,7 +15,8 @@ import { readTarball } from "./tarball.ts";
 
 const NAME = "Tests";
 const LOCKFILES = new Set(["pnpm-lock.yaml", "package-lock.json"]);
-const PACKAGE_FILE = /\.(c|m)?js$|\.json$/;
+// Stylesheets are read with node:fs by some packages (jsdom's default stylesheet), never imported.
+const PACKAGE_FILE = /\.(c|m)?js$|\.json$|\.css$/;
 
 /** Runtime the tests run on: today's Workers, with Node.js APIs. */
 const COMPATIBILITY_DATE = "2026-10-06";
@@ -172,7 +173,7 @@ async function runShard(
 ): Promise<ShardResult> {
 	const label = `Lote ${shard.shard}`;
 	onProgress({ type: "status", text: `${label}: baixando o código` });
-	const files = await readTarball(await github.getTarball(shard.repo, shard.sha), (p) => isLoadable(p) || LOCKFILES.has(p));
+	const files = await readTarball(await github.getTarball(shard.repo, shard.sha), (p, size) => isLoadable(p) || LOCKFILES.has(p) || isAsset(p, size));
 	onProgress({ type: "status", text: `${label}: montando ${count(shard.files.length, "arquivo")} de teste e as dependências` });
 	// Imported lazily: the bundled runtime is only needed when tests actually run.
 	const { default: runtimeSource } = await import("virtual:test-runtime");

@@ -32,7 +32,9 @@ import {
 	test,
 } from "@vitest/runner";
 import type { ProgressEvent, RunRequest, TestReport, TestResult } from "../report.ts";
-import { activateMocks, mock, mockFacade, prepareMocks } from "./mocks.ts";
+import { activateEnvironment, setUpEnvironment } from "./environment.ts";
+import { activateMocks, fileEntry, mock, mockFacade, prepareMocks } from "./mocks.ts";
+import { loadTimers, timers } from "./timers.ts";
 
 export { mockFacade };
 export { afterAll, afterEach, beforeAll, beforeEach, describe, it, onTestFailed, onTestFinished, suite, test };
@@ -161,9 +163,15 @@ export const vi = {
 	doMock: unsupported("doMock"),
 	unmock: unsupported("unmock"),
 	resetModules: unsupported("resetModules"),
-	useFakeTimers: unsupported("useFakeTimers"),
-	useRealTimers: () => vi,
 };
+// vi.useFakeTimers(), vi.advanceTimersByTime()… return vi, as in vitest, so calls chain.
+for (const [name, method] of Object.entries(timers)) {
+	(vi as Record<string, unknown>)[name] = (...args: unknown[]) => {
+		const result = (method as (...a: unknown[]) => unknown)(...args);
+		if (result instanceof Promise) return result.then(() => vi);
+		return result === undefined ? vi : result;
+	};
+}
 
 class WorkerRunner implements VitestRunner {
 	constructor(
@@ -193,14 +201,35 @@ class WorkerRunner implements VitestRunner {
 		strictTags: false,
 	};
 
-	async importFile(filepath: string) {
-		await prepareMocks(filepath);
-		return import(filepath);
+	/** The test file being collected: setup files run in its environment, with its mocks. */
+	private collecting = "";
+	private readonly ready = new Set<string>();
+
+	onCollectStart(file: File) {
+		this.collecting = file.filepath;
+		timers.useRealTimers();
+	}
+
+	async importFile(filepath: string, source: "collect" | "setup") {
+		const file = source === "setup" ? this.collecting : filepath;
+		const entry = await fileEntry(file);
+		if (!this.ready.has(file)) {
+			this.ready.add(file);
+			await setUpEnvironment(file, entry?.environment);
+			if (entry) await prepareMocks(file, entry);
+		}
+		return import(source === "setup" ? (entry?.setup?.[filepath] ?? filepath) : filepath);
 	}
 
 	onBeforeRunSuite(suite: Suite) {
-		// Every file is collected before any test runs: point the mocks back at this file's.
-		if ("filepath" in suite) activateMocks((suite as File).filepath);
+		// Every file is collected before any test runs: bring back this file's environment and mocks.
+		if ("filepath" in suite) {
+			const file = (suite as File).filepath;
+			// Fake timers end with the file that installed them, as in vitest.
+			timers.useRealTimers();
+			activateEnvironment(file);
+			activateMocks(file);
+		}
 	}
 
 	onCollected(files: File[]) {
@@ -237,6 +266,7 @@ const GLOBALS = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, 
 export async function runTests(run: RunRequest | string[], onProgress: (event: ProgressEvent) => void = () => {}): Promise<TestReport> {
 	const { files: paths, globals, ...options } = Array.isArray(run) ? { files: run } : run;
 	if (globals) Object.assign(globalThis, GLOBALS);
+	await loadTimers();
 	const files = await startTests(paths, new WorkerRunner(onProgress, options));
 	return { files: files.map(reportFile) };
 }

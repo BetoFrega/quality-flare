@@ -2,20 +2,20 @@
  * Reads a GitHub tarball (gzipped tar) into a map of path → text, dropping the top-level
  * "<owner>-<repo>-<sha>/" directory GitHub adds. Only files `keep` accepts are decoded.
  */
-export async function readTarball(gzipped: ReadableStream<Uint8Array>, keep: (path: string) => boolean): Promise<Map<string, string>> {
+export async function readTarball(gzipped: ReadableStream<Uint8Array>, keep: (path: string, size: number) => boolean): Promise<Map<string, string>> {
 	const files = new Map<string, string>();
-	await walkTarball(gzipped, (path) => (keep(path) ? (text) => files.set(path, text) : undefined));
+	await walkTarball(gzipped, (path, size) => (keep(path, size) ? (text) => files.set(path, text) : undefined));
 	return files;
 }
 
 /**
  * Streams a gzipped tar, calling `visit` with each regular file's path (top-level directory
- * dropped). A file's text is decoded only when `visit` returns a callback for it, so memory
+ * dropped) and size in bytes. A file's text is decoded only when `visit` returns a callback for it, so memory
  * holds the kept files, never the whole archive. Stops early once `done` returns true.
  */
 export async function walkTarball(
 	gzipped: ReadableStream<Uint8Array>,
-	visit: (path: string) => ((text: string) => void) | undefined,
+	visit: (path: string, size: number) => ((text: string) => void) | undefined,
 	done: () => boolean = () => false,
 ): Promise<void> {
 	const reader = new ByteReader(gzipped.pipeThrough(new DecompressionStream("gzip")).getReader());
@@ -40,7 +40,7 @@ export async function walkTarball(
 			const name = longName ?? (prefix ? `${prefix}/${field(header, 0, 100, decoder)}` : field(header, 0, 100, decoder));
 			longName = undefined;
 			const path = name.slice(name.indexOf("/") + 1);
-			const onText = (type === "0" || type === "\0") && path ? visit(path) : undefined;
+			const onText = (type === "0" || type === "\0") && path ? visit(path, size) : undefined;
 			if (onText) {
 				onText(decoder.decode(await reader.read(size)));
 				await reader.skip(padding);

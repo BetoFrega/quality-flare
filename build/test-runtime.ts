@@ -19,8 +19,11 @@ export function testRuntime(): Plugin {
 			const result = await build({
 				input: entry,
 				platform: "neutral",
+				// "main" too: @sinonjs/fake-timers is CommonJS only, which neutral resolution skips.
+				resolve: { mainFields: ["module", "main"], alias: { util: new URL("./shims/util.ts", import.meta.url).pathname } },
 				write: false,
-				output: { format: "esm", minify: true },
+				// One file: lazily imported parts (fake timers) stay inside it.
+				output: { format: "esm", minify: true, codeSplitting: false },
 				logLevel: "silent",
 			});
 			return `export default ${JSON.stringify(result.output[0].code)};`;

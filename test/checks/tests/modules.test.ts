@@ -47,6 +47,13 @@ describe("buildModules", () => {
 		expect(modules["test/a.test.ts"].js).toBe(`import "node:http2"; import "node:v8"; import "node:fs/promises";`);
 	});
 
+	it("points import.meta.url and dirname under /bundle, leaving strings and comments alone", async () => {
+		const { modules } = await build({
+			"test/a.test.ts": `const u = import.meta.url; const d = import.meta .dirname; const s = "import.meta.url"; // import.meta.url`,
+		});
+		expect(modules["test/a.test.ts"].js).toBe(`const u = "file:///bundle/test/a.test.ts"; const d = "/bundle/test"; const s = "import.meta.url"; // import.meta.url`);
+	});
+
 	it("finds test files by convention and adds the runtime", async () => {
 		const bundle = await build({
 			"test/a.test.ts": "",
@@ -57,7 +64,8 @@ describe("buildModules", () => {
 		});
 		expect(bundle.testFiles).toEqual(["/src/b.spec.mjs", "/test/a.test.ts"]);
 		expect(Object.keys(bundle.modules)).toEqual(expect.arrayContaining([MAIN_MODULE, RUNTIME_MODULE, "test/a.test.ts", "src/b.spec.mjs"]));
-		expect(bundle.modules).not.toHaveProperty("src/c.ts");
+		// Not imported: only a file tests can read with node:fs.
+		expect(bundle.modules["src/c.ts"]).toEqual({ text: "" });
 	});
 
 	it("strips types and resolves imports the way bundlers do", async () => {
@@ -179,6 +187,6 @@ describe("buildModules", () => {
 			new Map([["test/a.test.js", `require("process"); require("node:process");`]]),
 			{ runtimeSource: "", fetchPackage },
 		);
-		expect(modules["test/a.test.js"]).toEqual({ cjs: `require("/__qf/process.js"); require("/__qf/process.js");` });
+		expect(modules["test/a.test.js"]).toEqual({ cjs: `__filename = "/bundle/test/a.test.js"; __dirname = "/bundle/test";require("/__qf/process.js"); require("/__qf/process.js");` });
 	});
 });
