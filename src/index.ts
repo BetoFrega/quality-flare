@@ -1,7 +1,9 @@
+import { ADMIN_PATH, handleAdmin } from "./admin/index.ts";
 import { checks as allChecks } from "./checks/index.ts";
-import type { Check } from "./checks/types.ts";
+import type { Check, CheckResult } from "./checks/types.ts";
 import { verifySignature } from "./crypto.ts";
 import { GitHubClient, type PullRequest } from "./github.ts";
+import { getDisabledChecks } from "./settings.ts";
 
 const PULL_REQUEST_ACTIONS = new Set([
 	"opened",
@@ -22,6 +24,13 @@ interface WebhookPayload {
 	check_suite?: { pull_requests: { number: number }[] };
 }
 
+/** Reported instead of running a check the repository turned off, so required checks don't block merges. */
+export const DISABLED_RESULT: CheckResult = {
+	conclusion: "neutral",
+	title: "Desativado",
+	summary: "Este check está desativado para este repositório no admin do quality-flare.",
+};
+
 export interface Plan {
 	/** PR payloads, or numbers to fetch first. */
 	pullRequests: (PullRequest | number)[];
@@ -29,7 +38,9 @@ export interface Plan {
 }
 
 export default {
-	async fetch(request, env) {
+	async fetch(request, env, ctx) {
+		const { pathname } = new URL(request.url);
+		if (pathname === ADMIN_PATH || pathname.startsWith(`${ADMIN_PATH}/`)) return handleAdmin(request, env, ctx.access);
 		if (request.method === "GET") return new Response("quality-flare is running\n");
 		if (request.method !== "POST") return new Response("Method not allowed\n", { status: 405 });
 
@@ -43,6 +54,7 @@ export default {
 		if (!plan || !payload.installation || !payload.repository) return new Response("Ignored\n", { status: 202 });
 
 		const repo = payload.repository.full_name;
+		const disabled = await getDisabledChecks(env.SETTINGS, repo);
 		const github = await GitHubClient.forInstallation(
 			{ appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY },
 			payload.installation.id,
@@ -51,7 +63,7 @@ export default {
 			// Re-run requests only carry the PR number; fetch it so labels and body are current.
 			const pr = typeof target === "number" ? await github.getPullRequest(repo, target) : target;
 			for (const check of plan.checks) {
-				const result = await check.run({ github, repo, pr, env });
+				const result = disabled.has(check.id) ? DISABLED_RESULT : await check.run({ github, repo, pr, env });
 				await github.createCheckRun(repo, pr.head.sha, check.name, result);
 			}
 		}

@@ -18,6 +18,21 @@ export class GitHubClient {
 		return new GitHubClient(res.token);
 	}
 
+	/** Every repository the App is installed on, across all installations, sorted by name. */
+	static async listInstalledRepos(creds: AppCredentials): Promise<InstalledRepo[]> {
+		const jwt = await createAppJwt(creds.appId, creds.privateKey);
+		const installations = await paginate<Installation>(jwt, "/app/installations", (page) => page as Installation[]);
+		const repos: InstalledRepo[] = [];
+		for (const installation of installations) {
+			const client = await GitHubClient.forInstallation(creds, installation.id);
+			const page = await paginate<InstalledRepo>(client.token, "/installation/repositories", (p) =>
+				(p as { repositories: InstalledRepo[] }).repositories,
+			);
+			repos.push(...page.map(({ full_name, html_url, private: isPrivate }) => ({ full_name, html_url, private: isPrivate })));
+		}
+		return repos.sort((a, b) => a.full_name.localeCompare(b.full_name));
+	}
+
 	getPullRequest(repo: string, number: number): Promise<PullRequest> {
 		return request(this.token, "GET", `/repos/${repo}/pulls/${number}`);
 	}
@@ -62,6 +77,17 @@ export interface PullRequest {
 	labels: { name: string }[];
 }
 
+export interface InstalledRepo {
+	/** "owner/repo" */
+	full_name: string;
+	html_url: string;
+	private: boolean;
+}
+
+interface Installation {
+	id: number;
+}
+
 interface LinkedIssuesResponse {
 	data?: {
 		repository?: {
@@ -71,6 +97,17 @@ interface LinkedIssuesResponse {
 		};
 	};
 	errors?: { message: string }[];
+}
+
+/** Follows `page` until a page comes back short. */
+async function paginate<T>(token: string, path: string, items: (page: unknown) => T[]): Promise<T[]> {
+	const perPage = 100;
+	const all: T[] = [];
+	for (let page = 1; ; page++) {
+		const batch = items(await request(token, "GET", `${path}?per_page=${perPage}&page=${page}`));
+		all.push(...batch);
+		if (batch.length < perPage) return all;
+	}
 }
 
 async function request<T>(token: string, method: string, path: string, body?: unknown): Promise<T> {

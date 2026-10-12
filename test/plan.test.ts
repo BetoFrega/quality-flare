@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Check } from "../src/checks/types.ts";
 import { planDelivery } from "../src/index.ts";
 
-const fake = (name: string): Check => ({ name, run: async () => ({ conclusion: "success", title: "", summary: "" }) });
+const fake = (name: string): Check => ({ id: name.toLowerCase(), name, run: async () => ({ conclusion: "success", title: "", summary: "" }) });
 const checks = [fake("A"), fake("B")];
 const pr = { number: 7, body: null, head: { sha: "abc" }, labels: [] };
 

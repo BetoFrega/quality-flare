@@ -2,7 +2,7 @@
 
 Continuous Integration rodando inteiramente na Cloudflare, entregue como uma GitHub App. Cada check vira um check run na pull request.
 
-Toda a infraestrutura é Cloudflare: por enquanto um único Worker, sem estado (não usa KV nem D1). O projeto foi criado e é publicado com o novo CLI da Cloudflare, [`cf`](https://www.npmjs.com/package/cf).
+Toda a infraestrutura é Cloudflare: um único Worker, um namespace KV com as configurações de cada repositório e o Cloudflare Access protegendo o admin. O projeto foi criado e é publicado com o novo CLI da Cloudflare, [`cf`](https://www.npmjs.com/package/cf).
 
 ## Checks
 
@@ -71,6 +71,16 @@ Depois de criar, anote o **App ID**, gere uma **private key** e instale a App no
 ### 3. Exigir o check
 
 Em cada repositório: **Settings → Rules** (ou Branch protection) → exigir o status check **Closes an issue**.
+
+## Admin
+
+Em [`/admin`](https://quality-flare.frega.workers.dev/admin) dá para ativar e desativar cada check por repositório. A lista vem das instalações da App, e todo check começa ativo.
+
+- **Login:** uma aplicação self-hosted do Cloudflare Access cobre `quality-flare.frega.workers.dev/admin` e `/admin/*`. O Worker ainda confere `ctx.access` e exige que o `aud` seja o dessa aplicação (`ACCESS_AUD`), então o admin recusa qualquer pedido que não passou pelo Access.
+- **Armazenamento:** KV `quality-flare-settings` (binding `SETTINGS`), chave `repo:<owner/repo>` com `{ "disabledChecks": ["closes-issue"] }`.
+- **Check desativado:** o Worker não roda o check e publica o check run com conclusão `neutral` ("Desativado"), para que um check exigido pela proteção de branch não trave o merge.
+
+Cada check tem um `id` estável (por exemplo `closes-issue`) que é o que fica salvo; não mude o `id` de um check já publicado.
 
 ## Configuração opcional
 
