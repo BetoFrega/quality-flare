@@ -42,7 +42,7 @@ Um teste que só funciona no Node pode se pular no Workers com `describe.skipIf(
 
 Roda o vitest do próprio repositório, com a config dele, num [container](https://developers.cloudflare.com/containers/) criado para cada execução (imagem em [`containers/tests`](containers/tests), Node 24, instância `standard-4`: 4 vCPU, 12 GiB). Serve para o que não roda no Dynamic Worker: testes que precisam de processos, sockets, `vm`, módulos nativos ou do typecheck. É um check separado do **Tests**: os dois são ligados um a um no admin, e um repositório pode usar os dois (por exemplo, testes de unidade baratos no Tests e o resto aqui).
 
-- **Passos:** clona o commit da PR, com o histórico da branch base em `origin/<base>`, usando um token que só lê aquele repositório; instala as dependências pelo lockfile (`npm ci`, `pnpm install --frozen-lockfile` ou `yarn install --frozen-lockfile`, sem scripts de instalação); roda `vitest run`; depois roda cada comando da config, na ordem.
+- **Passos:** clona o commit da PR, com o histórico da branch base em `origin/<base>`, usando um token que só lê aquele repositório, e faz o merge da base nele, como o GitHub Actions faz em `pull_request` (com conflito, o check falha pedindo para resolver); instala as dependências pelo lockfile (`npm ci`, `pnpm install --frozen-lockfile` ou `yarn install --frozen-lockfile`, sem scripts de instalação); roda `vitest run`; depois roda cada comando da config, na ordem.
 - **Config:** a seção `container` do `quality-flare.json`, separada da seção `tests` do check Tests. Quando a PR não tem o arquivo, vale o da branch base:
 
   ```json
@@ -66,7 +66,7 @@ Roda o vitest do próprio repositório, com a config dele, num [container](https
 
 ### Testes sob demanda
 
-Uma opção por repositório no admin, desligada por padrão, que vale para o **Tests** e o **Container tests**. Ligada, um push na PR não roda esses checks: cada um fica em espera (check run `queued`) até alguém com acesso ao repositório (OWNER, MEMBER ou COLLABORATOR) comentar `/quality-flare run` na PR. O comentário roda o commit atual uma vez e recebe um 🚀; o próximo push volta a esperar. O **Re-run** também roda.
+Uma opção por repositório no admin, desligada por padrão, que vale para o **Tests** e o **Container tests**. Ligada, um push na PR não roda esses checks: cada um fica em espera (check run `queued`) até alguém com acesso ao repositório (OWNER, MEMBER ou COLLABORATOR) comentar `/quality-flare run` na PR. O comentário roda o commit atual uma vez e recebe um 🚀; o próximo push volta a esperar. Sair de draft ou reabrir a PR no mesmo commit não muda nada: o commit fica com o check run que já tem. O **Re-run** também roda.
 
 A ideia é que agentes rodem os testes localmente o tempo todo e só peçam a execução remota no fim: depois de abrir a PR, corrigir as reviews e deixá-la pronta para o merge, sem push depois que a suíte fica verde. O texto do check em espera diz isso ao agente. Um check em espera que a branch exige trava o merge até alguém pedir a execução. PRs abertas por bots, como as do Dependabot, rodam direto em todo push.
 

@@ -101,11 +101,22 @@ export async function runPlan(plan: Plan, repo: string, installationId: number, 
 		for (const check of checks) {
 			let result: CheckResult | null;
 			if (!settings.enabledChecks.has(check.id)) result = DISABLED_RESULT;
-			else if (check.onDemand && !plan.command && !plan.rerun && !runsOnPush(settings.onDemand, pr)) result = WAITING_RESULT;
+			else if (check.onDemand && !plan.command && !plan.rerun && !runsOnPush(settings.onDemand, pr)) {
+				// A commit keeps the run it has: leaving draft or reopening on the same head must not queue a passed run again.
+				result = (await hasRun(github, repo, pr.head.sha, check.name, env.GITHUB_APP_ID)) ? null : WAITING_RESULT;
+			}
 			else result = await check.run({ github, repo, pr, env, installationId });
 			if (result) await github.createCheckRun(repo, pr.head.sha, check.name, result);
 		}
 	}
+}
+
+/** Whether the commit already has the check's run; when GitHub can't say, it doesn't, so the check waits. */
+function hasRun(github: GitHubClient, repo: string, sha: string, name: string, appId: string): Promise<boolean> {
+	return github.hasCheckRun(repo, sha, name, appId).catch((error: unknown) => {
+		console.error("quality-flare: could not list check runs", error);
+		return false;
+	});
 }
 
 /** Decides which checks to run on which PRs for a webhook delivery, or null to ignore it. */
