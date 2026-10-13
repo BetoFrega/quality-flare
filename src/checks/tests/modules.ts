@@ -121,6 +121,37 @@ function namedFiles(source: string, file: string, repoFiles: Map<string, string>
 	}
 	return names;
 }
+/**
+ * Whether code in the bundle can name a repository file: its file name, or its folder's (a test
+ * that lists a fixtures folder), appears in some module. The repository can hold thousands of
+ * files no test reads, and every shard's Dynamic Worker would carry them.
+ */
+function namedInCode(modules: Modules, paths: Iterable<string>): (path: string) => boolean {
+	const baseName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+	const folder = (path: string) => baseName(path.slice(0, Math.max(0, path.lastIndexOf("/"))));
+	const files = new Set<string>();
+	const folders = new Set<string>();
+	for (const path of paths) {
+		files.add(baseName(path));
+		folders.add(folder(path));
+	}
+	const seenFiles = new Set<string>();
+	const seenFolders = new Set<string>();
+	for (const [name, module] of Object.entries(modules)) {
+		const source = "js" in module ? module.js : "cjs" in module ? module.cjs : undefined;
+		if (typeof source !== "string" || name.startsWith("__qf/")) continue;
+		for (const [word] of source.matchAll(/[\w@+-][\w@.+-]*/g)) if (files.has(word)) seenFiles.add(word);
+		// Folder names are common words: only a string of the repository's own code that is, or
+		// ends in, the folder counts.
+		if (name.startsWith("node_modules/")) continue;
+		for (const [, literal] of source.matchAll(/["'`]([\w@./+-]{1,200})["'`]/g)) {
+			const last = baseName(literal.replace(/\/+$/, ""));
+			if (last && folders.has(last)) seenFolders.add(last);
+		}
+	}
+	return (path) => baseName(path) === "package.json" || seenFiles.has(baseName(path)) || seenFolders.has(folder(path));
+}
+
 const CSS_MODULE = "__qf/css-module.js";
 const ASSET_IMPORT = /\.(svg|png|jpe?g|gif|webp|avif|ico|bmp|woff2?|ttf|otf|eot|mp4|webm|ogg|mp3|wav|flac|aac|pdf|txt)(\?.*)?$/;
 const STYLESHEET = /\.(css|scss|sass|less|styl|stylus|pcss|postcss)(\?.*)?$/;
@@ -633,7 +664,8 @@ mockFacade(${JSON.stringify(key)}, (__qf_ns) => {
 		assets += text.length;
 	};
 	for (const path of originals) modules[`${ORIGINALS_DIR}/${path}`] = { text: repoFiles.get(path)! };
-	for (const [path, text] of repoFiles) addAsset(path, text);
+	const named = namedInCode(modules, repoFiles.keys());
+	for (const [path, text] of repoFiles) if (named(path)) addAsset(path, text);
 	for (const pkg of packageByDir.values()) {
 		for (const path of pkg.files.keys()) if (path.endsWith(".css")) addAsset(`${pkg.dir}/${path}`, pkg.files.get(path));
 	}
