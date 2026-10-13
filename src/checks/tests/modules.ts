@@ -3,7 +3,7 @@ import { exports as packageExports, imports as packageImports } from "resolve.ex
 import { transform } from "sucrase";
 import { isLoadable, isPlaywrightSpec, isTestFile } from "./convention.ts";
 import type { LockedPackage, Lockfile } from "./lockfile.ts";
-import { ACTUAL, rewriteImportActual, splitMocks } from "./mocks.ts";
+import { ACTUAL, rewriteImportActual, splitMocks, usedNames } from "./mocks.ts";
 import type { PackageFiles } from "./packages.ts";
 
 /** Module names reserved for the test runtime inside the Dynamic Worker. */
@@ -11,8 +11,35 @@ export const RUNTIME_MODULE = "__qf/runtime.js";
 export const MAIN_MODULE = "__qf/main.js";
 const VITEST_MODULE = "__qf/vitest.js";
 const PROCESS_MODULE = "__qf/process.js";
-/** Which mocks each test file sees; read by runtime/mocks.ts. */
-const MOCKS_MODULE = "__qf/mocks.js";
+const EMPTY_MODULE = "__qf/empty.js";
+const RESET_MODULES = /\bvi\s*\.\s*resetModules\s*\(/;
+/**
+ * Fresh copies per module for files that call vi.resetModules(): one per test of the file that
+ * has the most (a reset in beforeEach), within these bounds; resets past the last reuse it.
+ */
+const FRESH_COPIES = { min: 3, max: 32 };
+const TEST_CALL = /(?<![\w$.])(?:it|test)(?:\s*\.\s*\w+)*\s*\(/g;
+/**
+ * workerd's path.resolve() and relative() resolve against "/", not process.cwd() ("/bundle"),
+ * so `resolve("docs")` misses the repository. This node:path resolves against the cwd.
+ */
+const PATH_MODULE = "__qf/path.js";
+const PATH_SHIM = `import path from "node:path";
+import process from "node:process";
+export const resolve = (...paths) => path.posix.resolve(process.cwd(), ...paths);
+export const relative = (from, to) => path.posix.relative(resolve(from), resolve(to));
+export const { basename, delimiter, dirname, extname, format, isAbsolute, join, normalize, parse, sep, toNamespacedPath, win32, matchesGlob } = path;
+export const posix = { ...path.posix, resolve, relative };
+posix.posix = posix;
+export default posix;`;
+const CSS_MODULE = "__qf/css-module.js";
+const ASSET_IMPORT = /\.(svg|png|jpe?g|gif|webp|avif|ico|bmp|woff2?|ttf|otf|eot|mp4|webm|ogg|mp3|wav|flac|aac|pdf|txt)(\?.*)?$/;
+const STYLESHEET = /\.(css|scss|sass|less|styl|stylus|pcss|postcss)(\?.*)?$/;
+/** Each test file's mocks, environment and setup copies; read by runtime/mocks.ts. */
+const FILES_MODULE = "__qf/files.js";
+/** vitest environments and the package each needs; read by runtime/environment.ts. */
+const ENVIRONMENT_PACKAGES: Record<string, string> = { jsdom: "jsdom", "happy-dom": "happy-dom" };
+const ENVIRONMENT_COMMENT = /^\s*(?:\/\/|\/?\*+)\s*@vitest-environment\s+([\w-]+)/m;
 /** npm packages are laid out under this folder, one subfolder per locked package. */
 const PACKAGES_DIR = "node_modules/.qf";
 
@@ -60,6 +87,8 @@ export interface BuildOptions {
 	testFiles?: string[];
 	/** Repository paths of files to run before each test file (vitest's `setupFiles`). */
 	setupFiles?: string[];
+	/** vitest's `environment` for files without a `@vitest-environment` comment; "node" by default. */
+	environment?: string;
 }
 
 interface Package {
@@ -124,6 +153,7 @@ export default { fetch: handleRequest };`,
 	const mockKeys = new Set<string>();
 	const mocksOf = new Map<string, { module: string; keys: Set<string>; original: boolean }>();
 	const missingNames = new Map<Unresolved, string>();
+	const environments = new Map<string, string>();
 
 	const packageOf = (name: string) => {
 		if (!name.startsWith(`${PACKAGES_DIR}/`)) return undefined;
@@ -132,7 +162,9 @@ export default { fetch: handleRequest };`,
 	};
 	const sourceOf = (name: string) => {
 		const pkg = packageOf(name);
-		return pkg ? pkg.files.get(name.slice(pkg.dir.length + 1)) : repoFiles.get(name);
+		const source = pkg ? pkg.files.get(name.slice(pkg.dir.length + 1)) : repoFiles.get(name);
+		// A hashbang line (`#!/usr/bin/env node`) becomes a comment: neither parser accepts it.
+		return source?.startsWith("#!") ? `//${source.slice(2)}` : source;
 	};
 	/** Brings a package file into memory; a file that fails to download stays missing. */
 	const fetchSource = async (name: string) => {
@@ -144,13 +176,24 @@ export default { fetch: handleRequest };`,
 		return pkg ? pkg.files.has(name.slice(pkg.dir.length + 1)) : repoFiles.has(name) && isLoadable(name);
 	};
 
+	/** The "type" of the package.json closest above a file, as Node reads it (dist/commonjs/package.json included). */
+	const nearestType = (name: string): string | undefined => {
+		const pkg = packageOf(name);
+		if (!pkg) return nearestPackageJson(repoFiles, name).type;
+		for (let i = name.lastIndexOf("/"); i > pkg.dir.length; i = name.lastIndexOf("/", i - 1)) {
+			const json = pkg.files.get(`${name.slice(pkg.dir.length + 1, i)}/package.json`);
+			if (json) return readJson(json).type;
+		}
+		return pkg.json.type;
+	};
+
 	const kindOf = (name: string): Kind => {
 		let kind = kinds.get(name);
 		if (kind) return kind;
 		if (name.endsWith(".json")) kind = "json";
-		else if (/\.(m?ts|mjs)$/.test(name)) kind = "esm";
+		else if (/\.(m?ts|mjs|[jt]sx)$/.test(name)) kind = "esm";
 		else if (name.endsWith(".cjs")) kind = "cjs";
-		else if ((packageOf(name)?.json ?? nearestPackageJson(repoFiles, name)).type === "module") kind = "esm";
+		else if (nearestType(name) === "module") kind = "esm";
 		else kind = hasModuleSyntax(sourceOf(name)!) ? "esm" : "cjs";
 		kinds.set(name, kind);
 		return kind;
@@ -174,15 +217,15 @@ export default { fetch: handleRequest };`,
 	};
 
 	/** Resolves an import to a module name, or undefined if it can't be found. */
-	const resolve = async (specifier: string, from: string): Promise<string | undefined> => {
+	const resolve = async (specifier: string, from: string, importer: Kind): Promise<string | undefined> => {
 		const pkg = packageOf(from);
 		const probe = (path: string) => probeFile(path, exists, !pkg, sourceOf);
 		if (specifier.startsWith(".")) return probe(join(dirname(from), specifier));
 		if (specifier.startsWith("/")) return probe(pkg ? `${pkg.dir}${specifier}` : specifier.slice(1));
 		if (specifier.startsWith("#")) {
 			const json = pkg?.json ?? rootJson(repoFiles);
-			const target = resolveConditions((conditions) => packageImports(json, specifier, { conditions, unsafe: true }));
-			if (!target || !target.startsWith("./")) return target ? resolve(target, from) : undefined;
+			const target = resolveConditions((conditions) => packageImports(json, specifier, { conditions, unsafe: true }), importer);
+			if (!target || !target.startsWith("./")) return target ? resolve(target, from, importer) : undefined;
 			return probe(join(pkg ? `${pkg.dir}/` : "", target));
 		}
 		if (!pkg) {
@@ -198,14 +241,14 @@ export default { fetch: handleRequest };`,
 		if (workspace !== undefined) {
 			// A package of this repository (npm/pnpm workspaces): its files are loaded like the repo's own.
 			const json = readJson(repoFiles.get(`${workspace}/package.json`));
-			const entry = entryOf(json, subpath);
+			const entry = entryOf(json, subpath, importer);
 			return entry ? probe(join(`${workspace}/`, entry)) : undefined;
 		}
 		const locked = pkg ? options.lockfile.fromPackage(pkg.locked, name) : options.lockfile.fromRepo(from, name);
 		const target = locked && (await loadPackage(locked));
 		if (!target) return undefined;
 		if (target instanceof DownloadFailed) throw target;
-		const entry = entryOf(target.json, subpath);
+		const entry = entryOf(target.json, subpath, importer);
 		return entry ? probeFile(join(`${target.dir}/`, entry), exists, false, sourceOf) : undefined;
 	};
 
@@ -214,9 +257,37 @@ export default { fetch: handleRequest };`,
 		if (specifier === "vitest") return `/${VITEST_MODULE}`;
 		// workerd can't require() node:process from CommonJS, though ESM imports it fine.
 		if (importer === "cjs" && (specifier === "process" || specifier === "node:process")) return `/${PROCESS_MODULE}`;
+		if (/^(node:)?path(\/posix)?$/.test(specifier)) {
+			modules[PATH_MODULE] ??= { js: PATH_SHIM };
+			return `/${PATH_MODULE}`;
+		}
 		if (/^(node|cloudflare|workerd):/.test(specifier)) return specifier;
 		if (NODE_BUILTINS.has(specifier.split("/")[0])) return `node:${specifier}`;
-		const target = await resolve(specifier, from).catch((error: unknown) => {
+		// As Vite: importing an image, font or media file gives its URL.
+		if (ASSET_IMPORT.test(specifier)) {
+			const module = `__qf/asset/${specifier.replace(/[^\w./@-]+/g, "_")}.js`;
+			modules[module] ??= { js: `export default ${JSON.stringify(`/${specifier.replace(/^(\.\.?\/)+/, "").replace(/\?.*$/, "")}`)};` };
+			return `/${module}`;
+		}
+		// As vitest without `css.include`: stylesheets are empty, CSS modules map each class to its name.
+		if (STYLESHEET.test(specifier)) {
+			const module = /\.module\.[a-z]+$/.test(specifier) ? CSS_MODULE : EMPTY_MODULE;
+			modules[module] ??= { js: module === CSS_MODULE ? `export default new Proxy({}, { get: (_, key) => (typeof key === "string" ? key : undefined) });` : "export {};" };
+			return `/${module}`;
+		}
+		// A package that loads a native binary throws as it is imported; Node would load it. Importing
+		// works, using it throws: tests that only import it through other modules still run.
+		const pkg = /^(@[^/]+\/)?[^/]+/.exec(specifier)?.[0];
+		if (pkg && NATIVE_PACKAGES.has(pkg)) {
+			const module = `__qf/native/${pkg}.js`;
+			const message = `O pacote "${pkg}" usa um binário nativo, que não roda no Workers.`;
+			// require() of an ES module returns its default export in workerd: CommonJS gets the proxy too.
+			modules[module] ??= {
+				js: `const fail = () => { throw new Error(${JSON.stringify(message)}); };\nexport default new Proxy(function () {}, { get: (_, key) => (typeof key === "string" && key !== "__esModule" && key !== "then" ? fail() : undefined), apply: fail, construct: fail });`,
+			};
+			return `/${module}`;
+		}
+		const target = await resolve(specifier, from, importer).catch((error: unknown) => {
 			if (error instanceof DownloadFailed) return error;
 			throw error;
 		});
@@ -232,6 +303,12 @@ export default { fetch: handleRequest };`,
 		enqueue(target);
 		await fetchSource(target);
 		if (importer === "cjs") (cjsEdges.get(from) ?? cjsEdges.set(from, new Map()).get(from)!).set(specifier, target);
+		// workerd's require() of an ES module returns its default export; Node's, its namespace.
+		if (importer === "cjs" && kindOf(target) === "esm") {
+			const shim = `__qf/esm/${target}`;
+			modules[shim] = { js: `import * as __qf_ns from "/${target}";\nexport default __qf_ns;` };
+			return `/${shim}`;
+		}
 		if (importer === "esm" && kindOf(target) === "cjs") {
 			const facade = `__qf/cjs/${target}`;
 			facades.set(facade, target);
@@ -249,7 +326,14 @@ export default { fetch: handleRequest };`,
 		}
 	};
 
-	const load = async (name: string) => {
+	/** A module that can't be parsed fails when imported, not the whole bundle. */
+	const load = (name: string) =>
+		loadModule(name).catch((error: unknown) => {
+			const message = `quality-flare não conseguiu ler "${name}": ${error instanceof Error ? error.message : String(error)}`;
+			modules[name] = { js: `throw new Error(${JSON.stringify(message)});` };
+		});
+
+	const loadModule = async (name: string) => {
 		await fetchSource(name);
 		const source = sourceOf(name);
 		const kind = kindOf(name);
@@ -260,9 +344,38 @@ export default { fetch: handleRequest };`,
 		} else if (kind === "cjs") {
 			const requires = [...new Set([...source.matchAll(REQUIRE)].map((m) => m[2]))];
 			const links = new Map(await Promise.all(requires.map(async (s) => [s, await link(s, name, "cjs")] as const)));
-			modules[name] = { cjs: source.replace(REQUIRE, (call, quote, s) => `require(${JSON.stringify(links.get(s))})`) };
+			// workerd's require has no resolve(): literal ones become the file's path under /bundle.
+			const resolves = [...new Set([...source.matchAll(REQUIRE_RESOLVE)].map((m) => m[2]))];
+			const resolved = new Map(
+				await Promise.all(resolves.map(async (s) => [s, await resolve(s, name, "cjs").catch(() => undefined)] as const)),
+			);
+			const cjs = source
+				.replace(REQUIRE, (call, quote, s) => `require(${JSON.stringify(links.get(s))})`)
+				.replace(REQUIRE_RESOLVE, (call, quote, s: string) => {
+					const target = resolved.get(s);
+					return target ? JSON.stringify(`${BUNDLE_ROOT}/${target}`) : `(() => { throw new Error(${JSON.stringify(`Cannot find module '${s}'`)}); })()`;
+				})
+				// workerd ignores a getter defined on module.exports (ansi-styles does it): assign its value.
+				.replace(DEFINE_EXPORTS, "((m, d) => { m.exports = d.get ? d.get() : d.value; })(module, ");
+			// After a "use strict" directive, which must stay first; on its line, so line numbers hold.
+			const directive = /^\s*(['"])use strict\1;?/.exec(cjs)?.[0] ?? "";
+			const filename = `${BUNDLE_ROOT}/${name}`;
+			const paths = `__filename = ${JSON.stringify(filename)}; __dirname = ${JSON.stringify(filename.slice(0, filename.lastIndexOf("/")))};`;
+			const separator = directive && !directive.endsWith(";") ? ";" : "";
+			modules[name] = { cjs: `${directive}${separator}${paths}${cjs.slice(directive.length)}` };
 		} else {
-			let js = /\.m?ts$/.test(name) ? stripTypes(source, name) : source;
+			if (tests.has(name)) {
+				const environment = ENVIRONMENT_COMMENT.exec(source)?.[1] ?? options.environment;
+				const pkg = environment && ENVIRONMENT_PACKAGES[environment];
+				if (environment && environment !== "node") environments.set(name, environment);
+				const module = `__qf/env/${environment}.js`;
+				if (pkg && !(module in modules)) {
+					// Claimed before linking: test files of one wave load concurrently.
+					modules[module] = { js: "" };
+					modules[module] = { js: `import * as __qf_ns from ${JSON.stringify(await link(pkg, name, "esm"))};\nexport default __qf_ns;` };
+				}
+			}
+			let js = /\.(m?ts|tsx|jsx)$/.test(name) ? stripTypes(source, name) : source;
 			const split = tests.has(name) ? splitMocks(js) : undefined;
 			if (split) {
 				const file = `__qf_mocks__${name.slice(name.lastIndexOf("/") + 1)}.js`;
@@ -270,7 +383,14 @@ export default { fetch: handleRequest };`,
 				const keys = await Promise.all(split.specs.map((s) => link(s, name, "esm")));
 				const hoisted = rewriteImportActual(split.hoisted).replace(/__QF_MOCK_(\d+)__/g, (_, i: string) => JSON.stringify(keys[Number(i)]));
 				const exported = split.names.length ? `export { ${split.names.join(", ")} };` : "";
-				repoFiles.set(path, `import { vi } from "vitest";\n${hoisted}\n${exported}\n`);
+				// vitest runs a factory after the file's imports, so it may use them: they come along, as does
+				// the JSX runtime import sucrase added to the test file.
+				const used = usedNames(split.hoisted);
+				const imports = importsOf(split.rest)
+					.filter((imp) => imp.d === -1 && imp.n !== "vitest")
+					.map((imp) => split.rest.slice(imp.ss, imp.se))
+					.filter((statement) => JSX_RUNTIME_IMPORT.test(statement) || localNames(statement).some((n) => used.has(n)));
+				repoFiles.set(path, `import { vi } from "vitest";${imports.map((i) => i.replace(/\n/g, " ")).join(";")}\n${hoisted}\n${exported}\n`);
 				realOnly.add(path);
 				enqueue(path);
 				for (const key of keys) mockKeys.add(key);
@@ -278,7 +398,7 @@ export default { fetch: handleRequest };`,
 				// On the first line, so line numbers in stack traces still match the file.
 				js = (split.names.length ? `import { ${split.names.join(", ")} } from "./${file}"; ` : "") + split.rest;
 			}
-			js = rewriteImportActual(js).replace(IMPORT_META, (_, key: string) => JSON.stringify(importMeta(name, key)));
+			js = replaceImportMeta(rewriteImportActual(js), name);
 			const imports = importsOf(js);
 			const specifiers = [...new Set(imports.map((i) => i.n!))];
 			const links = new Map(
@@ -319,8 +439,38 @@ export default { fetch: handleRequest };`,
 	};
 	const mockFacade = (key: string) => `__qf/mock/${key.replace(/^\//, "").replace(/[^\w./@-]+/g, "_")}`;
 	const isMockLink = (m: EsmModule, specifier: string) => !m.real && !specifier.endsWith(ACTUAL) && mockKeys.has(m.links.get(specifier)!);
+	const target = (m: EsmModule, s: string) => (isMockLink(m, s) ? `/${mockFacade(m.links.get(s)!)}` : m.links.get(s)!);
+	// vi.resetModules(): a file that calls it imports the repository modules it loads dynamically
+	// from fresh copies, one set per reset, since a module can't be evaluated twice.
+	const isRepoModule = (link: string) => link.startsWith("/") && esm.has(link.slice(1)) && !link.startsWith(`/${PACKAGES_DIR}/`) && !link.startsWith("/__qf/");
+	const resetting = testFiles.filter((path) => RESET_MODULES.test(esm.get(path)?.js ?? ""));
+	const fresh = new Set<string>();
+	const stack = resetting.flatMap((path) => {
+		const m = esm.get(path)!;
+		return importsOf(m.js).filter((i) => i.d > -1).map((i) => target(m, i.n!)).filter(isRepoModule).map((link) => link.slice(1));
+	});
+	const copies = Math.min(
+		FRESH_COPIES.max,
+		Math.max(FRESH_COPIES.min, ...resetting.map((path) => (esm.get(path)!.js.match(TEST_CALL)?.length ?? 0) + 1)),
+	);
+	while (stack.length) {
+		const name = stack.pop()!;
+		if (fresh.has(name)) continue;
+		fresh.add(name);
+		const m = esm.get(name)!;
+		for (const s of m.links.keys()) if (isRepoModule(target(m, s))) stack.push(target(m, s).slice(1));
+	}
 	for (const [name, m] of esm) {
-		modules[name] = { js: rewriteImports(m.js, (s) => (isMockLink(m, s) ? `/${mockFacade(m.links.get(s)!)}` : m.links.get(s)!)) };
+		const dynamic = resetting.includes(name)
+			? (s: string) => (fresh.has(target(m, s).slice(1)) ? `__qf_fresh(${JSON.stringify(target(m, s))}, ${copies})` : undefined)
+			: undefined;
+		modules[name] = { js: rewriteImports(m.js, (s) => target(m, s), dynamic) };
+		if (!fresh.has(name)) continue;
+		for (let copy = 0; copy < copies; copy++) {
+			modules[`__qf/fresh/${copy}/${name}`] = {
+				js: rewriteImports(m.js, (s) => (fresh.has(target(m, s).slice(1)) ? `/__qf/fresh/${copy}${target(m, s)}` : target(m, s))),
+			};
+		}
 	}
 	for (const key of mockKeys) {
 		const names = new Set<string>(exportNames(key));
@@ -356,12 +506,40 @@ mockFacade(${JSON.stringify(key)}, (__qf_ns) => {
 			}
 		};
 		if (own) visit(own.module.slice(1));
+		for (const setup of setupFiles) visit(setup);
 		visit(path);
 		return [...out];
 	};
-	const registry: Record<string, { mocks?: string; reach: string[] }> = {};
-	if (mockKeys.size) for (const path of [...setupFiles, ...testFiles]) registry[`/${path}`] = { mocks: mocksOf.get(path)?.module, reach: reachOf(path) };
-	modules[MOCKS_MODULE] = { js: `export default ${JSON.stringify(registry)};` };
+	const registry: Record<string, { mocks?: string; reach: string[]; environment?: string; setup?: Record<string, string> }> = {};
+	testFiles.forEach((path, i) => {
+		// Each file gets its own copy of the setup files, as vitest re-runs them per file; their
+		// imports are absolute already, so a copy shares everything else.
+		const setup: Record<string, string> = {};
+		for (const file of setupFiles) {
+			const copy = `__qf/setup/${i}/${file}`;
+			if (testFiles.length > 1 && esm.has(file)) modules[copy] = modules[file];
+			setup[`/${file}`] = `/${copy in modules ? copy : file}`;
+		}
+		registry[`/${path}`] = {
+			mocks: mocksOf.get(path)?.module,
+			reach: mockKeys.size ? reachOf(path) : [],
+			environment: environments.get(path),
+			setup,
+		};
+	});
+	modules[FILES_MODULE] = { js: `export default ${JSON.stringify(registry)};` };
+	// The rest of the repository, and the stylesheets of the packages in use, for tests and
+	// packages that read them with node:fs under /bundle.
+	let assets = 0;
+	const addAsset = (path: string, text: string | undefined) => {
+		if (text === undefined || path in modules || text.includes("\0") || assets + text.length > ASSET_CHARS) return;
+		modules[path] = { text };
+		assets += text.length;
+	};
+	for (const [path, text] of repoFiles) addAsset(path, text);
+	for (const pkg of packageByDir.values()) {
+		for (const path of pkg.files.keys()) if (path.endsWith(".css")) addAsset(`${pkg.dir}/${path}`, pkg.files.get(path));
+	}
 	// vitest mocks a module that doesn't resolve (e.g. "server-only") without complaint.
 	const stillMissing = unresolved.filter((u) => !mockKeys.has(missingNames.get(u) ?? ""));
 	unresolved.length = 0;
@@ -382,13 +560,18 @@ ${names.length ? `export const { ${names.join(", ")} } = __qf_cjs ?? {};` : ""}`
 export function bundleSize(bundle: TestBundle): number {
 	let size = 0;
 	for (const module of Object.values(bundle.modules)) {
-		const m = module as { js?: string; cjs?: string; json?: unknown };
-		size += (m.js ?? m.cjs ?? JSON.stringify(m.json) ?? "").length;
+		const m = module as { js?: string; cjs?: string; text?: string; json?: unknown };
+		size += (m.js ?? m.cjs ?? m.text ?? JSON.stringify(m.json) ?? "").length;
 	}
 	return size;
 }
 
 const REQUIRE = /\brequire\s*\(\s*(['"])([^'"\n]+)\1\s*\)/g;
+/** Packages that load a native binary when imported (see link). */
+const NATIVE_PACKAGES = new Set(["sharp"]);
+const JSX_RUNTIME_IMPORT = /\bfrom\s*["']react\/jsx-runtime["']/;
+const DEFINE_EXPORTS = /\bObject\.defineProperty\s*\(\s*module\s*,\s*(['"])exports\1\s*,\s*/g;
+const REQUIRE_RESOLVE = /\brequire\.resolve\s*\(\s*(['"])([^'"\n]+)\1\s*\)/g;
 
 function importsOf(source: string) {
 	return parse(source)[0].filter((imp) => imp.n !== undefined && imp.d !== -2 && (imp.d === -1 || /^["'`]/.test(source.slice(imp.s, imp.e))));
@@ -401,12 +584,13 @@ const JSON_ATTRIBUTES = /^(["'])\s*(?:with|assert)\s*\{\s*type\s*:\s*(["'])json\
  * Replaces every static and literal dynamic import specifier with `map(specifier)`. JSON import
  * attributes are dropped: the Worker Loader rejects them, and `.json` files load as JSON anyway.
  */
-function rewriteImports(source: string, map: (specifier: string) => string): string {
+function rewriteImports(source: string, map: (specifier: string) => string, dynamic?: (specifier: string) => string | undefined): string {
 	let out = "";
 	let last = 0;
 	for (const imp of importsOf(source)) {
 		const replacement = map(imp.n!);
-		out += source.slice(last, imp.s) + (imp.d > -1 ? JSON.stringify(replacement) : replacement);
+		const expression = imp.d > -1 ? (dynamic?.(imp.n!) ?? JSON.stringify(replacement)) : replacement;
+		out += source.slice(last, imp.s) + expression;
 		last = imp.e;
 		const attributes = imp.d === -1 ? JSON_ATTRIBUTES.exec(source.slice(imp.e, imp.e + 64)) : null;
 		if (attributes) {
@@ -418,16 +602,43 @@ function rewriteImports(source: string, map: (specifier: string) => string): str
 }
 
 /**
- * Dynamic Workers leave `import.meta.url` and `dirname` undefined. Every module is also a file
+ * Dynamic Workers leave `import.meta.url` and `dirname` undefined, and there is no Vite to give
+ * `import.meta.env`. Every module is also a file
  * under /bundle (process.cwd()) in workerd's node:fs, so these point there.
  */
-const IMPORT_META = /\bimport\.meta\.(url|dirname|filename)\b/g;
+function replaceImportMeta(js: string, name: string): string {
+	let out = "";
+	let last = 0;
+	// The lexer finds the real `import.meta`s (d === -2), not those in strings and comments.
+	for (const imp of parse(js)[0]) {
+		if (imp.d !== -2) continue;
+		const key = /^\s*\.\s*(url|dirname|filename|env)\b/.exec(js.slice(imp.e, imp.e + 32));
+		if (!key) continue;
+		// Vite's import.meta.env: the runtime's view of process.env (see runtime/index.ts).
+		out += js.slice(last, imp.s) + (key[1] === "env" ? "globalThis.__qf_import_meta_env" : JSON.stringify(importMeta(name, key[1])));
+		last = imp.e + key[0].length;
+	}
+	return out + js.slice(last);
+}
 const BUNDLE_ROOT = "/bundle";
+/** Repository files added as text, beyond the modules: what a shard's bundle can spare. */
+const ASSET_CHARS = 16 * 1024 * 1024;
 
 function importMeta(name: string, key: string): string {
 	const filename = `${BUNDLE_ROOT}/${name}`;
 	if (key === "url") return `file://${filename}`;
 	return key === "filename" ? filename : filename.slice(0, filename.lastIndexOf("/"));
+}
+
+/** The local bindings an import statement declares: `a`, `* as b`, `{ c, d as e }`. */
+function localNames(statement: string): string[] {
+	const clause = /^import\s+(?:type\s+)?([\s\S]*?)\s+from\b/.exec(statement)?.[1] ?? "";
+	const names = [...(clause.replace(/\{[^}]*\}/, "").match(/[A-Za-z_$][\w$]*/g) ?? [])].filter((n) => n !== "as");
+	for (const item of /\{([^}]*)\}/.exec(clause)?.[1].split(",") ?? []) {
+		const name = item.trim().replace(/^type\s+/, "").split(/\s+as\s+/).pop();
+		if (name) names.push(name);
+	}
+	return names;
 }
 
 /** The names an import or re-export statement takes: `import a, { b, c as d } from`, `export { e } from`. */
@@ -532,7 +743,7 @@ function probeFile(
 	const stem = path.replace(/\.(m?js)$/, "");
 	const candidates = [
 		path,
-		...(typescript ? [`${stem}.ts`, `${stem}.mts`, `${path}.ts`, `${path}/index.ts`] : []),
+		...(typescript ? [`${stem}.ts`, `${stem}.tsx`, `${stem}.mts`, `${path}.ts`, `${path}.tsx`, `${path}/index.ts`, `${path}/index.tsx`] : []),
 		`${path}.js`, `${path}.mjs`, `${path}.cjs`, `${path}.json`,
 	];
 	const file = candidates.find(exists);
@@ -544,9 +755,9 @@ function probeFile(
 }
 
 /** The file a package import points at, relative to the package: `exports`, else `module`/`main`. */
-function entryOf(json: PackageJson, subpath: string | undefined): string | undefined {
+function entryOf(json: PackageJson, subpath: string | undefined, importer: Kind): string | undefined {
 	if (json.exports) {
-		return resolveConditions((conditions) => packageExports(json, `.${subpath ?? ""}`, { conditions, unsafe: true }));
+		return resolveConditions((conditions) => packageExports(json, `.${subpath ?? ""}`, { conditions, unsafe: true }), importer);
 	}
 	return subpath ? `.${subpath}` : (json.module ?? json.main ?? "./index.js");
 }
@@ -613,8 +824,9 @@ function nearestPackageJson(files: Map<string, string>, path: string): PackageJs
 	return rootJson(files);
 }
 
-function resolveConditions(fn: (conditions: string[]) => string[] | void): string | undefined {
-	for (const conditions of [ESM_CONDITIONS, CJS_CONDITIONS]) {
+/** `require()` gets a package's CommonJS build, as in Node; `import` its ES module build. */
+function resolveConditions(fn: (conditions: string[]) => string[] | void, importer: Kind): string | undefined {
+	for (const conditions of importer === "cjs" ? [CJS_CONDITIONS, ESM_CONDITIONS] : [ESM_CONDITIONS, CJS_CONDITIONS]) {
 		try {
 			const target = fn(conditions)?.[0];
 			if (target) return target;
@@ -653,8 +865,11 @@ function missingMessage(specifier: string, from: string): string {
 		: `"${from}" importa "${specifier}", que não foi encontrado.`;
 }
 
+/** TypeScript and JSX to plain JavaScript; JSX through React's automatic runtime, as Vite's React plugin does. */
 function stripTypes(source: string, path: string): string {
-	return transform(source, { transforms: ["typescript"], disableESTransforms: true, filePath: path }).code;
+	const jsx = /\.[jt]sx$/.test(path);
+	const transforms: ("typescript" | "jsx")[] = path.endsWith(".jsx") ? ["jsx"] : jsx ? ["typescript", "jsx"] : ["typescript"];
+	return transform(source, { transforms, disableESTransforms: true, filePath: path, jsxRuntime: "automatic", production: true }).code;
 }
 
 const dirname = (path: string) => path.slice(0, path.lastIndexOf("/") + 1);

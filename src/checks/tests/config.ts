@@ -20,6 +20,8 @@ export interface TestConfig {
 	globals?: boolean;
 	/** Milliseconds per test, as vitest's `testTimeout`. */
 	testTimeout?: number;
+	/** vitest's `environment` for files without a `@vitest-environment` comment: node, jsdom or happy-dom. */
+	environment?: string;
 }
 
 /** The `tests` section of quality-flare.json; empty when the file is missing. Throws when it is invalid. */
@@ -41,6 +43,7 @@ export function readTestConfig(source: string | undefined): TestConfig {
 	strings("include");
 	strings("exclude");
 	strings("setupFiles");
+	if (tests.environment !== undefined && typeof tests.environment !== "string") throw new Error(`${CONFIG_FILE}: "tests.environment" deve ser um texto.`);
 	if (tests.globals !== undefined && typeof tests.globals !== "boolean") throw new Error(`${CONFIG_FILE}: "tests.globals" deve ser true ou false.`);
 	if (tests.testTimeout !== undefined && !(typeof tests.testTimeout === "number" && tests.testTimeout > 0)) {
 		throw new Error(`${CONFIG_FILE}: "tests.testTimeout" deve ser um número de milissegundos.`);

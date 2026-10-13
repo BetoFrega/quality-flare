@@ -11,6 +11,7 @@
 	},
 	"devDependencies": {
 		"@cloudflare/vite-plugin": "beta",
+		"@sinonjs/fake-timers": "15.4.0",
 		"@vitest/expect": "4.1.11",
 		"@vitest/runner": "4.1.11",
 		"@vitest/spy": "4.1.11",

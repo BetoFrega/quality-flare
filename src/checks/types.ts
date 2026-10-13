@@ -1,7 +1,7 @@
 import type { GitHubClient, PullRequest } from "../github.ts";
 
 export interface CheckResult {
-	conclusion: "success" | "failure" | "neutral";
+	conclusion: "success" | "failure" | "neutral" | "cancelled";
 	title: string;
 	summary: string;
 }

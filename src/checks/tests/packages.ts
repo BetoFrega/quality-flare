@@ -8,6 +8,8 @@ export interface PackageFiles {
 	get(path: string): string | undefined;
 	/** Loads files before `get`; absent when every file is already in memory. */
 	load?(paths: string[]): Promise<void>;
+	/** Every file's path, loaded or not. */
+	keys(): Iterable<string>;
 }
 
 // Every package.json stays: a folder's "main" decides what importing the folder loads.
@@ -135,6 +137,7 @@ function onDemand(
 	return {
 		has: exists,
 		get: (path) => files.get(path),
+		keys: () => paths,
 		async load(wanted) {
 			const waits = new Set<Promise<void>>();
 			for (const path of wanted) if (paths.has(path) && !files.has(path)) request(path, waits);

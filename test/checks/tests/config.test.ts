@@ -32,6 +32,7 @@ describe("quality-flare.json tests config", () => {
 	it("falls back to the convention without include", () => {
 		expect(selectTestFiles(PATHS, readTestConfig(undefined), isTestFile)).toEqual([
 			"src/a.test.ts",
+			"src/ui/b.test.tsx",
 			"src/c.integration.test.ts",
 			"apps/api/adapters/d.test.ts",
 			"apps/api/tests/e.runtime.test.ts",

@@ -9,30 +9,38 @@
 type Namespace = Record<string, unknown>;
 type Factory = ((importOriginal: () => Promise<unknown>) => unknown) | undefined;
 
-interface Registry {
-	[file: string]: {
-		/** The module holding the file's hoisted `vi.mock`/`vi.hoisted` calls. */
-		mocks?: string;
-		/** Mocked modules the file may import, in an order that puts dependencies first. */
-		reach: string[];
-	};
+/** What the bundle knows about one test file (or setup file). */
+export interface FileEntry {
+	/** The module holding the file's hoisted `vi.mock`/`vi.hoisted` calls. */
+	mocks?: string;
+	/** Mocked modules the file may import, in an order that puts dependencies first. */
+	reach: string[];
+	/** vitest's environment: "node" when absent. */
+	environment?: string;
+	/** Setup file → this file's own copy of it, so its top-level code runs again for each file. */
+	setup?: Record<string, string>;
 }
 
 /** Written by the bundle; a variable, so the runtime's bundler leaves the import alone. */
-const REGISTRY_MODULE: string = "/__qf/mocks.js";
+const REGISTRY_MODULE: string = "/__qf/files.js";
+let registry: Promise<Record<string, FileEntry>> | undefined;
+
+/** The bundle's entry for a file; undefined for a bundle without one. */
+export async function fileEntry(file: string): Promise<FileEntry | undefined> {
+	registry ??= import(REGISTRY_MODULE).then((m: { default: Record<string, FileEntry> }) => m.default, () => ({}));
+	return (await registry)[file];
+}
 
 const facades = new Map<string, (ns: Namespace) => void>();
 const prepared = new Map<string, Map<string, Namespace | Error>>();
 let current = new Map<string, Namespace | Error>();
 let registering: Map<string, Factory> | undefined;
-let registry: Promise<Registry> | undefined;
 
 /** Called by each facade as it is evaluated, with a function that repoints its bindings. */
 export function mockFacade(key: string, apply: (ns: Namespace) => void): void {
 	facades.set(key, apply);
 	const value = current.get(key);
-	if (value instanceof Error) throw value;
-	if (value) apply(value);
+	if (value) apply(value instanceof Error ? failing(value) : value);
 }
 
 /** `vi.mock(key, factory)` as the bundle rewrote it: `key` is the mocked module's name in the bundle. */
@@ -42,12 +50,7 @@ export function mock(key: string, factory?: Factory): void {
 }
 
 /** Evaluates a file's mocks and the real modules it may import, before the file is imported. */
-export async function prepareMocks(file: string): Promise<void> {
-	const known = prepared.get(file);
-	if (known) return activate(known);
-	registry ??= import(REGISTRY_MODULE).then((m: { default: Registry }) => m.default, () => ({}));
-	const entry = (await registry)[file];
-	if (!entry) return;
+export async function prepareMocks(file: string, entry: FileEntry): Promise<void> {
 	const factories = new Map<string, Factory>();
 	registering = factories;
 	try {
@@ -66,8 +69,17 @@ export async function prepareMocks(file: string): Promise<void> {
 			value = error instanceof Error ? error : new Error(String(error));
 		}
 		values.set(key, value);
-		if (!(value instanceof Error)) facades.get(key)?.(value);
+		facades.get(key)?.(value instanceof Error ? failing(value) : value);
 	}
+}
+
+/** A namespace whose every export throws `error` when used, so a file that uses it sees why. */
+function failing(error: Error): Namespace {
+	const fail = () => {
+		throw error;
+	};
+	const value = new Proxy(function () {}, { get: fail, apply: fail, construct: fail });
+	return new Proxy({}, { get: () => value });
 }
 
 /** Points every facade at what `file` sees, before its tests run. */
@@ -80,7 +92,7 @@ function activate(values: Map<string, Namespace | Error>) {
 	current = values;
 	for (const [key, apply] of facades) {
 		const value = values.get(key);
-		if (value && !(value instanceof Error)) apply(value);
+		if (value) apply(value instanceof Error ? failing(value) : value);
 	}
 }
 

@@ -25,7 +25,7 @@ const history: TestRunDetail[] = [
 			}],
 		},
 	},
-	{ id: 1, repo: "octo/app", pr: 3, sha: "aaaaaaaaaa", status: "running", conclusion: null, title: null, startedAt: NOW - 45 * 60_000, finishedAt: null, summary: null, report: null },
+	{ id: 1, repo: "octo/app", pr: 3, sha: "aaaaaaaaaa", status: "running", conclusion: null, title: null, startedAt: NOW - 90 * 60_000, finishedAt: null, summary: null, report: null },
 ];
 const runs: RunStore = {
 	start: async () => 0,
@@ -130,7 +130,7 @@ describe("admin", () => {
 		expect(page).toContain("2.5 s");
 		expect(page).toContain('<a href="/admin/runs/1">! Interrompida</a>');
 		// No ever-growing duration for a run that died.
-		expect(page).not.toContain("45 min 0 s");
+		expect(page).not.toContain("90 min 0 s");
 		expect(page).toContain(`<td class="num">—</td>`);
 		expect(page).not.toContain('http-equiv="refresh"');
 	});
