@@ -121,6 +121,7 @@ function namedFiles(source: string, file: string, repoFiles: Map<string, string>
 	}
 	return names;
 }
+
 /**
  * Whether code in the bundle can name a repository file: its file name, or its folder's (a test
  * that lists a fixtures folder), appears in some module. The repository can hold thousands of
@@ -140,7 +141,7 @@ function namedInCode(modules: Modules, paths: Iterable<string>): (path: string) 
 	for (const [name, module] of Object.entries(modules)) {
 		const source = "js" in module ? module.js : "cjs" in module ? module.cjs : undefined;
 		if (typeof source !== "string" || name.startsWith("__qf/")) continue;
-		for (const [word] of source.matchAll(/[\w@+-][\w@.+-]*/g)) if (files.has(word)) seenFiles.add(word);
+		for (const [word] of source.matchAll(/[\w@.+-]+/g)) if (files.has(word)) seenFiles.add(word);
 		// Folder names are common words: only a string of the repository's own code that is, or
 		// ends in, the folder counts.
 		if (name.startsWith("node_modules/")) continue;
@@ -224,6 +225,7 @@ interface PackageJson {
 	module?: string;
 	exports?: unknown;
 	imports?: unknown;
+	sideEffects?: unknown;
 }
 
 type Kind = "esm" | "cjs" | "json";
@@ -275,6 +277,9 @@ export default { fetch: handleRequest };`,
 	const missingNames = new Map<Unresolved, string>();
 	const environments = new Map<string, string>();
 	const originals = [...new Set([...testFiles, ...setupFiles].flatMap((f) => namedFiles(repoFiles.get(f) ?? "", f, repoFiles)))];
+	const mocked = new Set([...testFiles, ...setupFiles].flatMap((f) => [...(repoFiles.get(f) ?? "").matchAll(MOCK_CALL)].map((m) => m[2])));
+	/** Modules quality-flare writes, such as a barrel narrowed to the names a file takes from it. */
+	const generated = new Map<string, string>();
 
 	const packageOf = (name: string) => {
 		if (!name.startsWith(`${PACKAGES_DIR}/`)) return undefined;
@@ -283,7 +288,7 @@ export default { fetch: handleRequest };`,
 	};
 	const sourceOf = (name: string) => {
 		const pkg = packageOf(name);
-		const source = pkg ? pkg.files.get(name.slice(pkg.dir.length + 1)) : repoFiles.get(name);
+		const source = generated.get(name) ?? (pkg ? pkg.files.get(name.slice(pkg.dir.length + 1)) : repoFiles.get(name));
 		// A hashbang line (`#!/usr/bin/env node`) becomes a comment: neither parser accepts it.
 		return source?.startsWith("#!") ? `//${source.slice(2)}` : source;
 	};
@@ -293,6 +298,7 @@ export default { fetch: handleRequest };`,
 		await pkg?.files.load?.([name.slice(pkg.dir.length + 1)]).catch(() => {});
 	};
 	const exists = (name: string) => {
+		if (generated.has(name)) return true;
 		const pkg = packageOf(name);
 		return pkg ? pkg.files.has(name.slice(pkg.dir.length + 1)) : repoFiles.has(name) && isLoadable(name);
 	};
@@ -444,6 +450,28 @@ export default { fetch: handleRequest };`,
 		return `/${target}`;
 	};
 
+	/**
+	 * A package barrel that only re-exports, in a package without side effects (lucide-react's
+	 * thousands of icons), narrowed to the names the importer takes: the rest stays out of the
+	 * bundle. Undefined when the import must load the whole module.
+	 */
+	const narrowLink = async (specifier: string, names: Set<string> | null | undefined, from: string): Promise<string | undefined> => {
+		if (!names?.size || /^[./#]/.test(specifier) || mocked.has(specifier)) return undefined;
+		const barrel = await resolve(specifier, from, "esm").catch(() => undefined);
+		const pkg = barrel && packageOf(barrel);
+		if (!barrel || !pkg || pkg.json.sideEffects !== false) return undefined;
+		await fetchSource(barrel);
+		const lines = kindOf(barrel) === "esm" ? reexportsOf(sourceOf(barrel) ?? "") : undefined;
+		if (!lines || [...names].some((n) => !lines.has(n))) return undefined;
+		const sorted = [...names].sort();
+		const source = sorted.map((n) => lines.get(n)).join("\n");
+		const facade = `${dirname(barrel)}__qf_narrow_${hashOf(sorted.join(","))}.mjs`;
+		if ((generated.get(facade) ?? source) !== source) return undefined;
+		generated.set(facade, source);
+		enqueue(facade);
+		return `/${facade}`;
+	};
+
 	const seen = new Set<string>();
 	let queue: string[] = [];
 	const enqueue = (name: string) => {
@@ -528,8 +556,20 @@ export default { fetch: handleRequest };`,
 			js = replaceImportMeta(rewriteImportActual(js), name);
 			const imports = importsOf(js);
 			const specifiers = [...new Set(imports.map((i) => i.n!))];
+			// The names each specifier's imports take, or null once one takes the whole module.
+			const taken = new Map<string, Set<string> | null>();
+			for (const imp of imports) {
+				const names = imp.d === -1 ? namedOnly(js.slice(imp.ss, imp.se)) : undefined;
+				const prior = taken.get(imp.n!);
+				taken.set(imp.n!, names && prior !== null ? new Set([...(prior ?? []), ...names]) : null);
+			}
 			const links = new Map(
-				await Promise.all(specifiers.map(async (s) => [s, await link(s.endsWith(ACTUAL) ? s.slice(0, -ACTUAL.length) : s, name, "esm")] as const)),
+				await Promise.all(
+					specifiers.map(async (s) => [
+						s,
+						(await narrowLink(s, taken.get(s), name)) ?? (await link(s.endsWith(ACTUAL) ? s.slice(0, -ACTUAL.length) : s, name, "esm")),
+					] as const),
+				),
 			);
 			const names = new Map<string, string[]>();
 			for (const imp of imports) {
@@ -778,6 +818,47 @@ function importedNames(statement: string): string[] {
 		.split(",")
 		.map((item) => item.trim().split(/\s+as\s+/)[0].replace(/^type\s+/, "").replace(/^["']|["']$/g, ""))
 		.filter((n) => n && n !== "default");
+}
+
+/** The names a statement takes when it takes only names: `import { a, b as c } from`, `export { d } from`. */
+function namedOnly(statement: string): string[] | undefined {
+	const clause = /^(?:import|export)\s*\{([^}]*)\}\s*from\b/.exec(statement)?.[1];
+	if (clause === undefined) return undefined;
+	const names = clause.split(",").map((item) => item.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0]).filter(Boolean);
+	return names.includes("default") ? undefined : names;
+}
+
+const MOCK_CALL = /\bvi\s*\.\s*(?:mock|doMock)\s*\(\s*(?:import\s*\(\s*)?(['"])([^'"\n]+)\1/g;
+const REEXPORT = /export\s*\{([^}]*)\}\s*from\s*(['"])([^'"\n]+)\2\s*;?/g;
+
+/**
+ * A module made only of `export { a as b } from "./x"` statements (and namespaces of them):
+ * each name it exports, with the statement that re-exports just that name. Undefined when the
+ * module does anything else, whose effects narrowing would skip.
+ */
+function reexportsOf(source: string): Map<string, string> | undefined {
+	const rest = source
+		.replace(/\/\*[\s\S]*?\*\/|^\s*\/\/.*$/gm, "")
+		.replace(/^\s*(['"])use strict\1\s*;?/, "")
+		.replace(REEXPORT, "")
+		.replace(/import\s*\*\s*as\s*[\w$]+\s*from\s*(['"])[^'"\n]+\1\s*;?/g, "")
+		.replace(/export\s*\{[^}]*\}\s*;?/g, "");
+	if (rest.trim()) return undefined;
+	const lines = new Map<string, string>();
+	for (const [, items, , specifier] of source.matchAll(REEXPORT)) {
+		for (const item of items.split(",")) {
+			const [local, exported = local] = item.trim().split(/\s+as\s+/);
+			if (local) lines.set(exported, `export { ${local === exported ? local : `${local} as ${exported}`} } from ${JSON.stringify(specifier)};`);
+		}
+	}
+	return lines;
+}
+
+/** A short, stable name for a string (FNV-1a). */
+function hashOf(text: string): string {
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193);
+	return (hash >>> 0).toString(36);
 }
 
 function hasModuleSyntax(source: string): boolean {
