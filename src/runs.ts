@@ -28,6 +28,8 @@ export interface RunStore {
 	start(run: { repo: string; pr: number; sha: string }): Promise<number>;
 	/** Ids of the PR's runs still running, other than `except`. */
 	running(repo: string, pr: number, except: number): Promise<number[]>;
+	/** Runs still running that started before `startedBefore` (epoch milliseconds). */
+	overdue(startedBefore: number): Promise<{ id: number; repo: string }[]>;
 	finish(id: number, result: CheckResult, report?: TestReport): Promise<void>;
 	/** Most recent first. */
 	list(limit?: number): Promise<TestRun[]>;
@@ -85,6 +87,14 @@ export function d1RunStore(db: D1Database, now = () => Date.now()): RunStore {
 				.bind(repo, pr, except)
 				.all<{ id: number }>();
 			return results.map((r) => r.id);
+		},
+		async overdue(startedBefore) {
+			await schema();
+			const { results } = await db
+				.prepare("SELECT id, repo FROM test_runs WHERE status = 'running' AND started_at < ?")
+				.bind(startedBefore)
+				.all<{ id: number; repo: string }>();
+			return results;
 		},
 		async finish(id, result, report) {
 			await schema();

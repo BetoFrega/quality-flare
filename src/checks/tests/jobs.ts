@@ -45,6 +45,8 @@ export interface JobStore {
 	 * publishes a result. Returns the job, or null if there was none left to cancel.
 	 */
 	cancel(runId: number): Promise<RunJob | null>;
+	/** Like `cancel`, also returning the results of the shards that finished. */
+	close(runId: number): Promise<(RunJob & { results: ShardResult[] }) | null>;
 	/**
 	 * Replaces `shard` with `parts` shards. Returns false if it was already split, so a message
 	 * delivered twice doesn't count its halves twice.
@@ -76,6 +78,20 @@ export function d1JobStore(db: D1Database): JobStore {
 	const schema = () => (ready ??= db.batch(SCHEMA.split(";").filter((s) => s.trim()).map((s) => db.prepare(s))));
 	const changePending = (runId: number, delta: number) =>
 		db.prepare("UPDATE test_run_jobs SET pending = pending + ? WHERE run_id = ? RETURNING pending").bind(delta, runId).first<{ pending: number }>();
+	async function close(runId: number): Promise<(RunJob & { results: ShardResult[] }) | null> {
+		await schema();
+		const { results } = await db
+			.prepare("SELECT result FROM test_run_shards WHERE run_id = ? AND result IS NOT NULL ORDER BY shard")
+			.bind(runId)
+			.all<{ result: string }>();
+		const row = await db
+			.prepare("DELETE FROM test_run_jobs WHERE run_id = ? RETURNING check_run_id, installation_id")
+			.bind(runId)
+			.first<{ check_run_id: number; installation_id: number }>();
+		await db.prepare("DELETE FROM test_run_shards WHERE run_id = ?").bind(runId).run();
+		if (!row) return null;
+		return { checkRunId: row.check_run_id, installationId: row.installation_id, results: results.map((r) => JSON.parse(r.result) as ShardResult) };
+	}
 	return {
 		async create(runId, { shards, checkRunId, installationId }) {
 			await schema();
@@ -100,14 +116,10 @@ export function d1JobStore(db: D1Database): JobStore {
 				.catch(() => null);
 			return run ? { ...job, startedAt: run.started_at } : job;
 		},
+		close,
 		async cancel(runId) {
-			await schema();
-			const row = await db
-				.prepare("DELETE FROM test_run_jobs WHERE run_id = ? RETURNING check_run_id, installation_id")
-				.bind(runId)
-				.first<{ check_run_id: number; installation_id: number }>();
-			await db.prepare("DELETE FROM test_run_shards WHERE run_id = ?").bind(runId).run();
-			return row ? { checkRunId: row.check_run_id, installationId: row.installation_id } : null;
+			const closed = await close(runId);
+			return closed && { checkRunId: closed.checkRunId, installationId: closed.installationId };
 		},
 		async split(runId, shard, parts) {
 			await schema();

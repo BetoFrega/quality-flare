@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { Crashed, MAX_CODE_BYTES, processShard, RUN_DEADLINE_MS, SHARD_SIZE, tests, TooLarge, type ShardDeps } from "../../../src/checks/tests/index.ts";
+import { Crashed, expireRuns, MAX_CODE_BYTES, processShard, RUN_DEADLINE_MS, SHARD_SIZE, tests, TooLarge, type ShardDeps } from "../../../src/checks/tests/index.ts";
 import { d1JobStore, type ShardResult, type TestShard } from "../../../src/checks/tests/jobs.ts";
 import type { GitHubClient, PullRequest } from "../../../src/github.ts";
 import { d1RunStore } from "../../../src/runs.ts";
@@ -109,6 +109,27 @@ describe.skipIf(inWorkers)("Tests check shards", () => {
 		expect(run).not.toHaveBeenCalled();
 		const [, report] = publish.mock.calls[0];
 		expect(report.files).toEqual([{ path: "test/a.test.ts", state: "fail", errors: [expect.stringContaining("passou de 60 minutos")], tests: [] }]);
+	});
+
+	it("fails a run past its deadline with the shards that finished, and its queued shards drop", async () => {
+		const RUNS = await fakeD1();
+		const runs = d1RunStore(RUNS, () => 0);
+		const late = await runs.start({ repo: "octo/app", pr: 7, sha: "abc" });
+		const jobs = d1JobStore(RUNS);
+		await jobs.create(late, { shards: 2, checkRunId: 55, installationId: 9 });
+		await jobs.finish(late, "0", passing(["test/a.test.ts"]));
+		const recent = await d1RunStore(RUNS, () => RUN_DEADLINE_MS).start({ repo: "octo/app", pr: 8, sha: "def" });
+		const completeCheckRun = vi.fn(async () => {});
+
+		await expireRuns({ runs, jobs, now: () => RUN_DEADLINE_MS + 1, completeCheckRun });
+
+		const result = { conclusion: "failure", title: "A execução passou de 60 minutos", summary: expect.stringContaining("1 arquivo terminou antes disso") };
+		expect(completeCheckRun).toHaveBeenCalledExactlyOnceWith("octo/app", { checkRunId: 55, installationId: 9, results: [passing(["test/a.test.ts"])] }, result);
+		expect(await runs.get(late)).toMatchObject({ status: "completed", conclusion: "failure", report: passing(["test/a.test.ts"]).report });
+		expect(await runs.get(recent)).toMatchObject({ status: "running" });
+		const run = vi.fn<ShardDeps["run"]>(async (s) => passing(s.files));
+		await processShard({ ...shard(["test/b.test.ts"], "1"), runId: late }, 1, { jobs, run, publish: async () => {}, enqueue: async () => {} });
+		expect(run).not.toHaveBeenCalled();
 	});
 
 	it("reports no tests right away", async () => {
