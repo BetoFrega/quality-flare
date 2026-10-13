@@ -204,8 +204,8 @@ function overdue(report: TestReport, unresolved: ShardResult["unresolved"]): Che
 
 async function split(shard: TestShard, deps: ShardDeps): Promise<void> {
 	const half = Math.ceil(shard.files.length / 2);
-	await deps.jobs.split(shard.runId, shard.shard, 2);
 	// Enqueued even when this split was recorded before: the halves' results count once anyway.
+	if ((await deps.jobs.split(shard.runId, shard.shard, 2)) === "finished") return;
 	await deps.enqueue([
 		{ ...shard, shard: `${shard.shard}.0`, files: shard.files.slice(0, half) },
 		{ ...shard, shard: `${shard.shard}.1`, files: shard.files.slice(half) },

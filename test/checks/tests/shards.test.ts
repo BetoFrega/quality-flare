@@ -188,6 +188,29 @@ describe.skipIf(inWorkers)("Tests check shards", () => {
 		]);
 	});
 
+	it("doesn't split a shard redelivered after it finished, so the run waits for its other shards", async () => {
+		const { deps, queue, publish } = await setup(2, async (s) => passing(s.files));
+		await processShard(shard(["a.test.ts", "b.test.ts"]), 1, deps);
+		// The consumer died after storing the result, so the message comes back as a retry.
+		await processShard(shard(["a.test.ts", "b.test.ts"]), 2, deps);
+		await drain(queue, deps);
+		expect(publish).not.toHaveBeenCalled();
+		await processShard(shard(["c.test.ts"], "1"), 1, deps);
+		expect(publish.mock.calls[0][1].files.map((f) => f.path)).toEqual(["a.test.ts", "b.test.ts", "c.test.ts"]);
+	});
+
+	it("drops the shards of a run that already completed", async () => {
+		const RUNS = await fakeD1();
+		const runs = d1RunStore(RUNS);
+		const runId = await runs.start({ repo: "octo/app", pr: 7, sha: "abc" });
+		const jobs = d1JobStore(RUNS);
+		await jobs.create(runId, { shards: 1, checkRunId: 55, installationId: 9 });
+		await runs.finish(runId, { conclusion: "success", title: "ok", summary: "" });
+		const run = vi.fn<ShardDeps["run"]>(async (s) => passing(s.files));
+		await processShard({ ...shard(["test/a.test.ts"]), runId }, 1, { jobs, run, publish: async () => {}, enqueue: async () => {} });
+		expect(run).not.toHaveBeenCalled();
+	});
+
 	it("isolates a file that takes the Dynamic Worker down", async () => {
 		const { deps, queue, publish } = await setup(1, async (s) => {
 			if (s.files.includes("bad.test.ts")) throw new Crashed(new Error("Network connection lost."));
