@@ -87,7 +87,7 @@ Use import dinâmico dentro do teste para módulos que não existem no Workers o
 
 ## Ler uma falha
 
-Cada execução fica registrada em **Execuções de testes** no admin (`/admin/runs`). Enquanto roda, a página mostra ao vivo cada teste que termina; depois, o resultado com cada arquivo, cada teste e a mensagem de cada falha. Uma execução que fica "rodando" por mais de 30 minutos aparece como interrompida; use **Re-run** na PR.
+Cada execução fica registrada em **Execuções de testes** no admin (`/admin/runs`). Enquanto roda, a página mostra ao vivo cada teste que termina; depois, o resultado com cada arquivo, cada teste e a mensagem de cada falha. Uma execução tem 60 minutos: depois disso, os lotes que ainda estão na fila marcam seus arquivos como falha sem rodá-los e a execução termina. Uma que fica "rodando" por mais de 75 minutos foi cortada e aparece como interrompida; use **Re-run** na PR.
 
 O check run mostra uma tabela por arquivo e uma seção por falha:
 

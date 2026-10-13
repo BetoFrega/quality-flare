@@ -30,6 +30,12 @@ export const SHARD_SIZE = 20;
 /** A Dynamic Worker takes at most 64 MB of code; past this, a shard splits instead of trying. */
 export const MAX_CODE_BYTES = 48 * 1024 * 1024;
 
+/**
+ * A run that hasn't finished this long after it started stops: its shards still queued report
+ * their files as failed without running them, so the run completes instead of using the queue.
+ */
+export const RUN_DEADLINE_MS = 60 * 60_000;
+
 /** A one-file shard that crashed the consumer this many times (out of memory, likely) is reported as failed. */
 const MAX_ATTEMPTS = 3;
 
@@ -116,17 +122,23 @@ export interface ShardDeps {
 	jobs: JobStore;
 	enqueue(shards: TestShard[]): Promise<void>;
 	run(shard: TestShard): Promise<ShardResult>;
+	/** Epoch milliseconds; Date.now() when absent. */
+	now?(): number;
 	publish(shard: TestShard, report: TestReport, unresolved: ShardResult["unresolved"]): Promise<void>;
 }
 
 /** Runs one shard, splitting it when it doesn't fit, and publishes the run if it was the last. */
 export async function processShard(shard: TestShard, attempts: number, deps: ShardDeps): Promise<void> {
 	// The run was cancelled by a newer push: nothing to run or report.
-	if (!(await deps.jobs.get(shard.runId))) return;
+	const job = await deps.jobs.get(shard.runId);
+	if (!job) return;
+	const expired = job.startedAt !== undefined && (deps.now?.() ?? Date.now()) - job.startedAt > RUN_DEADLINE_MS;
 	// A shard that took the consumer down before (out of memory, most likely) tries again in halves.
-	if (attempts > 1 && shard.files.length > 1) return split(shard, deps);
+	if (!expired && attempts > 1 && shard.files.length > 1) return split(shard, deps);
 	let result: ShardResult;
-	if (attempts >= MAX_ATTEMPTS) {
+	if (expired) {
+		result = failed(shard.files, `A execução passou de ${RUN_DEADLINE_MS / 60_000} minutos e parou antes de chegar a este arquivo.`);
+	} else if (attempts >= MAX_ATTEMPTS) {
 		result = failed(shard.files, `O arquivo derrubou o Worker ${attempts - 1} vezes (provavelmente faltou memória: o limite é 128 MB).`);
 	} else {
 		try {

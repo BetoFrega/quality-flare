@@ -31,6 +31,8 @@ export interface ShardResult {
 export interface RunJob {
 	checkRunId: number;
 	installationId: number;
+	/** When the run started, epoch milliseconds; absent if its history row is gone. */
+	startedAt?: number;
 }
 
 export interface JobStore {
@@ -88,7 +90,15 @@ export function d1JobStore(db: D1Database): JobStore {
 				.prepare("SELECT check_run_id, installation_id FROM test_run_jobs WHERE run_id = ?")
 				.bind(runId)
 				.first<{ check_run_id: number; installation_id: number }>();
-			return row && { checkRunId: row.check_run_id, installationId: row.installation_id };
+			if (!row) return null;
+			const job: RunJob = { checkRunId: row.check_run_id, installationId: row.installation_id };
+			// The history (src/runs.ts) may not exist yet; the run then has no deadline.
+			const run = await db
+				.prepare("SELECT started_at FROM test_runs WHERE id = ?")
+				.bind(runId)
+				.first<{ started_at: number }>()
+				.catch(() => null);
+			return run ? { ...job, startedAt: run.started_at } : job;
 		},
 		async cancel(runId) {
 			await schema();
