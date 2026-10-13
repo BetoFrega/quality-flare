@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { Crashed, MAX_CODE_BYTES, processShard, SHARD_SIZE, tests, TooLarge, type ShardDeps } from "../../../src/checks/tests/index.ts";
+import { Crashed, MAX_CODE_BYTES, processShard, RUN_DEADLINE_MS, SHARD_SIZE, tests, TooLarge, type ShardDeps } from "../../../src/checks/tests/index.ts";
 import { d1JobStore, type ShardResult, type TestShard } from "../../../src/checks/tests/jobs.ts";
 import type { GitHubClient, PullRequest } from "../../../src/github.ts";
 import { d1RunStore } from "../../../src/runs.ts";
@@ -50,7 +50,7 @@ describe.skipIf(inWorkers)("Tests check shards", () => {
 		expect(startCheckRun).toHaveBeenCalledWith("octo/app", "abc", "Tests", "Rodando 25 arquivos de teste", `https://qf.example/admin/runs/${bodies[0].runId}`);
 		expect(bodies.map((b) => [b.shard, b.files.length])).toEqual([["0", SHARD_SIZE], ["1", 5]]);
 		expect(bodies[0]).toMatchObject({ repo: "octo/app", sha: "abc", installationId: 9 });
-		expect(await d1JobStore(RUNS).get(bodies[0].runId)).toEqual({ checkRunId: 55, installationId: 9 });
+		expect(await d1JobStore(RUNS).get(bodies[0].runId)).toEqual({ checkRunId: 55, installationId: 9, startedAt: expect.any(Number) });
 	});
 
 	it("runs the files quality-flare.json includes, and hands its config to every shard", async () => {
@@ -67,6 +67,48 @@ describe.skipIf(inWorkers)("Tests check shards", () => {
 		await tests.run({ github, repo: "octo/app", pr, env, installationId: 9 });
 		const [body] = (sendBatch.mock.calls[0] as unknown as [{ body: TestShard }[]])[0].map((m) => m.body);
 		expect(body).toMatchObject({ files: ["src/a.test.ts", "src/b.test.tsx"], config });
+	});
+
+	it("cancels the PR's run still going when a newer push starts one, and its queued shards drop", async () => {
+		const RUNS = await fakeD1();
+		let nextCheckRun = 55;
+		const completeCheckRun = vi.fn(async () => {});
+		const github = {
+			listFiles: async () => ["test/a.test.ts"],
+			getFileText: async () => undefined,
+			startCheckRun: async () => nextCheckRun++,
+			completeCheckRun,
+		} as unknown as GitHubClient;
+		const sendBatch = vi.fn(async () => {});
+		const env = { RUNS, TESTS_QUEUE: { sendBatch }, PUBLIC_URL: "https://qf.example" } as unknown as Env;
+		const bodies = () => (sendBatch.mock.calls.at(-1) as unknown as [{ body: TestShard }[]])[0].map((m) => m.body);
+
+		await tests.run({ github, repo: "octo/app", pr, env, installationId: 9 });
+		const [old] = bodies();
+		await tests.run({ github, repo: "octo/app", pr: { ...pr, head: { sha: "def" } } as PullRequest, env, installationId: 9 });
+
+		expect(completeCheckRun).toHaveBeenCalledExactlyOnceWith("octo/app", 55, expect.objectContaining({ conclusion: "cancelled" }));
+		const [newer, cancelled] = await d1RunStore(RUNS).list();
+		expect([newer.status, cancelled]).toEqual(["running", expect.objectContaining({ id: old.runId, status: "completed", conclusion: "cancelled" })]);
+		const run = vi.fn<ShardDeps["run"]>(async (s) => passing(s.files));
+		const publish = vi.fn<ShardDeps["publish"]>(async () => {});
+		await processShard(old, 1, { jobs: d1JobStore(RUNS), run, publish, enqueue: async () => {} });
+		expect(run).not.toHaveBeenCalled();
+		expect(publish).not.toHaveBeenCalled();
+	});
+
+	it("stops a run past its deadline: queued shards report their files without running them", async () => {
+		const RUNS = await fakeD1();
+		const runs = d1RunStore(RUNS, () => 0);
+		const runId = await runs.start({ repo: "octo/app", pr: 7, sha: "abc" });
+		const jobs = d1JobStore(RUNS);
+		await jobs.create(runId, { shards: 1, checkRunId: 55, installationId: 9 });
+		const run = vi.fn<ShardDeps["run"]>(async (s) => passing(s.files));
+		const publish = vi.fn<ShardDeps["publish"]>(async () => {});
+		await processShard({ ...shard(["test/a.test.ts"]), runId }, 2, { jobs, run, publish, enqueue: async () => {}, now: () => RUN_DEADLINE_MS + 1 });
+		expect(run).not.toHaveBeenCalled();
+		const [, report] = publish.mock.calls[0];
+		expect(report.files).toEqual([{ path: "test/a.test.ts", state: "fail", errors: [expect.stringContaining("passou de 60 minutos")], tests: [] }]);
 	});
 
 	it("reports no tests right away", async () => {

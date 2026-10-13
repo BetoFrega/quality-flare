@@ -1,10 +1,10 @@
 import type { TestRun, TestRunDetail } from "../runs.ts";
 import { esc, layout, renderHeader } from "./page.ts";
 
-/** A run still "running" after this long was cut off (waitUntil ran out) and will never finish. */
-export const STALE_AFTER_MS = 30 * 60_000;
+/** A run still "running" after this long, past its deadline (RUN_DEADLINE_MS), was cut off and will never finish. */
+export const STALE_AFTER_MS = 75 * 60_000;
 
-const ICON = { success: "✓", failure: "✗", neutral: "–", running: "●", stale: "!" } as const;
+const ICON = { success: "✓", failure: "✗", neutral: "–", cancelled: "⊘", running: "●", stale: "!" } as const;
 
 const LIVE = '<script src="/admin/live.js" defer></script>';
 /** Without JavaScript (or if the socket fails), running pages still reload on their own. */
@@ -92,6 +92,7 @@ const LABEL: Record<State, string> = {
 	success: "Passou",
 	failure: "Falhou",
 	neutral: "Neutro",
+	cancelled: "Cancelada",
 	running: "Rodando",
 	stale: "Interrompida",
 };

@@ -57,6 +57,7 @@ describe("readVitestConfig", () => {
 				exclude: ["**/node_modules/**", "**/.git/**", "**/*.runtime.test.ts", "**/*.integration.test.{ts,tsx}"],
 				globals: true,
 				setupFiles: ["./vitest.setup.ts"],
+				environment: "node",
 			},
 		});
 	});

@@ -65,7 +65,56 @@ export function splitMocks(js: string): MockSplit | undefined {
 		scanned = end;
 	}
 	if (!parts.length) return undefined;
-	return { rest: rest + js.slice(last), hoisted: parts.join("\n"), specs, names };
+	const spies = hoistSpies(rest + js.slice(last), parts.join("\n"), names);
+	return { rest: spies.rest, hoisted: [...spies.parts, ...parts].join("\n"), specs, names: [...spies.names, ...names] };
+}
+
+// `const mockX = vi.fn(…)`, maybe with chained calls (`.mockReturnValue(…)`), starting a line.
+const SPY = /^[ \t]*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*vi\s*\.\s*fn\s*\(/gm;
+
+/**
+ * Moves top-level `vi.fn()` declarations that the hoisted code uses into it. vitest keeps a mock
+ * factory in the test file, so a factory may call a spy declared below it once the file has run;
+ * here the factory lives in another module and would not see it.
+ */
+function hoistSpies(js: string, hoisted: string, taken: string[]): { rest: string; parts: string[]; names: string[] } {
+	const used = usedNames(hoisted);
+	const code = blankStrings(js);
+	const parts: string[] = [];
+	const names: string[] = [];
+	let rest = "";
+	let last = 0;
+	let depth = 0;
+	let scanned = 0;
+	for (const m of code.matchAll(SPY)) {
+		for (; scanned < m.index; scanned++) {
+			const c = code[scanned];
+			if (c === "{" || c === "(" || c === "[") depth++;
+			else if (c === "}" || c === ")" || c === "]") depth--;
+		}
+		if (depth !== 0 || !used.has(m[1]) || taken.includes(m[1])) continue;
+		let close = matchingParen(code, m.index + m[0].length - 1);
+		while (close !== undefined) {
+			const chained = /^\s*\.\s*[\w$]+\s*\(/.exec(code.slice(close + 1));
+			if (!chained) break;
+			close = matchingParen(code, close + chained[0].length);
+		}
+		if (close === undefined) continue;
+		let end = close + 1;
+		const semicolon = /^[ \t]*;/.exec(code.slice(end));
+		if (semicolon) end += semicolon[0].length;
+		parts.push(js.slice(m.index, end));
+		names.push(m[1]);
+		rest += js.slice(last, m.index) + js.slice(m.index, end).replace(/[^\n]/g, " ");
+		last = end;
+		scanned = end;
+	}
+	return { rest: rest + js.slice(last), parts, names };
+}
+
+/** Identifiers the code reads, roughly: not property names (`.a`, `a:`), strings or comments. */
+export function usedNames(js: string): Set<string> {
+	return new Set(blankStrings(js).match(/(?<![\w$.])[A-Za-z_$][\w$]*(?![\w$]|\s*:(?!:))/g));
 }
 
 /** `vi.importActual("x")` → `import("x?__qf_actual")`, so the bundle links it to the real module. */

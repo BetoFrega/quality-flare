@@ -4,7 +4,7 @@ import { d1RunStore } from "../../runs.ts";
 import type { Check, CheckResult } from "../types.ts";
 import { CONFIG_FILE, readTestConfig, selectTestFiles, type TestConfig } from "./config.ts";
 import { readVitestConfig } from "./vitest-config.ts";
-import { isLoadable, isTestFile } from "./convention.ts";
+import { isAsset, isLoadable, isTestFile } from "./convention.ts";
 import { d1JobStore, type JobStore, type ShardResult, type TestShard } from "./jobs.ts";
 import { readLockfile, type LockedPackage } from "./lockfile.ts";
 import { buildModules, bundleSize, MAIN_MODULE, type TestBundle } from "./modules.ts";
@@ -15,7 +15,8 @@ import { readTarball } from "./tarball.ts";
 
 const NAME = "Tests";
 const LOCKFILES = new Set(["pnpm-lock.yaml", "package-lock.json"]);
-const PACKAGE_FILE = /\.(c|m)?js$|\.json$/;
+// Stylesheets are read with node:fs by some packages (jsdom's default stylesheet), never imported.
+const PACKAGE_FILE = /\.(c|m)?js$|\.json$|\.css$/;
 
 /** Runtime the tests run on: today's Workers, with Node.js APIs. */
 const COMPATIBILITY_DATE = "2026-10-06";
@@ -28,6 +29,12 @@ export const SHARD_SIZE = 20;
 
 /** A Dynamic Worker takes at most 64 MB of code; past this, a shard splits instead of trying. */
 export const MAX_CODE_BYTES = 48 * 1024 * 1024;
+
+/**
+ * A run that hasn't finished this long after it started stops: its shards still queued report
+ * their files as failed without running them, so the run completes instead of using the queue.
+ */
+export const RUN_DEADLINE_MS = 60 * 60_000;
 
 /** A one-file shard that crashed the consumer this many times (out of memory, likely) is reported as failed. */
 const MAX_ATTEMPTS = 3;
@@ -53,6 +60,8 @@ export const tests: Check = {
 		let checkRunId: number | undefined;
 		try {
 			if (runId === undefined) throw new Error("O D1 (quality-flare-runs) não respondeu; ele coordena os lotes de testes.");
+			// A newer push supersedes the PR's runs still going: their queued shards drop themselves.
+			await cancelRuns(github, repo, await runs.running(repo, pr.number, runId), d1JobStore(env.RUNS), runs, live);
 			const read = (path: string) => github.getFileText(repo, sha, path);
 			// quality-flare.json overrides, key by key, what the repository's vitest config says.
 			const config = { ...(await readVitestConfig(read)).config, ...readTestConfig(await read(CONFIG_FILE)) };
@@ -113,15 +122,23 @@ export interface ShardDeps {
 	jobs: JobStore;
 	enqueue(shards: TestShard[]): Promise<void>;
 	run(shard: TestShard): Promise<ShardResult>;
+	/** Epoch milliseconds; Date.now() when absent. */
+	now?(): number;
 	publish(shard: TestShard, report: TestReport, unresolved: ShardResult["unresolved"]): Promise<void>;
 }
 
 /** Runs one shard, splitting it when it doesn't fit, and publishes the run if it was the last. */
 export async function processShard(shard: TestShard, attempts: number, deps: ShardDeps): Promise<void> {
+	// The run was cancelled by a newer push: nothing to run or report.
+	const job = await deps.jobs.get(shard.runId);
+	if (!job) return;
+	const expired = job.startedAt !== undefined && (deps.now?.() ?? Date.now()) - job.startedAt > RUN_DEADLINE_MS;
 	// A shard that took the consumer down before (out of memory, most likely) tries again in halves.
-	if (attempts > 1 && shard.files.length > 1) return split(shard, deps);
+	if (!expired && attempts > 1 && shard.files.length > 1) return split(shard, deps);
 	let result: ShardResult;
-	if (attempts >= MAX_ATTEMPTS) {
+	if (expired) {
+		result = failed(shard.files, `A execução passou de ${RUN_DEADLINE_MS / 60_000} minutos e parou antes de chegar a este arquivo.`);
+	} else if (attempts >= MAX_ATTEMPTS) {
 		result = failed(shard.files, `O arquivo derrubou o Worker ${attempts - 1} vezes (provavelmente faltou memória: o limite é 128 MB).`);
 	} else {
 		try {
@@ -172,7 +189,7 @@ async function runShard(
 ): Promise<ShardResult> {
 	const label = `Lote ${shard.shard}`;
 	onProgress({ type: "status", text: `${label}: baixando o código` });
-	const files = await readTarball(await github.getTarball(shard.repo, shard.sha), (p) => isLoadable(p) || LOCKFILES.has(p));
+	const files = await readTarball(await github.getTarball(shard.repo, shard.sha), (p, size) => isLoadable(p) || LOCKFILES.has(p) || isAsset(p, size));
 	onProgress({ type: "status", text: `${label}: montando ${count(shard.files.length, "arquivo")} de teste e as dependências` });
 	// Imported lazily: the bundled runtime is only needed when tests actually run.
 	const { default: runtimeSource } = await import("virtual:test-runtime");
@@ -183,6 +200,7 @@ async function runShard(
 		fetchPackage: (pkg) => fetchPackage(pkg, inTurn),
 		testFiles: shard.files,
 		setupFiles: shard.config?.setupFiles,
+		environment: shard.config?.environment,
 	});
 	files.clear();
 	// Imports that fail inside npm packages are usually optional ones that never run.
@@ -202,6 +220,28 @@ async function runShard(
 /** A shard's files, each failed with `message`. */
 function failed(files: string[], message: string): ShardResult {
 	return { report: { files: files.map((path) => ({ path, state: "fail", errors: [message], tests: [] })) }, unresolved: [] };
+}
+
+const CANCELLED: CheckResult = {
+	conclusion: "cancelled",
+	title: "Cancelada por um push mais novo",
+	summary: "A PR recebeu commits novos enquanto os testes rodavam; os testes rodam de novo no commit novo.",
+};
+
+/** Completes the given runs as cancelled, in the history and on GitHub, and stops their shards. */
+async function cancelRuns(
+	github: GitHubClient,
+	repo: string,
+	runIds: number[],
+	jobs: JobStore,
+	runs: ReturnType<typeof d1RunStore>,
+	live: ReturnType<typeof livePublisher>,
+): Promise<void> {
+	for (const id of runIds) {
+		const job = await jobs.cancel(id);
+		if (job) await github.completeCheckRun(repo, job.checkRunId, CANCELLED).catch(logError);
+		await finishRun(runs, live, id, CANCELLED);
+	}
 }
 
 async function finishRun(

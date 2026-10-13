@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readLockfile } from "../../../src/checks/tests/lockfile.ts";
 import { buildModules, MAIN_MODULE, type TestBundle } from "../../../src/checks/tests/modules.ts";
 import type { ProgressEvent, RunRequest, TestReport } from "../../../src/checks/tests/report.ts";
 import { readRun } from "../../../src/checks/tests/stream.ts";
@@ -117,6 +118,19 @@ describe.skipIf(inWorkers)("tests in a Dynamic Worker", () => {
 				vi.mock("../src/firebase", () => ({ db: "fake db" }));
 				vi.mock("server-only", () => ({}));
 				it("never loads the mocked module", () => expect(read()).toBe("fake db"));`,
+			"docs/a.md": "# A",
+			"src/mode.ts": "export const mode = process.env.MODE;",
+			"test/e.test.ts": `
+				import { expect, it, vi } from "vitest";
+				it("evaluates modules again after vi.resetModules", async () => {
+					vi.stubEnv("MODE", "a");
+					const a = await import("../src/mode");
+					vi.resetModules();
+					vi.stubEnv("MODE", "b");
+					const b = await import("../src/mode");
+					expect([a.mode, b.mode]).toEqual(["a", "b"]);
+					vi.unstubAllEnvs();
+				});`,
 			"test/d.test.ts": `
 				import { expect, it, vi } from "vitest";
 				it("stubs env and waits", async () => {
@@ -126,6 +140,23 @@ describe.skipIf(inWorkers)("tests in a Dynamic Worker", () => {
 					expect(process.env.MODE).toBeUndefined();
 					let n = 0;
 					expect(await vi.waitFor(() => { if (++n < 3) throw new Error("not yet"); return n; }, { interval: 1 })).toBe(3);
+				});
+				it("reads repository files from the working directory", async () => {
+					const { readFileSync } = await import("node:fs");
+					const { resolve } = await import("node:path");
+					expect(resolve("docs/a.md")).toBe("/bundle/docs/a.md");
+					expect(readFileSync(resolve("docs/a.md"), "utf8")).toBe("# A");
+				});
+				it("fakes timers and the clock", async () => {
+					vi.useFakeTimers();
+					vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+					let fired = false;
+					setTimeout(() => { fired = true; }, 1000);
+					expect(vi.getTimerCount()).toBe(1);
+					await vi.advanceTimersByTimeAsync(1000);
+					expect(fired).toBe(true);
+					expect(new Date().toISOString()).toBe("2026-01-01T00:00:01.000Z");
+					vi.useRealTimers();
 				});`,
 		};
 		const bundle = await buildModules(new Map(Object.entries(repo)), {
@@ -138,8 +169,83 @@ describe.skipIf(inWorkers)("tests in a Dynamic Worker", () => {
 			["test/a.test.ts", "pass", undefined, [["sees the mock through another module", "pass", undefined], ["keeps what importOriginal brought", "pass", undefined]]],
 			["test/b.test.ts", "pass", undefined, [["sees the real module", "pass", undefined]]],
 			["test/c.test.ts", "pass", undefined, [["never loads the mocked module", "pass", undefined]]],
-			["test/d.test.ts", "pass", undefined, [["stubs env and waits", "pass", undefined]]],
+			["test/d.test.ts", "pass", undefined, [["stubs env and waits", "pass", undefined], ["reads repository files from the working directory", "pass", undefined], ["fakes timers and the clock", "pass", undefined]]],
+			["test/e.test.ts", "pass", undefined, [["evaluates modules again after vi.resetModules", "pass", undefined]]],
 		]);
+	}, 30_000);
+
+	it("shares packages between files as vitest would load them per file", async () => {
+		const { default: runtimeSource } = await import("virtual:test-runtime");
+		const lockfile = readLockfile(
+			new Map([["package-lock.json", JSON.stringify({ packages: { "node_modules/cleanup": { version: "1.0.0" }, "node_modules/styles": { version: "1.0.0" } } })]]),
+		);
+		const packages: Record<string, Record<string, string>> = {
+			// Like @testing-library/react: registers a hook as it is imported.
+			cleanup: {
+				"package.json": JSON.stringify({ main: "index.js" }),
+				"index.js": "const mounted = []; afterEach(() => { mounted.length = 0; }); exports.mount = (x) => { mounted.push(x); return mounted.length; };",
+			},
+			// Like ansi-styles: module.exports through a getter.
+			styles: { "package.json": JSON.stringify({ main: "index.js" }), "index.js": "Object.defineProperty(module, 'exports', { get: () => ({ gray: 'g' }) });" },
+		};
+		const mountTwice = (name: string) => `
+				import { expect, it } from "vitest";
+				import { mount } from "cleanup";
+				import styles from "styles";
+				it("${name} mounts", () => expect(mount(1)).toBe(1));
+				it("${name} is cleaned up", () => expect([mount(2), styles.gray]).toEqual([1, "g"]));`;
+		const repo = {
+			"src/broken.ts": "throw new Error('cannot load here'); export const value = 1;",
+			"test/a.test.ts": mountTwice("a"),
+			"test/b.test.ts": mountTwice("b"),
+			"test/c.test.ts": `
+				import { expect, it } from "vitest";
+				import { value } from "../src/broken";
+				it("fails only where the module is used", () => expect(() => value + 1).toThrow("cannot load here"));`,
+			"test/d.test.ts": `
+				import { expect, it, vi } from "vitest";
+				import { value } from "../src/broken";
+				vi.mock("../src/broken", () => ({ value: 2 }));
+				it("mocks it", () => expect(value).toBe(2));`,
+		};
+		const bundle = await buildModules(new Map(Object.entries(repo)), {
+			runtimeSource,
+			lockfile,
+			fetchPackage: async ({ name }) => new Map(Object.entries(packages[name])),
+		});
+		const report = await runInWorkerd(bundle, () => {}, { globals: true });
+		expect(report.files.map((f) => [f.path, f.state, f.errors ?? f.tests.flatMap((t) => t.errors ?? [])])).toEqual([
+			["test/a.test.ts", "pass", []],
+			["test/b.test.ts", "pass", []],
+			["test/c.test.ts", "pass", []],
+			["test/d.test.ts", "pass", []],
+		]);
+	}, 30_000);
+
+	it("imports modules that generate code or draw random values as they load, in vitest's environment", async () => {
+		const { default: runtimeSource } = await import("virtual:test-runtime");
+		const repo = {
+			// Like protobufjs, loaded by firebase-admin: compiles functions it calls only when encoding.
+			"src/load.ts": `
+				import { randomBytes } from "node:crypto";
+				export const encode = Function("prefix", "return function encode(x) { return prefix + x; }")("p");
+				export const id = crypto.randomUUID();
+				export const bytes = randomBytes(4).length;`,
+			"test/load.test.ts": `
+				import { expect, it } from "vitest";
+				import { bytes, encode, id } from "../src/load";
+				it("loads, and fails only where generated code runs", () => {
+					expect([id, bytes]).toEqual([expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4/), 4]);
+					expect(() => encode(1)).toThrow(EvalError);
+					expect(() => Function("return 1")).toThrow(EvalError);
+				});
+				it("sets the environment vitest sets", () => {
+					expect([process.env.NODE_ENV, process.env.VITEST, import.meta.env.MODE, import.meta.env.DEV, import.meta.env.VITEST]).toEqual(["test", "true", "test", true, "true"]);
+				});`,
+		};
+		const bundle = await buildModules(new Map(Object.entries(repo)), { runtimeSource, fetchPackage: () => Promise.reject(new Error("offline")) });
+		const report = await runInWorkerd(bundle, () => {});
+		expect(report.files.map((f) => [f.path, f.state, f.errors ?? f.tests.flatMap((t) => t.errors ?? [])])).toEqual([["test/load.test.ts", "pass", []]]);
 	}, 30_000);
 });
 

@@ -26,6 +26,8 @@ export interface TestRunDetail extends TestRun {
 
 export interface RunStore {
 	start(run: { repo: string; pr: number; sha: string }): Promise<number>;
+	/** Ids of the PR's runs still running, other than `except`. */
+	running(repo: string, pr: number, except: number): Promise<number[]>;
 	finish(id: number, result: CheckResult, report?: TestReport): Promise<void>;
 	/** Most recent first. */
 	list(limit?: number): Promise<TestRun[]>;
@@ -75,6 +77,14 @@ export function d1RunStore(db: D1Database, now = () => Date.now()): RunStore {
 				.bind(repo, pr, sha, now())
 				.first<{ id: number }>();
 			return row!.id;
+		},
+		async running(repo, pr, except) {
+			await schema();
+			const { results } = await db
+				.prepare("SELECT id FROM test_runs WHERE repo = ? AND pr = ? AND status = 'running' AND id != ?")
+				.bind(repo, pr, except)
+				.all<{ id: number }>();
+			return results.map((r) => r.id);
 		},
 		async finish(id, result, report) {
 			await schema();

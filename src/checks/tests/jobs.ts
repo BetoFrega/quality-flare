@@ -31,12 +31,20 @@ export interface ShardResult {
 export interface RunJob {
 	checkRunId: number;
 	installationId: number;
+	/** When the run started, epoch milliseconds; absent if its history row is gone. */
+	startedAt?: number;
 }
 
 export interface JobStore {
 	/** Records a run waiting on `shards` shards, reported on GitHub check run `checkRunId`. */
 	create(runId: number, job: RunJob & { shards: number }): Promise<void>;
+	/** The run's job; null once it is cancelled (or for a run that never queued shards). */
 	get(runId: number): Promise<RunJob | null>;
+	/**
+	 * Drops the run's job, so its shards still in the queue skip their files and none of them
+	 * publishes a result. Returns the job, or null if there was none left to cancel.
+	 */
+	cancel(runId: number): Promise<RunJob | null>;
 	/**
 	 * Replaces `shard` with `parts` shards. Returns false if it was already split, so a message
 	 * delivered twice doesn't count its halves twice.
@@ -82,7 +90,24 @@ export function d1JobStore(db: D1Database): JobStore {
 				.prepare("SELECT check_run_id, installation_id FROM test_run_jobs WHERE run_id = ?")
 				.bind(runId)
 				.first<{ check_run_id: number; installation_id: number }>();
-			return row && { checkRunId: row.check_run_id, installationId: row.installation_id };
+			if (!row) return null;
+			const job: RunJob = { checkRunId: row.check_run_id, installationId: row.installation_id };
+			// The history (src/runs.ts) may not exist yet; the run then has no deadline.
+			const run = await db
+				.prepare("SELECT started_at FROM test_runs WHERE id = ?")
+				.bind(runId)
+				.first<{ started_at: number }>()
+				.catch(() => null);
+			return run ? { ...job, startedAt: run.started_at } : job;
+		},
+		async cancel(runId) {
+			await schema();
+			const row = await db
+				.prepare("DELETE FROM test_run_jobs WHERE run_id = ? RETURNING check_run_id, installation_id")
+				.bind(runId)
+				.first<{ check_run_id: number; installation_id: number }>();
+			await db.prepare("DELETE FROM test_run_shards WHERE run_id = ?").bind(runId).run();
+			return row ? { checkRunId: row.check_run_id, installationId: row.installation_id } : null;
 		},
 		async split(runId, shard, parts) {
 			await schema();
@@ -95,8 +120,11 @@ export function d1JobStore(db: D1Database): JobStore {
 		async finish(runId, shard, result) {
 			await schema();
 			const { meta } = await db
-				.prepare("INSERT OR IGNORE INTO test_run_shards (run_id, shard, result) VALUES (?, ?, ?)")
-				.bind(runId, shard, JSON.stringify(result))
+				// Not for a cancelled run, whose job is gone.
+				.prepare(
+					"INSERT OR IGNORE INTO test_run_shards (run_id, shard, result) SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM test_run_jobs WHERE run_id = ?)",
+				)
+				.bind(runId, shard, JSON.stringify(result), runId)
 				.run();
 			if (!meta.changes) return null;
 			const row = await changePending(runId, -1);

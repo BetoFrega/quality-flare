@@ -1,7 +1,7 @@
 import type { GitHubClient, PullRequest } from "../github.ts";
 
 /** How a completed check run ended. */
-export type Conclusion = "success" | "failure" | "neutral";
+export type Conclusion = "success" | "failure" | "neutral" | "cancelled";
 
 export interface CheckResult {
 	/** "pending" leaves the check run in progress, for a result that waits on something outside the PR. */
