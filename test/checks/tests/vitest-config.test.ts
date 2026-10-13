@@ -63,8 +63,8 @@ describe("readVitestConfig", () => {
 	});
 
 	it("falls back to vitest.config, and leaves out values computed at run time", async () => {
-		const files = { "vitest.config.ts": `export default { test: { include: process.env.CI ? ["a"] : ["b"], "globals": false } }` };
-		expect(await readVitestConfig(reader(files))).toEqual({ path: "vitest.config.ts", config: { globals: false } });
+		const files = { "vitest.config.ts": `export default { test: { include: process.env.CI ? ["a"] : ["b"], "globals": false, clearMocks: false, restoreMocks: true, mockReset: process.env.CI } }` };
+		expect(await readVitestConfig(reader(files))).toEqual({ path: "vitest.config.ts", config: { globals: false, clearMocks: false, restoreMocks: true } });
 	});
 
 	it("is empty without a vitest config", async () => {

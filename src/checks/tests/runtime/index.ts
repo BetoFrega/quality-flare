@@ -226,7 +226,10 @@ class WorkerRunner implements VitestRunner {
 	) {
 		this.config.setupFiles = options.setupFiles ?? [];
 		if (options.testTimeout) this.config.testTimeout = options.testTimeout;
+		this.mocks = options;
 	}
+
+	private readonly mocks: Pick<RunRequest, "clearMocks" | "mockReset" | "restoreMocks">;
 
 	config: VitestRunner["config"] = {
 		root: "/",
@@ -300,6 +303,10 @@ class WorkerRunner implements VitestRunner {
 	}
 
 	onBeforeTryTask(test: Test) {
+		// As vitest does before each test, per its config.
+		if (this.mocks.restoreMocks) restoreAllMocks();
+		else if (this.mocks.mockReset) resetAllMocks();
+		else if (this.mocks.clearMocks) clearAllMocks();
 		setState(freshState(test.fullTestName ?? test.name), expect);
 	}
 
@@ -330,6 +337,61 @@ function hideUnimplemented() {
 	// A getter: a plain assignment does not stick in a Dynamic Worker.
 	const { console } = globalThis as unknown as { console: object };
 	Object.defineProperty(console, "createTask", { get: () => undefined, set: () => {}, configurable: true });
+}
+
+/**
+ * Node behavior that workerd lacks, where tests can tell. The APIs workerd declares only to throw
+ * "not implemented" are filled in while they still throw, so a workerd that implements them wins.
+ */
+async function fillNodeGaps() {
+	const notImplemented = (call: () => unknown) => {
+		try {
+			call();
+			return false;
+		} catch (error) {
+			return error instanceof Error && /not implemented/.test(error.message);
+		}
+	};
+	// Object URLs: what a component makes for a picked file's preview and revokes on unmount.
+	const urls = new Map<string, Blob>();
+	const url = URL as unknown as Record<string, unknown>;
+	if (notImplemented(() => URL.revokeObjectURL("blob:nodedata:probe"))) {
+		define(url, "createObjectURL", (blob: Blob) => {
+			const id = `blob:nodedata:${crypto.randomUUID()}`;
+			urls.set(id, blob);
+			return id;
+		});
+		define(url, "revokeObjectURL", (id: string) => void urls.delete(String(id)));
+	}
+	// workerd delivers a MessageChannel message before pending promise callbacks; Node and browsers
+	// deliver it as a task, after them. React's act() posts one to let a test's async work settle.
+	// The real setTimeout, taken before a test can install fake timers that would hold the message.
+	const post = MessagePort.prototype.postMessage;
+	const setTimeout = globalThis.setTimeout;
+	define(MessagePort.prototype, "postMessage", function (this: MessagePort, ...args: Parameters<MessagePort["postMessage"]>) {
+		try {
+			setTimeout(() => post.apply(this, args), 0);
+		} catch {
+			// Timers are forbidden while modules are evaluated.
+			post.apply(this, args);
+		}
+	});
+	// AsyncLocalStorage#disable(): OpenTelemetry's context manager calls it on `context.disable()`.
+	const specifier: string = "node:async_hooks";
+	const { AsyncLocalStorage } = (await import(specifier)) as { AsyncLocalStorage: { prototype: Record<string, unknown> } };
+	if (notImplemented(() => (AsyncLocalStorage.prototype.disable as () => void).call(new (AsyncLocalStorage as unknown as new () => object)()))) {
+		// Node's disable() makes getStore() return undefined until the next run().
+		define(AsyncLocalStorage.prototype, "disable", function (this: { enterWith?(store: unknown): void }) {
+			try {
+				this.enterWith?.(undefined);
+			} catch {}
+		});
+	}
+}
+
+/** Replaces a property that a plain assignment may not change in a Dynamic Worker. */
+function define(target: object, key: string, value: unknown) {
+	Object.defineProperty(target, key, { value, writable: true, configurable: true });
 }
 
 /**
@@ -410,6 +472,9 @@ async function allowRandomnessWhileImporting() {
 	const web = scope.crypto as Record<string, (...args: any[]) => any>;
 	web.getRandomValues = orPseudo(web.getRandomValues.bind(web), pseudoRandom);
 	web.randomUUID = orPseudo(web.randomUUID.bind(web), pseudoUUID);
+	// Timers are forbidden there too: a script's top-level `AbortSignal.timeout(ms)` gets a signal
+	// that never aborts, which a test only notices if it waits out the timeout.
+	define(AbortSignal, "timeout", orPseudo(AbortSignal.timeout.bind(AbortSignal), () => new AbortController().signal));
 }
 
 /** Runs the given test files (module paths, e.g. "/test/a.test.ts") and reports every test. */
@@ -426,6 +491,7 @@ export async function runTests(run: RunRequest | string[], onProgress: (event: P
 		get: (vars, key) => (typeof key === "string" && !(key in vars) ? flags[key] : Reflect.get(vars, key)),
 	});
 	hideUnimplemented();
+	await fillNodeGaps();
 	deferCodeGeneration();
 	await allowRandomnessWhileImporting();
 	const files = await startTests(paths, new WorkerRunner(onProgress, options));

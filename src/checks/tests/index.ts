@@ -198,9 +198,13 @@ async function runShard(
 	// Imported lazily: the bundled runtime is only needed when tests actually run.
 	const { default: runtimeSource } = await import("virtual:test-runtime");
 	const inTurn = turns();
+	const lockfile = readLockfile(files);
+	// vitest 5 clears every mock's calls before each test unless the config says otherwise.
+	const vitest = lockfile?.fromRepo("package.json", "vitest")?.version;
+	const config = { ...shard.config, clearMocks: shard.config?.clearMocks ?? Number(vitest?.split(".")[0]) >= 5 };
 	const bundle = await buildModules(files, {
 		runtimeSource,
-		lockfile: readLockfile(files),
+		lockfile,
 		fetchPackage: (pkg) => fetchPackage(pkg, inTurn),
 		testFiles: shard.files,
 		setupFiles: shard.config?.setupFiles,
@@ -214,7 +218,7 @@ async function runShard(
 	if (size > MAX_CODE_BYTES) throw new TooLarge(size);
 	onProgress({ type: "status", text: `${label}: rodando` });
 	try {
-		return { report: await runInDynamicWorker(loader, bundle, onProgress, shard.config), unresolved };
+		return { report: await runInDynamicWorker(loader, bundle, onProgress, config), unresolved };
 	} catch (error) {
 		if (error instanceof Error && /exceeds the maximum allowed size/.test(error.message)) throw new TooLarge(size);
 		throw new Crashed(error);
@@ -321,7 +325,8 @@ export async function runInDynamicWorker(
 		globalOutbound: null,
 		limits: { cpuMs: 30_000 },
 	});
-	const run: RunRequest = { files: bundle.testFiles, setupFiles: bundle.setupFiles, globals: config.globals, testTimeout: config.testTimeout };
+	const { globals, testTimeout, clearMocks, mockReset, restoreMocks } = config;
+	const run: RunRequest = { files: bundle.testFiles, setupFiles: bundle.setupFiles, globals, testTimeout, clearMocks, mockReset, restoreMocks };
 	const res = await worker.getEntrypoint().fetch("http://tests/", { method: "POST", body: JSON.stringify(run) });
 	if (!res.ok) throw new Error(`O Dynamic Worker respondeu ${res.status}: ${await res.text()}`);
 	return readRun(res, onProgress);

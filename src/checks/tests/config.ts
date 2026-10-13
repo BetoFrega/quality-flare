@@ -22,6 +22,11 @@ export interface TestConfig {
 	testTimeout?: number;
 	/** vitest's `environment` for files without a `@vitest-environment` comment: node, jsdom or happy-dom. */
 	environment?: string;
+	/** Before each test, as vitest's options of the same name: the first one set wins, in this order. */
+	restoreMocks?: boolean;
+	mockReset?: boolean;
+	/** Defaults to vitest's own default for the version in the lockfile: true from vitest 5. */
+	clearMocks?: boolean;
 }
 
 /** The `tests` section of quality-flare.json; empty when the file is missing. Throws when it is invalid. */
@@ -44,7 +49,9 @@ export function readTestConfig(source: string | undefined): TestConfig {
 	strings("exclude");
 	strings("setupFiles");
 	if (tests.environment !== undefined && typeof tests.environment !== "string") throw new Error(`${CONFIG_FILE}: "tests.environment" deve ser um texto.`);
-	if (tests.globals !== undefined && typeof tests.globals !== "boolean") throw new Error(`${CONFIG_FILE}: "tests.globals" deve ser true ou false.`);
+	for (const key of ["globals", "clearMocks", "mockReset", "restoreMocks"] as const) {
+		if (tests[key] !== undefined && typeof tests[key] !== "boolean") throw new Error(`${CONFIG_FILE}: "tests.${key}" deve ser true ou false.`);
+	}
 	if (tests.testTimeout !== undefined && !(typeof tests.testTimeout === "number" && tests.testTimeout > 0)) {
 		throw new Error(`${CONFIG_FILE}: "tests.testTimeout" deve ser um número de milissegundos.`);
 	}

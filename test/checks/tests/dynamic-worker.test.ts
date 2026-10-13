@@ -247,6 +247,51 @@ describe.skipIf(inWorkers)("tests in a Dynamic Worker", () => {
 		const report = await runInWorkerd(bundle, () => {});
 		expect(report.files.map((f) => [f.path, f.state, f.errors ?? f.tests.flatMap((t) => t.errors ?? [])])).toEqual([["test/load.test.ts", "pass", []]]);
 	}, 30_000);
+
+	it("fills the Node APIs workerd leaves unimplemented, and clears mocks between tests as vitest 5", async () => {
+		const { default: runtimeSource } = await import("virtual:test-runtime");
+		const repo = {
+			// Read by the test as a file, while it is also a module the test imports.
+			"src/probe.ts": `export const target = process.argv[2];\nexport const signal = AbortSignal.timeout(60_000);`,
+			"test/node.test.ts": `
+				import { readFileSync } from "node:fs";
+				import { readFile } from "node:fs/promises";
+				import { matchesGlob } from "node:path";
+				import { AsyncLocalStorage } from "node:async_hooks";
+				import { expect, it, vi } from "vitest";
+				import { signal } from "../src/probe";
+				const spy = vi.fn();
+				it("matches globs as Node does", () => {
+					expect([matchesGlob("src/a/b.ts", "src/**/*.ts"), matchesGlob("src/a/b.ts", "src/*.ts"), matchesGlob("src/.a.ts", "src/*.ts"), matchesGlob("a.test.tsx", "*.test.{ts,tsx}")]).toEqual([true, false, false, true]);
+				});
+				it("makes and revokes object URLs, and disables AsyncLocalStorage", () => {
+					const url = URL.createObjectURL(new Blob(["x"]));
+					expect(url).toMatch(/^blob:nodedata:/);
+					URL.revokeObjectURL(url);
+					const storage = new AsyncLocalStorage();
+					expect(() => storage.disable()).not.toThrow();
+				});
+				it("delivers a MessageChannel message after pending promise callbacks", async () => {
+					const order: string[] = [];
+					const channel = new MessageChannel();
+					const delivered = new Promise((resolve) => { channel.port1.onmessage = () => { order.push("message"); resolve(undefined); }; });
+					channel.port2.postMessage(undefined);
+					(async () => { for (let i = 0; i < 10; i++) await null; order.push("promises"); })();
+					await delivered;
+					expect(order).toEqual(["promises", "message"]);
+				});
+				it("gives a module's top-level AbortSignal.timeout a signal, and reads its source", async () => {
+					expect(signal.aborted).toBe(false);
+					expect(readFileSync("src/probe.ts", "utf8")).toContain("process.argv[2]");
+					expect(await readFile("src/probe.ts", "utf8")).toContain("AbortSignal.timeout(60_000)");
+				});
+				it("calls the spy", () => { spy(); expect(spy).toHaveBeenCalledOnce(); });
+				it("starts with the spy's calls cleared", () => expect(spy).not.toHaveBeenCalled());`,
+		};
+		const bundle = await buildModules(new Map(Object.entries(repo)), { runtimeSource, fetchPackage: () => Promise.reject(new Error("offline")) });
+		const report = await runInWorkerd(bundle, () => {}, { clearMocks: true });
+		expect(report.files.map((f) => [f.path, f.state, f.errors ?? f.tests.flatMap((t) => t.errors ?? [])])).toEqual([["test/node.test.ts", "pass", []]]);
+	}, 30_000);
 });
 
 /** Serves a host Worker with a Worker Loader binding on workerd and has it run the bundle. */
