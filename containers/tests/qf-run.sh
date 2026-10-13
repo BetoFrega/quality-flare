@@ -1,6 +1,7 @@
 #!/bin/bash
-# One Tests run of the "Container" runner: clones the PR head, installs dependencies, runs the
-# repository's own vitest and, when configured, its typecheck. It reports only through files in
+# One run of the "Container tests" check: clones the PR head, installs dependencies, runs the
+# repository's own vitest and then the commands of its config, each its own check run. It reports
+# only through files in
 # $OUT, which the TestBox Durable Object reads (src/checks/tests/container.ts):
 #   steps            one line per finished step: "<name> <exit code> <milliseconds>"
 #   current          the step running now
@@ -10,31 +11,36 @@
 #   done             written last
 # Then it waits for the Durable Object to read them and destroy the container.
 #
-# Environment: REPO ("owner/repo"), SHA, TOKEN (read-only, this repository only), and optionally
-# INSTALL (a shell command), VITEST_ARGS (one argument per line) and TYPECHECK (a shell command).
+# Environment: REPO ("owner/repo"), SHA, BASE (the PR's base branch), TOKEN (read-only, this
+# repository only), and optionally INSTALL (a shell command), VITEST_ARGS (one argument per line),
+# and COMMANDS (how many) with COMMAND_1, COMMAND_2… (shell commands, run as steps command1…).
 set -u
 
 OUT=/work/out
 mkdir -p "$OUT" /work/repo
 : >"$OUT/steps"
 
-# step <name> <seconds>: runs the function <name> with a hard time limit, logging to $OUT/<name>.log.
+# step <name> <seconds> [<command>]: runs <command> (by default the function <name>) with a hard time
+# limit, logging to $OUT/<name>.log.
 step() {
-	local name=$1 limit=$2 start code
+	local name=$1 limit=$2 command=${3:-$1} start code
 	echo "$name" >"$OUT/current"
 	start=$(date +%s%3N)
-	timeout --kill-after=10 "$limit" bash -c "$name" >>"$OUT/$name.log" 2>&1
+	timeout --kill-after=10 "$limit" bash -c "$command" >>"$OUT/$name.log" 2>&1
 	code=$?
 	echo "$name $code $(($(date +%s%3N) - start))" >>"$OUT/steps"
 	return "$code"
 }
 
+# The base branch comes with its history, as origin/$BASE, for commands that compare against it
+# (turbo --affected, diffs). Blobs are fetched as needed, so the token stays in the repository's git
+# config for the whole run; it reads only this repository, which the code under test already has.
 clone() {
-	local auth
-	auth=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
 	git init -q . &&
-		git -c "http.extraHeader=Authorization: Basic $auth" fetch -q --depth=1 "https://github.com/$REPO" "$SHA" &&
-		git checkout -q FETCH_HEAD
+		git remote add origin "https://github.com/$REPO" &&
+		git config http.extraHeader "Authorization: Basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)" &&
+		git fetch -q --filter=blob:none origin "$SHA" "+refs/heads/$BASE:refs/remotes/origin/$BASE" &&
+		git checkout -q "$SHA"
 }
 
 install() {
@@ -52,21 +58,25 @@ tests() {
 	npx --no-install vitest run "${args[@]}" --reporter=dot --reporter=json --outputFile.json="$OUT/report.json"
 }
 
-typecheck() {
-	bash -c "$TYPECHECK"
+# run_command <n>: the shell command COMMAND_<n>.
+run_command() {
+	local var=COMMAND_$1
+	bash -c "${!var}"
 }
 
 export OUT
-export -f clone install tests typecheck
+export -f clone install tests run_command
 
 run() {
 	cd /work/repo || return
 	step clone 300 || return
 	unset TOKEN
-	export CI=true
+	# As on GitHub Actions, for scripts written for it.
+	export CI=true GITHUB_BASE_REF=$BASE GITHUB_SHA=$SHA
 	step install 600 || return
 	step tests 1500
-	if [ -n "${TYPECHECK:-}" ]; then step typecheck 600; fi
+	local i
+	for ((i = 1; i <= ${COMMANDS:-0}; i++)); do step "command$i" 1200 "run_command $i"; done
 }
 
 run
