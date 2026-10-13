@@ -10,6 +10,7 @@ Toda a infraestrutura é Cloudflare: um único Worker, um namespace KV com as co
 | --- | --- |
 | [Closes an issue](src/checks/closes-issue) | Exige que a PR feche uma issue |
 | [Tests](src/checks/tests) | Roda os testes do repositório num Dynamic Worker |
+| [Container tests](src/checks/tests/container.ts) | Roda o vitest do próprio repositório num container (e, se configurado, o typecheck) |
 | [Dependabot auto-merge](src/checks/dependabot-automerge) | Habilita auto-merge (squash) nas PRs do Dependabot |
 | [Codex review](src/checks/codex-review) | Exige que as sugestões do Codex (`chatgpt-codex-connector`) estejam resolvidas |
 
@@ -36,6 +37,29 @@ A convenção, sem configuração por repositório:
 - Roda quando a PR é aberta, reaberta, recebe commits ou sai de draft (não em mudanças de label ou descrição), e no **Re-run**.
 
 Um teste que só funciona no Node pode se pular no Workers com `describe.skipIf(navigator.userAgent === "Cloudflare-Workers")`.
+
+### Container tests
+
+Roda o vitest do próprio repositório, com a config dele, num [container](https://developers.cloudflare.com/containers/) criado para cada execução (imagem em [`containers/tests`](containers/tests), Node 24, instância `standard-4`: 4 vCPU, 12 GiB). Serve para o que não roda no Dynamic Worker: testes que precisam de processos, sockets, `vm`, módulos nativos ou do typecheck. É um check separado do **Tests**: os dois são ligados um a um no admin, e um repositório pode usar os dois (por exemplo, testes de unidade baratos no Tests e o resto aqui).
+
+- **Passos:** clona o commit da PR com um token que só lê aquele repositório; instala as dependências pelo lockfile (`npm ci`, `pnpm install --frozen-lockfile` ou `yarn install --frozen-lockfile`, sem scripts de instalação); roda `vitest run`.
+- **Config:** a seção `container` do `quality-flare.json`, separada da seção `tests` do check Tests:
+
+  ```json
+  {
+    "tests": { "include": ["src/**/*.test.ts"] },
+    "container": {
+      "vitestArgs": ["--config", "vitest.unit.config.mts"],
+      "install": "npm ci",
+      "typecheck": "npm run typecheck"
+    }
+  }
+  ```
+
+  `vitestArgs` vai para o `vitest run`; `install` troca o comando de instalação; com `typecheck`, o comando roda depois dos testes e aparece como o check run **Typecheck**.
+- **Limites:** clone 5 min, instalação 10 min, testes 25 min, typecheck 10 min; o container é destruído ao terminar, num push novo na PR ou após 55 min.
+- **Custo:** memória e disco pelo tempo ligado, CPU pelo que foi usado; uns US$ 0,02 por execução no Tudo Macaé (instalação + 3477 testes + typecheck em ~4 min). A página da execução no admin mostra o custo estimado.
+- ✅ Passa se todos os testes passam; ⚪ neutro se o vitest não encontra testes; ❌ falha com cada teste que falhou, ou com o log do passo que falhou.
 
 ### Dependabot auto-merge
 

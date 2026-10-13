@@ -25,8 +25,9 @@ export interface TestRunDetail extends TestRun {
 }
 
 export interface RunStore {
-	start(run: { repo: string; pr: number; sha: string }): Promise<number>;
-	/** Ids of the PR's runs still running, other than `except`. */
+	/** `container` marks a run of the Container tests check, which a Tests run never cancels, nor the other way round. */
+	start(run: { repo: string; pr: number; sha: string; container?: boolean }): Promise<number>;
+	/** Ids of the PR's runs still running, other than `except`, of the same check as `except`. */
 	running(repo: string, pr: number, except: number): Promise<number[]>;
 	/** Runs still running that started before `startedBefore` (epoch milliseconds). */
 	overdue(startedBefore: number): Promise<{ id: number; repo: string }[]>;
@@ -73,7 +74,13 @@ const SCHEMA = `CREATE TABLE IF NOT EXISTS test_runs (
 	started_at INTEGER NOT NULL,
 	finished_at INTEGER
 );
-CREATE INDEX IF NOT EXISTS test_runs_by_start ON test_runs (started_at DESC);`;
+CREATE INDEX IF NOT EXISTS test_runs_by_start ON test_runs (started_at DESC);
+CREATE TABLE IF NOT EXISTS test_container_runs (
+	run_id INTEGER PRIMARY KEY,
+	instance TEXT,
+	wall_ms INTEGER,
+	cpu_us INTEGER
+);`;
 
 const COLUMNS = "id, repo, pr, sha, status, conclusion, title, started_at, finished_at";
 
@@ -96,19 +103,24 @@ export function d1RunStore(db: D1Database, now = () => Date.now()): RunStore {
 	let ready: Promise<unknown> | undefined;
 	const schema = () => (ready ??= db.batch(SCHEMA.split(";").filter((s) => s.trim()).map((s) => db.prepare(s))));
 	return {
-		async start({ repo, pr, sha }) {
+		async start({ repo, pr, sha, container }) {
 			await schema();
 			const row = await db
 				.prepare("INSERT INTO test_runs (repo, pr, sha, status, started_at) VALUES (?, ?, ?, 'running', ?) RETURNING id")
 				.bind(repo, pr, sha, now())
 				.first<{ id: number }>();
+			if (container) await db.prepare("INSERT INTO test_container_runs (run_id) VALUES (?)").bind(row!.id).run();
 			return row!.id;
 		},
 		async running(repo, pr, except) {
 			await schema();
+			const container = "(SELECT run_id FROM test_container_runs)";
 			const { results } = await db
-				.prepare("SELECT id FROM test_runs WHERE repo = ? AND pr = ? AND status = 'running' AND id != ?")
-				.bind(repo, pr, except)
+				.prepare(
+					`SELECT id FROM test_runs WHERE repo = ? AND pr = ? AND status = 'running' AND id != ?
+					AND (id IN ${container}) = (? IN ${container})`,
+				)
+				.bind(repo, pr, except, except)
 				.all<{ id: number }>();
 			return results.map((r) => r.id);
 		},
