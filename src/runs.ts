@@ -1,5 +1,5 @@
 import type { TestReport } from "./checks/tests/report.ts";
-import type { CheckResult } from "./checks/types.ts";
+import type { CheckResult, Conclusion } from "./checks/types.ts";
 
 /**
  * History of Tests check runs, kept in D1 for the admin: one row per run, inserted as
@@ -12,7 +12,7 @@ export interface TestRun {
 	pr: number;
 	sha: string;
 	status: "running" | "completed";
-	conclusion: CheckResult["conclusion"] | null;
+	conclusion: Conclusion | null;
 	title: string | null;
 	/** Epoch milliseconds. */
 	startedAt: number;

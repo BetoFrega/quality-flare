@@ -51,7 +51,7 @@ Faz o mesmo que o workflow `gh pr merge --auto --squash` para PRs do Dependabot,
 Garante que as reviews do [Codex](https://chatgpt.com/codex) (`chatgpt-codex-connector[bot]`) foram tratadas antes do merge.
 
 - ❌ Falha enquanto houver alguma conversa aberta pelo Codex sem **Resolve conversation**, inclusive as que ficaram desatualizadas porque o código mudou. O resumo lista cada sugestão com a prioridade (P0, P1…) e o link.
-- ❌ Falha enquanto o Codex está revisando: o comentário "Codex Review Summary" mostra uma review em andamento, ou (sem esse comentário) o Codex reagiu com 👀 na PR.
+- 🟡 Fica pendente (check run em andamento) enquanto o Codex está revisando: o comentário "Codex Review Summary" mostra uma review em andamento, ou (sem esse comentário) o Codex reagiu com 👀 na PR.
 - ✅ Passa quando o Codex revisou e todas as conversas dele estão resolvidas, ou quando ele não deixou sugestões.
 - ⚪ Neutro enquanto o Codex não revisou a PR.
 - Roda nos eventos de PR, a cada review, comentário de review, conversa resolvida ou reaberta e comentário na PR (o Codex edita o resumo quando termina), e no **Re-run**.

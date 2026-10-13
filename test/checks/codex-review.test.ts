@@ -44,8 +44,8 @@ describe("evaluate", () => {
 		expect(r).toMatchObject({ conclusion: "success", title: "O Codex não encontrou problemas" });
 	});
 
-	it("fails while Codex is still reviewing", () => {
-		expect(evaluate(activity({ eyesFrom: [CODEX] })).title).toBe("O Codex está revisando a PR");
+	it("stays pending while Codex is still reviewing", () => {
+		expect(evaluate(activity({ eyesFrom: [CODEX] }))).toMatchObject({ conclusion: "pending", title: "O Codex está revisando a PR" });
 	});
 
 	it("is neutral before Codex shows up", () => {
