@@ -3,7 +3,7 @@ import { GitHubClient } from "../../github.ts";
 import { livePublisher } from "../../live.ts";
 import { d1RunStore } from "../../runs.ts";
 import type { Check, CheckResult } from "../types.ts";
-import { CONFIG_FILE, readContainerConfig, type ContainerConfig } from "./config.ts";
+import { CONFIG_FILE, containerCommands, readContainerConfig, type ContainerCommand, type ContainerConfig } from "./config.ts";
 import { cancelRuns, cannotRun, CODE_ACTIONS, finishRun } from "./index.ts";
 import { d1JobStore, type JobStore } from "./jobs.ts";
 import { toCheckResult, type TestReport, type TestResult } from "./report.ts";
@@ -13,8 +13,8 @@ import { toCheckResult, type TestReport, type TestResult } from "./report.ts";
  * Dynamic Workers "Tests" check: each run gets a fresh container (containers/tests) that clones the
  * PR head, installs its dependencies and runs the repository's own vitest with its own config, so
  * Node-only tests run too. quality-flare.json's `container` section configures it (see
- * ContainerConfig), apart from the `tests` section of the Tests check. When it names a typecheck
- * command, that runs afterwards and reports as the "Typecheck" check run.
+ * ContainerConfig), apart from the `tests` section of the Tests check. Its commands (typecheck,
+ * lint…) run afterwards in the same container, each reported as its own check run.
  *
  * The container reports only through files (see containers/tests/qf-run.sh). TestBox, one Durable
  * Object per run, starts it and reads those files on an alarm every POLL_MS until the run is done,
@@ -23,7 +23,6 @@ import { toCheckResult, type TestReport, type TestResult } from "./report.ts";
  */
 
 const NAME = "Container tests";
-export const TYPECHECK = "Typecheck";
 
 /** Instance type of every run: 4 vCPU, 12 GiB, 20 GB. A smaller one uses the same CPU for longer. */
 export const INSTANCE = { name: "standard-4", vcpu: 4, memoryGiB: 12, diskGB: 20 } as const;
@@ -42,8 +41,8 @@ export const CONTAINER_PRICES = {
 export const POLL_MS = 10_000;
 
 /**
- * A run still going this long after it started is failed and its container destroyed. Above the
- * sum of qf-run.sh's step limits, which stop a step that hangs first.
+ * A run still going this long after it started is failed and its container destroyed, below the
+ * cron sweep's hour. qf-run.sh's step limits stop a single step that hangs first.
  */
 export const BOX_DEADLINE_MS = 55 * 60_000;
 
@@ -59,14 +58,22 @@ export interface BoxJob {
 	runId: number;
 	repo: string;
 	sha: string;
+	/** The PR's base branch, fetched with the head for commands that compare against it. */
+	base: string;
 	installationId: number;
 	checkRunId: number;
-	typecheckCheckRunId?: number;
+	/** The config's commands, in the order they run, with their check runs. */
+	commands: BoxCommand[];
 	/** Epoch milliseconds. */
 	startedAt: number;
 }
 
-/** A finished step of qf-run.sh. */
+export interface BoxCommand {
+	name: string;
+	checkRunId: number;
+}
+
+/** A finished step of qf-run.sh: clone, install, tests, then command1, command2… */
 export interface Step {
 	name: string;
 	exitCode: number;
@@ -78,7 +85,8 @@ export interface BoxOutput {
 	steps: Step[];
 	/** vitest's JSON report, if the tests got to write it. */
 	report?: string;
-	logs: Partial<Record<"clone" | "install" | "tests" | "typecheck", string>>;
+	/** Each step's log, by step name. */
+	logs: Record<string, string | undefined>;
 	/** CPU the container used, in microseconds. */
 	cpuUs?: number;
 }
@@ -90,29 +98,33 @@ export const containerTests: Check = {
 	onDemand: true,
 	async run({ github, repo, pr, env, installationId }) {
 		const sha = pr.head.sha;
+		const base = pr.base.ref;
 		const runs = d1RunStore(env.RUNS);
 		const runId = await runs.start({ repo, pr: pr.number, sha, container: true }).catch(logError);
 		const live = livePublisher(runId === undefined ? undefined : env.LIVE);
 		live.send({ type: "started", runId: runId!, repo, pr: pr.number, sha });
 		let checkRunId: number | undefined;
-		let typecheckCheckRunId: number | undefined;
+		const commands: BoxCommand[] = [];
 		try {
 			if (runId === undefined) throw new Error("O D1 (quality-flare-runs) não respondeu; ele acompanha o container.");
 			// A newer push supersedes the PR's container run still going: its TestBox sees the job gone and destroys the container.
 			await cancelRuns(github, repo, await runs.running(repo, pr.number, runId), d1JobStore(env.RUNS), runs, live);
-			const config = readContainerConfig(await github.getFileText(repo, sha, CONFIG_FILE));
+			// A PR branched before the repository added its config runs with the base branch's, not vitest's defaults.
+			const config = readContainerConfig((await github.getFileText(repo, sha, CONFIG_FILE)) ?? (await github.getFileText(repo, base, CONFIG_FILE)));
 			const detailsUrl = `${env.PUBLIC_URL}/admin/runs/${runId}`;
 			checkRunId = await github.startCheckRun(repo, sha, NAME, "Rodando os testes num container", detailsUrl);
-			if (config.typecheck) typecheckCheckRunId = await github.startCheckRun(repo, sha, TYPECHECK, "Rodando o typecheck num container", detailsUrl);
+			for (const { name } of containerCommands(config)) {
+				commands.push({ name, checkRunId: await github.startCheckRun(repo, sha, name, "Esperando os testes, no mesmo container", detailsUrl) });
+			}
 			await d1JobStore(env.RUNS).create(runId, { shards: 1, checkRunId, installationId });
-			await startBox({ runId, repo, sha, installationId, checkRunId, typecheckCheckRunId, startedAt: Date.now() }, config);
+			await startBox({ runId, repo, sha, base, installationId, checkRunId, commands, startedAt: Date.now() }, config);
 			live.send({ type: "status", runId, text: "Container: iniciando" });
 			await live.flush();
 			return null;
 		} catch (error) {
 			const result = cannotRun(error);
 			if (runId !== undefined) await finishRun(runs, live, runId, result);
-			if (typecheckCheckRunId !== undefined) await github.completeCheckRun(repo, typecheckCheckRunId, result).catch(logError);
+			for (const command of commands) await github.completeCheckRun(repo, command.checkRunId, result).catch(logError);
 			if (checkRunId === undefined) return result;
 			await github.completeCheckRun(repo, checkRunId, result);
 			return null;
@@ -120,7 +132,7 @@ export const containerTests: Check = {
 	},
 };
 
-/** Starts a run's container, once the run's check runs and job exist. the run's check runs and job exist. */
+/** Starts a run's container, once the run's check runs and job exist. */
 export async function startBox(job: BoxJob, config: ContainerConfig, boxes: DurableObjectNamespace = exports.TestBox): Promise<void> {
 	const stub = boxes.get(boxes.idFromName(String(job.runId)));
 	const res = await stub.fetch("https://box/start", { method: "POST", body: JSON.stringify({ job, config }) });
@@ -189,8 +201,8 @@ export class TestBox {
 		if (!closed) return this.abandon(job, usage);
 		const github = await this.github(job);
 		await github.completeCheckRun(job.repo, job.checkRunId, results.tests);
-		if (job.typecheckCheckRunId !== undefined && results.typecheck) {
-			await github.completeCheckRun(job.repo, job.typecheckCheckRunId, results.typecheck).catch(logError);
+		for (const [i, command] of job.commands.entries()) {
+			await github.completeCheckRun(job.repo, command.checkRunId, results.commands[i] ?? NOT_RUN).catch(logError);
 		}
 		await d1RunStore(this.env.RUNS).finish(job.runId, results.tests, report).catch(logError);
 		const live = livePublisher(this.env.LIVE);
@@ -198,12 +210,12 @@ export class TestBox {
 		await live.flush();
 	}
 
-	/** The run was cancelled or swept, which reported the Tests check run; the Typecheck one is still open. */
+	/** The run was cancelled or swept, which reported the Container tests check run; the commands' are still open. */
 	private async abandon(job: BoxJob, usage: BoxUsage): Promise<void> {
 		await recordUsage(this.env.RUNS, job.runId, usage);
-		if (job.typecheckCheckRunId === undefined) return;
+		if (!job.commands.length) return;
 		const github = await this.github(job);
-		await github.completeCheckRun(job.repo, job.typecheckCheckRunId, TYPECHECK_CANCELLED).catch(logError);
+		for (const command of job.commands) await github.completeCheckRun(job.repo, command.checkRunId, COMMAND_CANCELLED).catch(logError);
 	}
 
 	private github(job: BoxJob): Promise<GitHubClient> {
@@ -212,14 +224,17 @@ export class TestBox {
 }
 
 /** The container's environment (see qf-run.sh). */
-export function boxEnv(job: Pick<BoxJob, "repo" | "sha">, config: ContainerConfig, token: string): Record<string, string> {
+export function boxEnv(job: Pick<BoxJob, "repo" | "sha" | "base">, config: ContainerConfig, token: string): Record<string, string> {
+	const commands = containerCommands(config);
 	return {
 		REPO: job.repo,
 		SHA: job.sha,
+		BASE: job.base,
 		TOKEN: token,
 		...(config.install ? { INSTALL: config.install } : {}),
 		...(config.vitestArgs?.length ? { VITEST_ARGS: config.vitestArgs.join("\n") } : {}),
-		...(config.typecheck ? { TYPECHECK: config.typecheck } : {}),
+		...(commands.length ? { COMMANDS: String(commands.length) } : {}),
+		...Object.fromEntries(commands.map((c, i) => [`COMMAND_${i + 1}`, c.run])),
 	};
 }
 
@@ -235,7 +250,8 @@ export interface BoxUsage {
 
 export interface BoxResults {
 	tests: CheckResult;
-	typecheck?: CheckResult;
+	/** One per command of the job, in order; missing for a command that didn't run. */
+	commands: (CheckResult | undefined)[];
 }
 
 export interface PollDeps {
@@ -259,20 +275,21 @@ export async function pollBox(job: BoxJob, deps: PollDeps): Promise<"poll" | "do
 		return "done";
 	}
 	if (await deps.read("done")) {
-		const output = await readOutput(deps);
-		await deps.publish(boxResults(output), output.report ? parseVitestReport(output.report) : undefined, { wallMs, cpuUs: output.cpuUs });
+		const output = await readOutput(deps, job.commands.length);
+		await deps.publish(boxResults(output, job.commands), output.report ? parseVitestReport(output.report) : undefined, { wallMs, cpuUs: output.cpuUs });
 		return "done";
 	}
 	if (wallMs > BOX_DEADLINE_MS || !deps.running()) {
-		const output = await readOutput(deps);
+		const output = await readOutput(deps, job.commands.length);
 		const why = deps.running()
 			? `A execução passou de ${BOX_DEADLINE_MS / 60_000} minutos e o container foi destruído.`
 			: "O container parou antes de terminar (falta de memória ou de disco, provavelmente).";
 		await deps.publish(stopped(why, output), undefined, { wallMs, cpuUs: output.cpuUs });
 		return "done";
 	}
-	const current = (await deps.read("current"))?.trim();
-	deps.status(STEP_STATUS[current ?? ""] ?? "Iniciando o container");
+	const current = (await deps.read("current"))?.trim() ?? "";
+	const command = job.commands[commandIndex(current)];
+	deps.status(command ? `Container: rodando ${command.name}` : (STEP_STATUS[current] ?? "Iniciando o container"));
 	return "poll";
 }
 
@@ -280,26 +297,24 @@ const STEP_STATUS: Record<string, string> = {
 	clone: "Container: baixando o código",
 	install: "Container: instalando as dependências",
 	tests: "Container: rodando os testes",
-	typecheck: "Container: rodando o typecheck",
 };
+
+/** qf-run.sh names the step of the n-th command (from 1) `command<n>`; -1 for other steps. */
+function commandIndex(step: string): number {
+	const match = /^command(\d+)$/.exec(step);
+	return match ? Number(match[1]) - 1 : -1;
+}
 
 async function readCpu(deps: Pick<PollDeps, "read">): Promise<number | undefined> {
 	const cpu = Number((await deps.read("cpu").catch(() => undefined))?.trim());
 	return Number.isFinite(cpu) && cpu > 0 ? cpu : undefined;
 }
 
-async function readOutput(deps: Pick<PollDeps, "read">): Promise<BoxOutput> {
+async function readOutput(deps: Pick<PollDeps, "read">, commands: number): Promise<BoxOutput> {
 	const read = (path: string) => deps.read(path).catch(() => undefined);
-	const [steps, report, clone, install, tests, typecheck, cpuUs] = await Promise.all([
-		read("steps"),
-		read("report.json"),
-		read("clone.log"),
-		read("install.log"),
-		read("tests.log"),
-		read("typecheck.log"),
-		readCpu(deps),
-	]);
-	return { steps: parseSteps(steps ?? ""), report, logs: { clone, install, tests, typecheck }, cpuUs };
+	const names = ["clone", "install", "tests", ...Array.from({ length: commands }, (_, i) => `command${i + 1}`)];
+	const [steps, report, cpuUs, ...logs] = await Promise.all([read("steps"), read("report.json"), readCpu(deps), ...names.map((n) => read(`${n}.log`))]);
+	return { steps: parseSteps(steps ?? ""), report, logs: Object.fromEntries(names.map((n, i) => [n, logs[i]])), cpuUs };
 }
 
 export function parseSteps(text: string): Step[] {
@@ -314,27 +329,29 @@ export function parseSteps(text: string): Step[] {
 const TIMED_OUT = 124;
 
 /** The check run results of a run whose container finished. */
-export function boxResults(output: BoxOutput): BoxResults {
+export function boxResults(output: BoxOutput, commands: Pick<BoxCommand, "name">[] = []): BoxResults {
 	const step = (name: string) => output.steps.find((s) => s.name === name);
-	const typecheck = typecheckResult(step("typecheck"), output.logs.typecheck);
 	for (const name of ["clone", "install"] as const) {
 		const s = step(name);
 		if (!s || s.exitCode !== 0) return stopped(failedStep(name, s), output);
 	}
+	const results = {
+		commands: commands.map(({ name }, i) => commandResult(name, step(`command${i + 1}`), output.logs[`command${i + 1}`])),
+	};
 	const tests = step("tests");
 	const report = output.report ? parseVitestReport(output.report) : undefined;
 	if (!report || tests?.exitCode === TIMED_OUT) {
 		const why = tests?.exitCode === TIMED_OUT ? "Os testes passaram do limite de 25 minutos." : "O vitest terminou sem gerar o relatório.";
-		return { tests: logFailure(why, output.logs.tests), typecheck };
+		return { ...results, tests: logFailure(why, output.logs.tests) };
 	}
-	if (!report.files.length) return { tests: NO_TESTS, typecheck };
-	return { tests: toCheckResult(report), typecheck };
+	if (!report.files.length) return { ...results, tests: NO_TESTS };
+	return { ...results, tests: toCheckResult(report) };
 }
 
-/** Results when the run stopped before the tests: Tests fails with why, Typecheck (if any) didn't run. */
+/** Results when the run stopped early: Container tests fails with why, and the commands that didn't finish didn't run. */
 function stopped(why: string, output: BoxOutput): BoxResults {
 	const log = [output.logs.clone, output.logs.install, output.logs.tests].filter(Boolean).join("\n");
-	return { tests: logFailure(why, log), typecheck: { conclusion: "neutral", title: "Não rodou", summary: why } };
+	return { tests: logFailure(why, log), commands: [] };
 }
 
 function failedStep(name: "clone" | "install", step: Step | undefined): string {
@@ -343,11 +360,11 @@ function failedStep(name: "clone" | "install", step: Step | undefined): string {
 	return step.exitCode === TIMED_OUT ? `${what}: passou do tempo limite.` : `${what} (código de saída ${step.exitCode}).`;
 }
 
-function typecheckResult(step: Step | undefined, log: string | undefined): CheckResult | undefined {
+function commandResult(name: string, step: Step | undefined, log: string | undefined): CheckResult | undefined {
 	if (!step) return undefined;
-	if (step.exitCode === 0) return { conclusion: "success", title: "Typecheck passou", summary: `Sem erros, em ${(step.ms / 1000).toFixed(0)} s.` };
-	const why = step.exitCode === TIMED_OUT ? "O typecheck passou do limite de 10 minutos." : `O typecheck falhou (código de saída ${step.exitCode}).`;
-	return { ...logFailure(why, log), title: "Typecheck falhou" };
+	if (step.exitCode === 0) return { conclusion: "success", title: `${name} passou`, summary: `Sem erros, em ${(step.ms / 1000).toFixed(0)} s.` };
+	const why = step.exitCode === TIMED_OUT ? `${name} passou do limite de 20 minutos.` : `${name} falhou (código de saída ${step.exitCode}).`;
+	return { ...logFailure(why, log), title: `${name} falhou` };
 }
 
 function logFailure(why: string, log: string | undefined): CheckResult {
@@ -425,10 +442,16 @@ export async function containerUsage(db: D1Database, runId: number): Promise<Box
 	return row ? { wallMs: row.wall_ms, cpuUs: row.cpu_us ?? undefined } : undefined;
 }
 
-const TYPECHECK_CANCELLED: CheckResult = {
+const COMMAND_CANCELLED: CheckResult = {
 	conclusion: "cancelled",
 	title: "Cancelado",
-	summary: "A execução foi cancelada (um push mais novo) ou passou do prazo antes do typecheck terminar.",
+	summary: "A execução foi cancelada (um push mais novo) ou passou do prazo antes deste comando terminar.",
+};
+
+const NOT_RUN: CheckResult = {
+	conclusion: "neutral",
+	title: "Não rodou",
+	summary: "O container parou antes de chegar a este comando; o check Container tests diz por quê.",
 };
 
 const NO_TESTS: CheckResult = {
