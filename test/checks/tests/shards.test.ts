@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { Crashed, expireRuns, MAX_CODE_BYTES, MAX_RECHECKS, processShard, runInDynamicWorker, RUN_DEADLINE_MS, SHARD_SIZE, tests, TooLarge, type ShardDeps } from "../../../src/checks/tests/index.ts";
+import { Crashed, expireRuns, MAX_CODE_BYTES, MAX_RECHECKS, processShard, runInDynamicWorker, RUN_DEADLINE_MS, SHARD_BYTES, SHARD_SIZE, tests, TooLarge, type ShardDeps } from "../../../src/checks/tests/index.ts";
+import { d1WeightStore } from "../../../src/checks/tests/weights.ts";
 import { d1JobStore, type ShardResult, type TestShard } from "../../../src/checks/tests/jobs.ts";
 import type { GitHubClient, PullRequest } from "../../../src/github.ts";
 import { d1RunStore } from "../../../src/runs.ts";
@@ -40,6 +41,20 @@ describe.skipIf(inWorkers)("Tests check shards", () => {
 		const deps: ShardDeps = { jobs, run, publish, enqueue: async (s) => void queue.push(...s.map((shard) => ({ shard, attempts: 1 }))) };
 		return { jobs, queue, publish, deps };
 	}
+
+	it("packs the test files by what they loaded when they last ran", async () => {
+		const RUNS = await fakeD1();
+		const files = Array.from({ length: SHARD_SIZE + 5 }, (_, i) => `test/t${String(i).padStart(2, "0")}.test.ts`);
+		// Each loads the same package, half the shard's bytes, and a little of its own.
+		await d1WeightStore(RUNS).put("octo/app", Object.fromEntries(files.map((f) => [f, { "npm:big": SHARD_BYTES / 2, [f]: 1000 }])));
+		const github = { listFiles: async () => files, getFileText: async () => undefined, startCheckRun: async () => 55 } as unknown as GitHubClient;
+		const sendBatch = vi.fn(async () => {});
+		const env = { RUNS, TESTS_QUEUE: { sendBatch }, PUBLIC_URL: "https://qf.example" } as unknown as Env;
+
+		await tests.run({ github, repo: "octo/app", pr, env, installationId: 9 });
+		const bodies = (sendBatch.mock.calls[0] as unknown as [{ body: TestShard }[]])[0].map((m) => m.body);
+		expect(bodies.map((b) => b.files)).toEqual([files]);
+	});
 
 	it("queues the test files in shards and leaves the check run to them", async () => {
 		const RUNS = await fakeD1();

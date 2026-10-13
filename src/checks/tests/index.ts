@@ -8,11 +8,13 @@ import { readVitestConfig } from "./vitest-config.ts";
 import { isAsset, isLoadable, isTestFile } from "./convention.ts";
 import { d1JobStore, type JobStore, type RunJob, type ShardResult, type TestShard } from "./jobs.ts";
 import { readLockfile, type LockedPackage } from "./lockfile.ts";
-import { buildModules, bundleSize, MAIN_MODULE, type TestBundle } from "./modules.ts";
+import { buildModules, bundleSize, MAIN_MODULE, type TestBundle, type Weights } from "./modules.ts";
+import { packFiles } from "./pack.ts";
 import { type PackageFiles, readPackage, type Turns, turns } from "./packages.ts";
 import { mergeReports, toCheckResult, type ProgressEvent, type RunRequest, type TestReport } from "./report.ts";
 import { readRun } from "./stream.ts";
 import { readTarball } from "./tarball.ts";
+import { d1WeightStore } from "./weights.ts";
 
 const NAME = "Tests";
 const LOCKFILES = new Set(["pnpm-lock.yaml", "package-lock.json"]);
@@ -26,11 +28,16 @@ const COMPATIBILITY_DATE = "2026-10-06";
 const CODE_ACTIONS = new Set(["opened", "reopened", "synchronize", "ready_for_review"]);
 
 /**
- * Test files per shard. Files in one shard share a Dynamic Worker, and so the state of modules
- * they both import, which vitest would give each file fresh; more files per shard make that leak
- * between files more likely. A shard whose code is too big, or that takes the Worker down, splits
- * in two until it fits.
+ * A shard's limits. Each Dynamic Worker is billed, so a run packs its files into as few shards as
+ * fit (`packFiles`), by the bytes of code each file loaded when it last ran (on macae, UI tests
+ * load ~30 MB each, mostly the same packages). maxConcurrency shards build at once in one
+ * consumer's 128 MB. Files never measured count as SHARD_BYTES / SHARD_SIZE each. Files in one
+ * shard share the state of modules they both import, which vitest would give each file fresh: a
+ * file that fails in a shard runs again alone (MAX_RECHECKS). A shard whose code is too big, or
+ * that takes the Worker down, splits in two.
  */
+export const SHARD_BYTES = 32 * 1000 * 1000;
+export const SHARD_FILES = 30;
 export const SHARD_SIZE = 5;
 
 /** A shard whose tests run this long (a test awaiting forever, mostly) stops and splits. */
@@ -87,7 +94,9 @@ export const tests: Check = {
 				await finishRun(runs, live, runId, NO_TESTS);
 				return NO_TESTS;
 			}
-			const shards = chunk(testFiles, SHARD_SIZE).map(
+			const weights = await d1WeightStore(env.RUNS).get(repo).catch((error: unknown) => logError(error) ?? new Map<string, Weights>());
+			const packed = packFiles(testFiles, weights, { bytes: SHARD_BYTES, files: SHARD_FILES, unknown: SHARD_BYTES / SHARD_SIZE });
+			const shards = packed.map(
 				(files, i): TestShard => ({ runId, shard: String(i), repo, installationId, sha, files, config }),
 			);
 			const title = `Rodando ${count(testFiles.length, "arquivo")} de teste`;
@@ -119,8 +128,10 @@ export async function runTestShards(batch: MessageBatch<TestShard>, env: Env, ct
 		const attempt: ShardAttempt = { runId: shard.runId, shard: shard.shard, attempt: message.attempts };
 		await metrics.start({ ...attempt, files: shard.files.length }).catch(logError);
 		const meter: ShardMeter = { tails: ctx?.exports?.ShardTail ? [ctx.exports.ShardTail({ props: attempt })] : undefined };
-		const record = (outcome: ShardOutcome) =>
-			metrics.finish({ ...attempt, outcome, codeBytes: meter.codeBytes, dynamicWorker: Boolean(meter.loaded) }).catch(logError);
+		const record = async (outcome: ShardOutcome) => {
+			await metrics.finish({ ...attempt, outcome, codeBytes: meter.codeBytes, dynamicWorker: Boolean(meter.loaded) }).catch(logError);
+			if (meter.weights) await d1WeightStore(env.RUNS).put(shard.repo, meter.weights).catch(logError);
+		};
 		try {
 			const outcome = await processShard(shard, message.attempts, {
 				jobs: d1JobStore(env.RUNS),
@@ -283,6 +294,8 @@ interface ShardMeter {
 	codeBytes?: number;
 	/** Whether a Dynamic Worker was created. */
 	loaded?: boolean;
+	/** What each test file loads, for packing the next run's shards. */
+	weights?: Record<string, Weights>;
 }
 
 /** Builds a shard's files and everything they import, and runs them in a fresh Dynamic Worker. */
@@ -318,6 +331,7 @@ async function runShard(
 	if (!bundle.testFiles.length) return { report: { files: [] }, unresolved };
 	const size = bundleSize(bundle);
 	meter.codeBytes = size;
+	meter.weights = bundle.weights;
 	if (size > MAX_CODE_BYTES) throw new TooLarge(size);
 	onProgress({ type: "status", text: `${label}: rodando` });
 	meter.loaded = true;

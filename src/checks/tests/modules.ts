@@ -122,35 +122,57 @@ function namedFiles(source: string, file: string, repoFiles: Map<string, string>
 	return names;
 }
 
+/** The repository files code in the bundle names (see `namedInCode`). */
+interface Naming {
+	/** Whether some module names the file. */
+	has(path: string): boolean;
+	/** The files a module names. */
+	of(module: string): string[];
+}
+
 /**
  * Whether code in the bundle can name a repository file: its file name, or its folder's (a test
  * that lists a fixtures folder), appears in some module. The repository can hold thousands of
  * files no test reads, and every shard's Dynamic Worker would carry them.
  */
-function namedInCode(modules: Modules, paths: Iterable<string>): (path: string) => boolean {
+function namedInCode(modules: Modules, paths: Iterable<string>): Naming {
 	const baseName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 	const folder = (path: string) => baseName(path.slice(0, Math.max(0, path.lastIndexOf("/"))));
-	const files = new Set<string>();
-	const folders = new Set<string>();
+	const files = new Map<string, string[]>();
+	const folders = new Map<string, string[]>();
 	for (const path of paths) {
-		files.add(baseName(path));
-		folders.add(folder(path));
+		(files.get(baseName(path)) ?? files.set(baseName(path), []).get(baseName(path))!).push(path);
+		(folders.get(folder(path)) ?? folders.set(folder(path), []).get(folder(path))!).push(path);
 	}
 	const seenFiles = new Set<string>();
 	const seenFolders = new Set<string>();
+	const byModule = new Map<string, { files: Set<string>; folders: Set<string> }>();
 	for (const [name, module] of Object.entries(modules)) {
 		const source = "js" in module ? module.js : "cjs" in module ? module.cjs : undefined;
 		if (typeof source !== "string" || name.startsWith("__qf/")) continue;
-		for (const [word] of source.matchAll(/[\w@.+-]+/g)) if (files.has(word)) seenFiles.add(word);
+		const own = { files: new Set<string>(), folders: new Set<string>() };
+		for (const [word] of source.matchAll(/[\w@.+-]+/g)) if (files.has(word)) own.files.add(word);
 		// Folder names are common words: only a string of the repository's own code that is, or
 		// ends in, the folder counts.
-		if (name.startsWith("node_modules/")) continue;
-		for (const [, literal] of source.matchAll(/["'`]([\w@./+-]{1,200})["'`]/g)) {
-			const last = baseName(literal.replace(/\/+$/, ""));
-			if (last && folders.has(last)) seenFolders.add(last);
+		if (!name.startsWith("node_modules/")) {
+			for (const [, literal] of source.matchAll(/["'`]([\w@./+-]{1,200})["'`]/g)) {
+				const last = baseName(literal.replace(/\/+$/, ""));
+				if (last && folders.has(last)) own.folders.add(last);
+			}
 		}
+		if (!own.files.size && !own.folders.size) continue;
+		byModule.set(name, own);
+		for (const file of own.files) seenFiles.add(file);
+		for (const dir of own.folders) seenFolders.add(dir);
 	}
-	return (path) => baseName(path) === "package.json" || seenFiles.has(baseName(path)) || seenFolders.has(folder(path));
+	return {
+		has: (path) => baseName(path) === "package.json" || seenFiles.has(baseName(path)) || seenFolders.has(folder(path)),
+		of(module) {
+			const own = byModule.get(module);
+			if (!own) return [];
+			return [...[...own.files].flatMap((f) => files.get(f)!), ...[...own.folders].flatMap((d) => folders.get(d)!)];
+		},
+	};
 }
 
 const CSS_MODULE = "__qf/css-module.js";
@@ -195,7 +217,16 @@ export interface TestBundle {
 	modules: Modules;
 	/** Imports that could not be resolved; the importing file fails when it runs. */
 	unresolved: Unresolved[];
+	/** Bytes of code each test file loads, setup files included, by where it comes from (see `weightsOf`). */
+	weights: Record<string, Weights>;
 }
+
+/**
+ * Bytes of code by origin: a package ("npm:" and its path in the lockfile) or a repository folder
+ * up to two levels deep. Files that load the same origin share it in a bundle, so
+ * a shard's size is about the sum, over origins, of the most any of its files loads from each.
+ */
+export type Weights = Record<string, number>;
 
 export interface BuildOptions {
 	/** Source of the bundled test runtime (src/checks/tests/runtime). */
@@ -276,6 +307,12 @@ export default { fetch: handleRequest };`,
 	const mocksOf = new Map<string, { module: string; keys: Set<string>; original: boolean }>();
 	const missingNames = new Map<Unresolved, string>();
 	const environments = new Map<string, string>();
+	/** Module → the modules it imports, for the weight of each test file. */
+	const edges = new Map<string, Set<string>>();
+	const addEdge = (from: string, to: string) => {
+		const target = to.replace(/^\//, "");
+		(edges.get(from) ?? edges.set(from, new Set()).get(from)!).add(target);
+	};
 	const originals = [...new Set([...testFiles, ...setupFiles].flatMap((f) => namedFiles(repoFiles.get(f) ?? "", f, repoFiles)))];
 	const mocked = new Set([...testFiles, ...setupFiles].flatMap((f) => [...(repoFiles.get(f) ?? "").matchAll(MOCK_CALL)].map((m) => m[2])));
 	/** Modules quality-flare writes, such as a barrel narrowed to the names a file takes from it. */
@@ -381,6 +418,11 @@ export default { fetch: handleRequest };`,
 
 	/** The replacement for one import, enqueuing the module it points at. */
 	const link = async (specifier: string, from: string, importer: Kind): Promise<string> => {
+		const to = await linkTo(specifier, from, importer);
+		addEdge(from, to);
+		return to;
+	};
+	const linkTo = async (specifier: string, from: string, importer: Kind): Promise<string> => {
 		if (specifier === "vitest") return `/${VITEST_MODULE}`;
 		// workerd can't require() node:process from CommonJS, though ESM imports it fine.
 		if (importer === "cjs" && (specifier === "process" || specifier === "node:process")) return `/${PROCESS_MODULE}`;
@@ -440,11 +482,13 @@ export default { fetch: handleRequest };`,
 		if (importer === "cjs" && kindOf(target) === "esm") {
 			const shim = `__qf/esm/${target}`;
 			modules[shim] = { js: `import * as __qf_ns from "/${target}";\nexport default __qf_ns;` };
+			addEdge(shim, target);
 			return `/${shim}`;
 		}
 		if (importer === "esm" && kindOf(target) === "cjs") {
 			const facade = `__qf/cjs/${target}`;
 			facades.set(facade, target);
+			addEdge(facade, target);
 			return `/${facade}`;
 		}
 		return `/${target}`;
@@ -469,6 +513,7 @@ export default { fetch: handleRequest };`,
 		if ((generated.get(facade) ?? source) !== source) return undefined;
 		generated.set(facade, source);
 		enqueue(facade);
+		addEdge(from, facade);
 		return `/${facade}`;
 	};
 
@@ -527,8 +572,11 @@ export default { fetch: handleRequest };`,
 				if (pkg && !(module in modules)) {
 					// Claimed before linking: test files of one wave load concurrently.
 					modules[module] = { js: "" };
-					modules[module] = { js: `import * as __qf_ns from ${JSON.stringify(await link(pkg, name, "esm"))};\nexport default __qf_ns;` };
+					const target = await link(pkg, name, "esm");
+					addEdge(module, target);
+					modules[module] = { js: `import * as __qf_ns from ${JSON.stringify(target)};\nexport default __qf_ns;` };
 				}
+				if (pkg) addEdge(name, module);
 			}
 			let js = /\.(m?ts|tsx|jsx)$/.test(name) ? stripTypes(source, name) : source;
 			const split = tests.has(name) ? splitMocks(js) : undefined;
@@ -548,6 +596,7 @@ export default { fetch: handleRequest };`,
 				repoFiles.set(path, `import { vi } from "vitest";${imports.map((i) => i.replace(/\n/g, " ")).join(";")}\n${hoisted}\n${exported}\n`);
 				realOnly.add(path);
 				enqueue(path);
+				addEdge(name, path);
 				for (const key of keys) mockKeys.add(key);
 				mocksOf.set(name, { module: `/${path}`, keys: new Set(keys), original: /\bimportOriginal\b|\bvi\s*\.\s*importActual\b/.test(split.hoisted) });
 				// On the first line, so line numbers in stack traces still match the file.
@@ -705,7 +754,7 @@ mockFacade(${JSON.stringify(key)}, (__qf_ns) => {
 	};
 	for (const path of originals) modules[`${ORIGINALS_DIR}/${path}`] = { text: repoFiles.get(path)! };
 	const named = namedInCode(modules, repoFiles.keys());
-	for (const [path, text] of repoFiles) if (named(path)) addAsset(path, text);
+	for (const [path, text] of repoFiles) if (named.has(path)) addAsset(path, text);
 	for (const pkg of packageByDir.values()) {
 		for (const path of pkg.files.keys()) if (path.endsWith(".css")) addAsset(`${pkg.dir}/${path}`, pkg.files.get(path));
 	}
@@ -722,17 +771,61 @@ export default __qf_cjs && __qf_cjs.__esModule && "default" in __qf_cjs ? __qf_c
 ${names.length ? `export const { ${names.join(", ")} } = __qf_cjs ?? {};` : ""}`,
 		};
 	}
-	return { testFiles: testFiles.map((p) => `/${p}`), setupFiles: setupFiles.map((p) => `/${p}`), modules, unresolved };
+	const sizes = new Map<string, number>();
+	const sizeOf = (name: string) => sizes.get(name) ?? sizes.set(name, name in modules ? moduleSize(modules[name]) : 0).get(name)!;
+	const isText = (name: string) => name in modules && "text" in modules[name];
+	const weights = Object.fromEntries(
+		testFiles.map((path) => [path, weightsOf([MAIN_MODULE, RUNTIME_MODULE, path, ...setupFiles], edges, named, sizeOf, isText)]),
+	);
+	return { testFiles: testFiles.map((p) => `/${p}`), setupFiles: setupFiles.map((p) => `/${p}`), modules, unresolved, weights };
 }
 
 /** Bytes of code in a bundle, as the Worker Loader counts them against its size limit (roughly). */
 export function bundleSize(bundle: TestBundle): number {
 	let size = 0;
-	for (const module of Object.values(bundle.modules)) {
-		const m = module as { js?: string; cjs?: string; text?: string; json?: unknown };
-		size += (m.js ?? m.cjs ?? m.text ?? JSON.stringify(m.json) ?? "").length;
-	}
+	for (const module of Object.values(bundle.modules)) size += moduleSize(module);
 	return size;
+}
+
+function moduleSize(module: WorkerLoaderModule): number {
+	const m = module as { js?: string; cjs?: string; text?: string; json?: unknown };
+	return (m.js ?? m.cjs ?? m.text ?? JSON.stringify(m.json) ?? "").length;
+}
+
+/** The weights of the modules reachable from `roots`, and of the repository files they name, carried as text. */
+function weightsOf(
+	roots: string[],
+	edges: Map<string, Set<string>>,
+	named: Naming,
+	sizeOf: (name: string) => number,
+	isText: (name: string) => boolean,
+): Weights {
+	const weights: Weights = {};
+	const add = (origin: string, name: string) => (weights[origin] = (weights[origin] ?? 0) + sizeOf(name));
+	const seen = new Set<string>();
+	const texts = new Set<string>();
+	const stack = [...roots];
+	while (stack.length) {
+		const name = stack.pop()!;
+		if (seen.has(name)) continue;
+		seen.add(name);
+		if (sizeOf(name)) add(originOf(name), name);
+		for (const path of named.of(name)) {
+			if (isText(path) && !texts.has(path)) {
+				texts.add(path);
+				add(`text:${originOf(path)}`, path);
+			}
+		}
+		for (const next of edges.get(name) ?? []) stack.push(next);
+	}
+	return weights;
+}
+
+/** Where a module comes from: "npm:node_modules_react", "src/app", "__qf". */
+function originOf(name: string): string {
+	const parts = name.split("/");
+	if (name.startsWith(`${PACKAGES_DIR}/`)) return `npm:${parts[2]}`;
+	return parts.slice(0, Math.min(2, parts.length - 1) || 1).join("/");
 }
 
 const REQUIRE = /\brequire\s*\(\s*(['"])([^'"\n]+)\1\s*\)/g;
