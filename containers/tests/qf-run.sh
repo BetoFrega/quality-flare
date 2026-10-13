@@ -1,5 +1,5 @@
 #!/bin/bash
-# One run of the "Container tests" check: clones the PR head, installs dependencies, runs the
+# One run of the "Container tests" check: clones the PR head merged into its base, installs dependencies, runs the
 # repository's own vitest and then the commands of its config, each its own check run. It reports
 # only through files in
 # $OUT, which the TestBox Durable Object reads (src/checks/tests/container.ts):
@@ -40,7 +40,17 @@ clone() {
 		git remote add origin "https://github.com/$REPO" &&
 		git config http.extraHeader "Authorization: Basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)" &&
 		git fetch -q --filter=blob:none origin "$SHA" "+refs/heads/$BASE:refs/remotes/origin/$BASE" &&
-		git checkout -q "$SHA"
+		git checkout -q "$SHA" &&
+		merge_base
+}
+
+# Like GitHub Actions on pull_request, the checks run on the PR merged into its base: a PR behind its
+# base would otherwise fail checks that compare against origin/$BASE (a rule the base added since).
+merge_base() {
+	git -c user.name=quality-flare -c user.email=quality-flare@users.noreply.github.com \
+		merge -q --no-edit --no-ff "origin/$BASE" && return
+	echo "A PR tem conflito com $BASE. Resolva o conflito para rodar os checks."
+	return 1
 }
 
 install() {
@@ -65,7 +75,7 @@ run_command() {
 }
 
 export OUT
-export -f clone install tests run_command
+export -f clone merge_base install tests run_command
 
 run() {
 	cd /work/repo || return

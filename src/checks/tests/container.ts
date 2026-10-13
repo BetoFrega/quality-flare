@@ -11,7 +11,7 @@ import { toCheckResult, type TestReport, type TestResult } from "./report.ts";
 /**
  * The "Container tests" check, turned on per repository in the admin next to (or instead of) the
  * Dynamic Workers "Tests" check: each run gets a fresh container (containers/tests) that clones the
- * PR head, installs its dependencies and runs the repository's own vitest with its own config, so
+ * PR head merged into its base, installs its dependencies and runs the repository's own vitest with its own config, so
  * Node-only tests run too. quality-flare.json's `container` section configures it (see
  * ContainerConfig), apart from the `tests` section of the Tests check. Its commands (typecheck,
  * lint…) run afterwards in the same container, each reported as its own check run.
