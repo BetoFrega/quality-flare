@@ -33,11 +33,12 @@ function mockGitHub({
 	linked = [] as { number: number; repository: { nameWithOwner: string } }[],
 	fetchedPr = pr,
 	existingRuns = [] as string[],
-	existingComments = [] as { body: string }[],
+	existingComments = [] as { id?: number; body: string }[],
 } = {}) {
 	const checkRuns: Record<string, unknown>[] = [];
 	const reactions: Record<string, unknown>[] = [];
 	const comments: { body: string }[] = [];
+	const edits: { id: string; body: string }[] = [];
 	const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
 		const path = new URL(url).pathname;
 		if (path === "/app/installations/99/access_tokens") return Response.json({ token: "inst-token" });
@@ -49,6 +50,11 @@ function mockGitHub({
 			if (init.method === "GET") return Response.json(existingComments);
 			comments.push(JSON.parse(init.body as string));
 			return Response.json({ id: 2 }, { status: 201 });
+		}
+		const edit = path.match(/^\/repos\/octo\/repo\/issues\/comments\/(\d+)$/);
+		if (edit && init.method === "PATCH") {
+			edits.push({ id: edit[1], ...JSON.parse(init.body as string) });
+			return Response.json({ id: Number(edit[1]) });
 		}
 		if (path === "/repos/octo/repo/issues/comments/5/reactions") {
 			reactions.push(JSON.parse(init.body as string));
@@ -66,7 +72,7 @@ function mockGitHub({
 		return new Response("not found", { status: 404 });
 	});
 	vi.stubGlobal("fetch", fetchMock);
-	return { checkRuns, reactions, comments, fetchMock };
+	return { checkRuns, reactions, comments, edits, fetchMock };
 }
 
 /** Runs a request and waits for the work it left in ctx.waitUntil. */
@@ -200,9 +206,17 @@ describe("tests on demand", () => {
 		expect(first.comments).toEqual([{ body: expect.stringContaining("**Tests** está esperando `/quality-flare run`") }]);
 		expect(first.comments[0].body).toContain("pronta para o merge");
 
-		const again = mockGitHub({ existingComments: first.comments });
+		const again = mockGitHub({ existingComments: [{ id: 3, ...first.comments[0] }] });
 		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), env);
 		expect(again.comments).toEqual([]);
+		expect(again.edits).toEqual([]);
+
+		const container = { ...tests, id: "container-tests", name: "Container tests" };
+		const both = { enabled: true, enabledChecks: new Set(["tests", "container-tests"]), onDemand: true };
+		const changed = mockGitHub({ existingComments: [{ id: 3, ...first.comments[0] }] });
+		await runPlan({ pullRequests: [pr], checks: [tests, container] }, "octo/repo", 99, both, env);
+		expect(changed.comments).toEqual([]);
+		expect(changed.edits).toEqual([{ id: "3", body: expect.stringContaining("**Tests, Container tests** estão esperando") }]);
 
 		const draft = mockGitHub();
 		await runPlan({ pullRequests: [{ ...pr, draft: true }], checks: [tests] }, "octo/repo", 99, settings(true), env);

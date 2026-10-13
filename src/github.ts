@@ -44,8 +44,12 @@ export class GitHubClient {
 	}
 
 	/** The PR's conversation comments, oldest first. */
-	listPullRequestComments(repo: string, number: number): Promise<{ body: string | null }[]> {
-		return paginate(this.token, `/repos/${repo}/issues/${number}/comments`, (page) => page as { body: string | null }[]);
+	listPullRequestComments(repo: string, number: number): Promise<{ id: number; body: string | null }[]> {
+		return paginate(this.token, `/repos/${repo}/issues/${number}/comments`, (page) => page as { id: number; body: string | null }[]);
+	}
+
+	editComment(repo: string, commentId: number, body: string): Promise<unknown> {
+		return request(this.token, "PATCH", `/repos/${repo}/issues/comments/${commentId}`, { body });
 	}
 
 	commentOnPullRequest(repo: string, number: number, body: string): Promise<unknown> {
