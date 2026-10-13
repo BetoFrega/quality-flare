@@ -1,8 +1,5 @@
-import type { TestRun, TestRunDetail } from "../runs.ts";
-import { esc, layout, renderHeader } from "./page.ts";
-
-/** A run still "running" after this long, past its deadline (RUN_DEADLINE_MS), was cut off and will never finish. */
-export const STALE_AFTER_MS = 75 * 60_000;
+import { RUN_SORTS, RUN_STATES, runState, type RunQuery, type RunSort, type TestRun, type TestRunDetail } from "../runs.ts";
+import { esc, layout, renderHeader, select } from "./page.ts";
 
 const ICON = { success: "✓", failure: "✗", neutral: "–", cancelled: "⊘", running: "●", stale: "!" } as const;
 
@@ -10,11 +7,35 @@ const LIVE = '<script src="/admin/live.js" defer></script>';
 /** Without JavaScript (or if the socket fails), running pages still reload on their own. */
 const FALLBACK = '<noscript><meta http-equiv="refresh" content="5"></noscript>';
 
-export function renderRunsPage(runs: TestRun[], email: string | undefined, now: number): string {
-	const running = runs.some((r) => state(r, now) === "running");
+const SORT_LABEL: Record<RunSort, string> = {
+	recent: "Mais recentes",
+	oldest: "Mais antigas",
+	longest: "Mais demoradas",
+	shortest: "Mais rápidas",
+};
+
+/** Reads the runs list's filter and sort from the query string, ignoring values it doesn't know. */
+export function runQuery(params: URLSearchParams): RunQuery {
+	const state = RUN_STATES.find((s) => s === params.get("state"));
+	const sort = RUN_SORTS.find((s) => s === params.get("sort"));
+	return { repo: params.get("repo") || undefined, state, sort };
+}
+
+export interface RunsPageData {
+	runs: TestRun[];
+	/** Repositories with runs, offered in the filter. */
+	repos: string[];
+	query: RunQuery;
+	email?: string;
+	now: number;
+}
+
+export function renderRunsPage({ runs, repos, query, email, now }: RunsPageData): string {
+	const filtered = Boolean(query.repo || query.state);
+	const running = runs.some((r) => runState(r, now) === "running");
 	const rows = runs
 		.map((run) => {
-			const s = state(run, now);
+			const s = runState(run, now);
 			return `<tr>
 				<td class="state ${s}"><a href="/admin/runs/${run.id}">${ICON[s]} ${LABEL[s]}</a></td>
 				<td><a href="https://github.com/${esc(run.repo)}/pull/${run.pr}">${esc(run.repo)}#${run.pr}</a> <span class="mono">${esc(run.sha.slice(0, 7))}</span></td>
@@ -26,13 +47,23 @@ export function renderRunsPage(runs: TestRun[], email: string | undefined, now: 
 		.join("");
 	const table = runs.length
 		? `<table><thead><tr><th>Estado</th><th>PR</th><th>Resultado</th><th class="num">Início</th><th class="num">Duração</th></tr></thead><tbody>${rows}</tbody></table>`
-		: `<p class="empty">Nenhuma execução ainda. O check Tests roda quando está ativo num repositório e uma PR recebe commits.</p>`;
+		: filtered
+			? `<p class="empty">Nenhuma execução com esses filtros. <a href="/admin/runs">Limpar filtros</a></p>`
+			: `<p class="empty">Nenhuma execução ainda. O check Tests roda quando está ativo num repositório e uma PR recebe commits.</p>`;
+	const filters = `<form class="filters" method="get" action="/admin/runs">
+				${select("repo", "Repositório", query.repo ?? "", [["", "Todos os repositórios"], ...repos.map((r): [string, string] => [r, r])])}
+				${select("state", "Estado", query.state ?? "", [["", "Todos os estados"], ...RUN_STATES.map((s): [string, string] => [s, LABEL[s]])])}
+				${select("sort", "Ordenar", query.sort ?? "recent", RUN_SORTS.map((s): [string, string] => [s, SORT_LABEL[s]]))}
+				<button type="submit" class="secondary">Aplicar</button>
+				${filtered || (query.sort && query.sort !== "recent") ? '<a href="/admin/runs">Limpar</a>' : ""}
+			</form>`;
 	return layout(
 		"Execuções de testes",
 		`${renderHeader(email, "runs")}
 		<main data-live="all">
 			<h2>Execuções de testes</h2>
-			<p class="hint">As 50 execuções mais recentes do check Tests. A página acompanha ao vivo os testes que estão rodando.</p>
+			<p class="hint">Até 50 execuções do check Tests. A página acompanha ao vivo os testes que estão rodando.</p>
+			${filters}
 			${table}
 		</main>`,
 		`${LIVE}${running ? FALLBACK : ""}`,
@@ -40,7 +71,7 @@ export function renderRunsPage(runs: TestRun[], email: string | undefined, now: 
 }
 
 export function renderRunPage(run: TestRunDetail, email: string | undefined, now: number): string {
-	const s = state(run, now);
+	const s = runState(run, now);
 	const files = run.report?.files ?? [];
 	const fileRows = files
 		.map((f) => {
@@ -97,17 +128,12 @@ const LABEL: Record<State, string> = {
 	stale: "Interrompida",
 };
 
-function state(run: TestRun, now: number): State {
-	if (run.status === "running") return now - run.startedAt > STALE_AFTER_MS ? "stale" : "running";
-	return run.conclusion ?? "neutral";
-}
-
 const testIcon = (s: string) => (s === "pass" ? ICON.success : s === "fail" ? ICON.failure : ICON.neutral);
 const testClass = (s: string) => (s === "pass" ? "success" : s === "fail" ? "failure" : "skip");
 
 function duration(run: TestRun, now: number): string {
 	// An interrupted run never ended; the time since it started is not how long anything ran.
-	if (state(run, now) === "stale") return "—";
+	if (runState(run, now) === "stale") return "—";
 	const ms = (run.finishedAt ?? now) - run.startedAt;
 	return ms < 1000 ? `${ms} ms` : ms < 60_000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.floor(ms / 60_000)} min ${Math.round((ms % 60_000) / 1000)} s`;
 }

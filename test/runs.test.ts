@@ -27,6 +27,33 @@ describe.skipIf(inWorkers)("test run history", () => {
 		expect(await runs.get(999)).toBeNull();
 	});
 
+	it("filters by repository and state and sorts by date or duration", async () => {
+		let clock = 0;
+		const runs = d1RunStore(await fakeD1(), () => clock);
+		const quick = await runs.start({ repo: "octo/app", pr: 1, sha: "a" });
+		clock = 1_000;
+		await runs.finish(quick, { conclusion: "success", title: "", summary: "" });
+		const slow = await runs.start({ repo: "octo/lib", pr: 2, sha: "b" });
+		clock = 61_000;
+		await runs.finish(slow, { conclusion: "failure", title: "", summary: "" });
+		const cut = await runs.start({ repo: "octo/app", pr: 3, sha: "c" });
+		clock = 100 * 60_000;
+		const live = await runs.start({ repo: "octo/app", pr: 4, sha: "d" });
+		clock += 5_000;
+		const ids = async (query: Parameters<typeof runs.list>[0]) => (await runs.list(query)).map((r) => r.id);
+
+		expect(await ids({})).toEqual([live, cut, slow, quick]);
+		expect(await ids({ sort: "oldest" })).toEqual([quick, slow, cut, live]);
+		expect(await ids({ sort: "longest" })).toEqual([slow, live, quick, cut]);
+		expect(await ids({ sort: "shortest" })).toEqual([quick, live, slow, cut]);
+		expect(await ids({ repo: "octo/app" })).toEqual([live, cut, quick]);
+		expect(await ids({ state: "failure" })).toEqual([slow]);
+		expect(await ids({ state: "running" })).toEqual([live]);
+		expect(await ids({ state: "stale" })).toEqual([cut]);
+		expect(await ids({ repo: "octo/lib", state: "success" })).toEqual([]);
+		expect(await runs.repos()).toEqual(["octo/app", "octo/lib"]);
+	});
+
 	it("is filled by the Tests check, even when the tests can't run", async () => {
 		const RUNS = await fakeD1();
 		const github = { listFiles: () => Promise.reject(new Error("403 Resource not accessible")) } as unknown as GitHubClient;

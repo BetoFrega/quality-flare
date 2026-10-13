@@ -8,20 +8,90 @@ export interface AdminPageData {
 	rows: { repo: InstalledRepo; settings: RepoSettings }[];
 	/** Repository whose checks start expanded, after a change made inside it. */
 	open?: string | null;
+	query?: RepoQuery;
+}
+
+export type RepoStatus = "enabled" | "disabled";
+export type RepoSort = "name" | "name-desc" | "enabled" | "checks";
+const REPO_STATUSES: RepoStatus[] = ["enabled", "disabled"];
+const REPO_SORTS: RepoSort[] = ["name", "name-desc", "enabled", "checks"];
+const SORT_LABEL: Record<RepoSort, string> = {
+	name: "Nome (A–Z)",
+	"name-desc": "Nome (Z–A)",
+	enabled: "Ativos primeiro",
+	checks: "Mais checks ativos",
+};
+
+export interface RepoQuery {
+	/** Part of the repository's name, any case. */
+	q?: string;
+	status?: RepoStatus;
+	sort?: RepoSort;
+}
+
+/** Reads the repository list's filter and sort from the query string, ignoring values it doesn't know. */
+export function repoQuery(params: URLSearchParams): RepoQuery {
+	return {
+		q: params.get("q")?.trim() || undefined,
+		status: REPO_STATUSES.find((s) => s === params.get("status")),
+		sort: REPO_SORTS.find((s) => s === params.get("sort")),
+	};
+}
+
+/** The query string that brings the list back to `query`, with a leading "?" when not empty. */
+export function repoSearch(query: RepoQuery, extra: Record<string, string> = {}): string {
+	const params = new URLSearchParams();
+	for (const [key, value] of Object.entries({ ...query, ...extra })) if (value) params.set(key, value);
+	const search = params.toString();
+	return search ? `?${search}` : "";
+}
+
+type Row = AdminPageData["rows"][number];
+
+function filterRows(rows: Row[], checks: Check[], { q, status, sort = "name" }: RepoQuery): Row[] {
+	const needle = q?.toLowerCase();
+	const active = (row: Row) => checks.filter((c) => row.settings.enabledChecks.has(c.id)).length;
+	const byName = (a: Row, b: Row) => a.repo.full_name.localeCompare(b.repo.full_name);
+	const order: Record<RepoSort, (a: Row, b: Row) => number> = {
+		name: byName,
+		"name-desc": (a, b) => byName(b, a),
+		enabled: (a, b) => Number(b.settings.enabled) - Number(a.settings.enabled) || byName(a, b),
+		checks: (a, b) => active(b) - active(a) || byName(a, b),
+	};
+	return rows
+		.filter((row) => !needle || row.repo.full_name.toLowerCase().includes(needle))
+		.filter((row) => !status || row.settings.enabled === (status === "enabled"))
+		.sort(order[sort]);
 }
 
 const INSTALL_URL = "https://github.com/apps/quality-flare/installations/new";
 
-export function renderAdminPage({ email, checks, rows, open }: AdminPageData): string {
-	const list = rows.length
-		? `<ul class="repos">${rows.map(({ repo, settings }) => renderRepo(repo, settings, checks, repo.full_name === open)).join("")}</ul>`
-		: `<p class="empty">A App ainda não está instalada em nenhum repositório. <a href="${INSTALL_URL}">Instalar</a></p>`;
+export function renderAdminPage({ email, checks, rows, open, query = {} }: AdminPageData): string {
+	const shown = filterRows(rows, checks, query);
+	const back = repoSearch(query).slice(1);
+	const filtered = Boolean(query.q || query.status);
+	const list = shown.length
+		? `<ul class="repos">${shown.map(({ repo, settings }) => renderRepo(repo, settings, checks, repo.full_name === open, back)).join("")}</ul>`
+		: rows.length
+			? `<p class="empty">Nenhum repositório com esses filtros. <a href="/admin">Limpar filtros</a></p>`
+			: `<p class="empty">A App ainda não está instalada em nenhum repositório. <a href="${INSTALL_URL}">Instalar</a></p>`;
+	const filters = rows.length
+		? `<form class="filters" method="get" action="/admin">
+				<label>Nome <input type="search" name="q" value="${esc(query.q ?? "")}" placeholder="owner/repo"></label>
+				${select("status", "Estado", query.status ?? "", [["", "Todos"], ["enabled", "Ativos"], ["disabled", "Desativados"]])}
+				${select("sort", "Ordenar", query.sort ?? "name", REPO_SORTS.map((s): [string, string] => [s, SORT_LABEL[s]]))}
+				<button type="submit" class="secondary">Aplicar</button>
+				${back ? '<a href="/admin">Limpar</a>' : ""}
+				${filtered ? `<span class="count">${shown.length} de ${rows.length}</span>` : ""}
+			</form>`
+		: "";
 	return layout(
 		"Repositórios",
 		`${renderHeader(email, "repos")}
 		<main>
 			<h2>Repositórios</h2>
 			<p class="hint">Repositórios e checks começam desativados. Ative o repositório e depois os checks que ele deve rodar. Um check desativado num repositório ativo aparece na PR como <em>neutral</em>, para não travar branches que o exigem.</p>
+			${filters}
 			${list}
 			<p class="hint"><a href="${INSTALL_URL}">Conectar outros repositórios</a></p>
 		</main>`,
@@ -39,13 +109,15 @@ export function renderHeader(email: string | undefined, current: "repos" | "runs
 		</header>`;
 }
 
-function renderRepo(repo: InstalledRepo, settings: RepoSettings, checks: Check[], open: boolean): string {
+/** `back` is the list's filter and sort, so a change made through a form returns to the same view. */
+function renderRepo(repo: InstalledRepo, settings: RepoSettings, checks: Check[], open: boolean, back: string): string {
+	const fields = (extra: Record<string, string>) => ({ repo: repo.full_name, ...extra, ...(back ? { back } : {}) });
 	const active = checks.filter((c) => settings.enabledChecks.has(c.id)).length;
 	const items = checks
 		.map(
 			(check) => `<li>
 				<span>${esc(check.name)}</span>
-				${toggle("/admin/checks", { repo: repo.full_name, check: check.id }, settings.enabledChecks.has(check.id), `${check.name} em ${repo.full_name}`)}
+				${toggle("/admin/checks", fields({ check: check.id }), settings.enabledChecks.has(check.id), `${check.name} em ${repo.full_name}`)}
 			</li>`,
 		)
 		.join("");
@@ -58,15 +130,15 @@ function renderRepo(repo: InstalledRepo, settings: RepoSettings, checks: Check[]
 			<div class="body">
 				${settings.enabled ? "" : '<p class="note">Os checks só rodam depois que o repositório é ativado.</p>'}
 				<div class="bulk">
-					${button("/admin/checks/all", { repo: repo.full_name, enabled: "true" }, "Ativar todos")}
-					${button("/admin/checks/all", { repo: repo.full_name, enabled: "false" }, "Desativar todos")}
+					${button("/admin/checks/all", fields({ enabled: "true" }), "Ativar todos")}
+					${button("/admin/checks/all", fields({ enabled: "false" }), "Desativar todos")}
 					<a href="${esc(repo.html_url)}">Abrir no GitHub</a>
 				</div>
 				<ul class="checks">${items}</ul>
 			</div>
 		</details>
 		<div class="repo-toggle">
-			${toggle("/admin/repos", { repo: repo.full_name }, settings.enabled, `Ativar checks em ${repo.full_name}`, "Ativar checks")}
+			${toggle("/admin/repos", fields({}), settings.enabled, `Ativar checks em ${repo.full_name}`, "Ativar checks")}
 		</div>
 	</li>`;
 }
@@ -89,6 +161,13 @@ function hidden(fields: Record<string, string>): string {
 	return Object.entries(fields)
 		.map(([name, value]) => `<input type="hidden" name="${esc(name)}" value="${esc(value)}">`)
 		.join("");
+}
+
+/** A labelled drop-down for the filter bars, with `value` selected. */
+export function select(name: string, label: string, value: string, options: [string, string][]): string {
+	return `<label>${esc(label)} <select name="${esc(name)}">${options
+		.map(([v, text]) => `<option value="${esc(v)}"${v === value ? " selected" : ""}>${esc(text)}</option>`)
+		.join("")}</select></label>`;
 }
 
 export function renderMessage(title: string, detail: string): string {
@@ -160,6 +239,11 @@ ${head}
 	.switch[aria-checked="true"] .track { background: var(--on); }
 	.switch[aria-checked="true"] .thumb { left: 16px; }
 	.empty { padding: 24px 0; }
+	.filters { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 12px; margin: 0 0 16px; font-size: 13px; }
+	.filters label { display: flex; flex-direction: column; gap: 2px; color: var(--muted); }
+	.filters input, .filters select { font: inherit; font-size: 14px; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+	.filters input { width: 180px; }
+	.filters a, .filters .count { align-self: center; }
 	@media (max-width: 560px) {
 		summary { padding-right: 56px; }
 		.count { margin-left: 0; flex-basis: 100%; }
