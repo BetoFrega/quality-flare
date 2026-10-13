@@ -7,7 +7,7 @@ const lockfile = readLockfile(
 		[
 			"package-lock.json",
 			JSON.stringify({
-				packages: { "node_modules/esm-pkg": { version: "1.0.0" }, "node_modules/cjs-pkg": { version: "2.0.0" } },
+				packages: { "node_modules/esm-pkg": { version: "1.0.0" }, "node_modules/cjs-pkg": { version: "2.0.0" }, "node_modules/icons-pkg": { version: "3.0.0" } },
 			}),
 		],
 	]),
@@ -26,6 +26,13 @@ const PACKAGES: Record<string, Record<string, string>> = {
 		"lib/util.js": "module.exports = { name: 'cjs', other: 1 };",
 		"compiled/parser/package.json": JSON.stringify({ main: "parser.js" }),
 		"compiled/parser/parser.js": "module.exports = { parse: () => 'parsed' };",
+	},
+	"icons-pkg": {
+		"package.json": JSON.stringify({ module: "dist/index.mjs", sideEffects: false }),
+		"dist/index.mjs": `"use strict";\n/** @license */\nimport * as all from './icons/index.mjs';\nexport { all as icons };\nexport { default as House, default as Home } from './icons/house.mjs';\nexport { default as Star } from './icons/star.mjs';\n`,
+		"dist/icons/index.mjs": `export { default as House } from './house.mjs';\nexport { default as Star } from './star.mjs';`,
+		"dist/icons/house.mjs": "export default 'house';",
+		"dist/icons/star.mjs": "export default 'star';",
 	},
 };
 
@@ -144,6 +151,28 @@ describe("buildModules", () => {
 			{ specifier: "./gone", from: "test/a.test.ts" },
 		]);
 		expect(modules["__qf/missing/left-pad.js"].js).toContain("lockfile");
+	});
+
+	it("narrows a re-export barrel without side effects to the names a file takes", async () => {
+		const { modules } = await build({ "test/a.test.ts": `import { Home } from "icons-pkg"; export { House as H } from "icons-pkg"; it("", () => Home);` });
+		const names = Object.keys(modules).filter((n) => n.includes("icons-pkg"));
+		expect(names.some((n) => n.endsWith("icons/house.mjs"))).toBe(true);
+		expect(names.some((n) => n.endsWith("icons/star.mjs") || n.endsWith("dist/index.mjs"))).toBe(false);
+		const facade = names.find((n) => n.includes("__qf_narrow_"))!;
+		expect(modules[facade].js).toMatch(/^export \{ default as Home \} from "\/.*\/house\.mjs";\nexport \{ default as House \} from "\/.*\/house\.mjs";$/);
+		expect(modules["test/a.test.ts"].js).toContain(`"/${facade}"`);
+	});
+
+	it("loads the whole barrel when a file takes all of it, a name it doesn't re-export, or mocks it", async () => {
+		for (const test of [
+			`import * as all from "icons-pkg"; it("", () => all);`,
+			`import { Star } from "icons-pkg"; it("", () => [Star, import("icons-pkg")]);`,
+			`import { icons } from "icons-pkg"; it("", () => icons);`,
+			`import { Star } from "icons-pkg"; vi.mock("icons-pkg"); it("", () => Star);`,
+		]) {
+			const { modules } = await build({ "test/a.test.ts": `import { vi } from "vitest"; ${test}` });
+			expect(Object.keys(modules).some((n) => /icons-pkg\/dist\/index\.mjs$/.test(n)), test).toBe(true);
+		}
 	});
 
 	it("follows tsconfig paths and workspace packages", async () => {
