@@ -215,6 +215,19 @@ describe("Container tests", () => {
 			});
 		});
 
+		it("uses the base branch's config when the PR has none", async () => {
+			const RUNS = await fakeD1();
+			const getFileText = vi.fn(async (_repo: string, ref: string) => (ref === "main" ? JSON.stringify({ container: { vitestArgs: ["--config", "unit.mts"] } }) : undefined));
+			const github = { getFileText, startCheckRun: async () => 55 } as unknown as GitHubClient;
+			const fetch = vi.fn(async (_url: string, _init: RequestInit) => new Response(null, { status: 204 }));
+			(await import("cloudflare:workers")).exports.TestBox = { idFromName: (name: string) => name, get: () => ({ fetch }) };
+			const env = { RUNS, PUBLIC_URL: "https://qf.example" } as unknown as Env;
+
+			await containerTests.run({ github, repo: "octo/app", pr, env, installationId: 9 });
+			expect(getFileText.mock.calls.map(([, ref]) => ref)).toEqual(["abc", "main"]);
+			expect(JSON.parse(String(fetch.mock.calls[0][1].body)).config).toEqual({ vitestArgs: ["--config", "unit.mts"] });
+		});
+
 		it("doesn't cancel the PR's Tests run, nor does a Tests run cancel it", async () => {
 			const RUNS = await fakeD1();
 			const runs = d1RunStore(RUNS);

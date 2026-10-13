@@ -108,7 +108,8 @@ export const containerTests: Check = {
 			if (runId === undefined) throw new Error("O D1 (quality-flare-runs) não respondeu; ele acompanha o container.");
 			// A newer push supersedes the PR's container run still going: its TestBox sees the job gone and destroys the container.
 			await cancelRuns(github, repo, await runs.running(repo, pr.number, runId), d1JobStore(env.RUNS), runs, live);
-			const config = readContainerConfig(await github.getFileText(repo, sha, CONFIG_FILE));
+			// A PR branched before the repository added its config runs with the base branch's, not vitest's defaults.
+			const config = readContainerConfig((await github.getFileText(repo, sha, CONFIG_FILE)) ?? (await github.getFileText(repo, base, CONFIG_FILE)));
 			const detailsUrl = `${env.PUBLIC_URL}/admin/runs/${runId}`;
 			checkRunId = await github.startCheckRun(repo, sha, NAME, "Rodando os testes num container", detailsUrl);
 			for (const { name } of containerCommands(config)) {
