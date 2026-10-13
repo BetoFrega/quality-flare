@@ -1,8 +1,18 @@
-import { bindings, defineConfig, exports, triggers } from "cf/config";
+import { bindings, defineConfig, defineContainer, exports, triggers } from "cf/config";
 import type { TestShard } from "./src/checks/tests/jobs.ts";
 import * as entrypoint from "./src/index.ts" with { type: "cf-worker" };
 
+// The Tests check's "Container" runner (src/checks/tests/container.ts): one container per run,
+// started by the TestBox Durable Object, which picks the instance type.
+const testBox = defineContainer({
+	name: "quality-flare-tests",
+	schedulingPolicy: "durable-object",
+	images: { tests: { dockerfile: "./containers/tests/Dockerfile", buildContext: "./containers/tests" } },
+	observability: { enabled: true },
+});
+
 export default defineConfig({
+	containers: [testBox],
 	worker: {
 		name: "quality-flare",
 		compatibilityDate: "2026-10-06",
@@ -24,6 +34,10 @@ export default defineConfig({
 		exports: {
 			// Relays live test progress to the admin over WebSockets.
 			RunsHub: exports.durableObject({ storage: "sqlite" }),
+			// Runs one Container tests run in a container (src/checks/tests/container.ts). Reached through
+			// `exports` from cloudflare:workers, not a binding: a container's Durable Object can't be bound with a
+			// Worker name, which bindings.durableObject always sets.
+			TestBox: exports.durableObject({ storage: "sqlite", container: testBox }),
 		},
 		env: {
 			// GitHub App ID (or Client ID), used as the JWT issuer.

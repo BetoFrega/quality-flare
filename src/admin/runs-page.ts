@@ -1,6 +1,7 @@
 import { RUN_SORTS, RUN_STATES, runState, type RunQuery, type RunSort, type TestRun, type TestRunDetail } from "../runs.ts";
 import type { AttemptRow, Usage } from "../metrics.ts";
-import { renderRunUsage, usageCells } from "./costs-page.ts";
+import { boxCost, INSTANCE, type BoxUsage } from "../checks/tests/container.ts";
+import { cpu, money, renderRunUsage, usageCells } from "./costs-page.ts";
 import { esc, layout, renderHeader, select } from "./page.ts";
 
 const ICON = { success: "✓", failure: "✗", neutral: "–", cancelled: "⊘", running: "●", stale: "!" } as const;
@@ -79,7 +80,7 @@ export function renderRunPage(
 	run: TestRunDetail,
 	email: string | undefined,
 	now: number,
-	{ usage, attempts = [] }: { usage?: Usage; attempts?: AttemptRow[] } = {},
+	{ usage, attempts = [], container }: { usage?: Usage; attempts?: AttemptRow[]; container?: BoxUsage } = {},
 ): string {
 	const s = runState(run, now);
 	const files = run.report?.files ?? [];
@@ -122,6 +123,7 @@ export function renderRunPage(
 				<span>${duration(run, now)}</span>
 			</p>
 			${renderRunUsage(usage, attempts, now, s !== "running")}
+			${container ? renderContainerUsage(container) : ""}
 			${body}
 		</main>`,
 		s === "running" ? `${LIVE}${FALLBACK}` : "",
@@ -155,4 +157,19 @@ function when(at: number, now: number): string {
 	if (s < 3600) return `há ${Math.floor(s / 60)} min`;
 	if (s < 86_400) return `há ${Math.floor(s / 3600)} h`;
 	return new Date(at).toISOString().slice(0, 10);
+}
+
+/** The run page's usage section for a run on the "Container" runner. */
+function renderContainerUsage(u: BoxUsage): string {
+	const items: [string, string][] = [
+		["Custo estimado", money(boxCost(u))],
+		["Container", `${INSTANCE.name} (${INSTANCE.vcpu} vCPU, ${INSTANCE.memoryGiB} GiB)`],
+		["Tempo ligado", cpu(u.wallMs)],
+		["CPU usada", u.cpuUs === undefined ? "—" : cpu(Math.round(u.cpuUs / 1000))],
+	];
+	return `<section class="usage">
+		<h3>Uso e custo</h3>
+		<dl class="stats">${items.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>
+		<p class="hint">Estimativa sem a franquia mensal: memória e disco pelo tempo ligado, CPU pelo que foi usado.</p>
+	</section>`;
 }

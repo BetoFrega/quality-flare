@@ -123,5 +123,6 @@ export function planDelivery(event: string | null, payload: WebhookPayload, chec
 		}
 	}
 }
+export { TestBox } from "./checks/tests/container.ts";
 export { RunsHub } from "./live.ts";
 export { ShardTail } from "./shard-tail.ts";

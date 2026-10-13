@@ -7,3 +7,6 @@ export class WorkerEntrypoint<Env = unknown, Props = unknown> {
 		this.env = env;
 	}
 }
+
+/** The Worker's own exports (Durable Object namespaces, entrypoints); tests put what they need here. */
+export const exports: Record<string, unknown> = {};
