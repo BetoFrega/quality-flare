@@ -153,6 +153,23 @@ describe("buildModules", () => {
 		expect(modules["__qf/missing/left-pad.js"].js).toContain("lockfile");
 	});
 
+	it("weighs the code each test file loads by package and repository folder", async () => {
+		const { weights, modules } = await build({
+			"test/a.test.ts": `import { greet } from "esm-pkg"; import { x } from "../src/lib/x.ts"; it("", () => [greet, x]);`,
+			"test/b.test.ts": `it("", () => {});`,
+			"src/lib/x.ts": "export const x = 1;",
+		});
+		const pkg = Object.keys(modules).find((n) => n.endsWith("esm-pkg/index.js"))!;
+		expect(weights["test/a.test.ts"]).toMatchObject({
+			"npm:node_modules_esm-pkg": modules[pkg].js!.length,
+			"npm:node_modules_cjs-pkg": expect.any(Number),
+			"src/lib": "export const x = 1;".length,
+			test: modules["test/a.test.ts"].js!.length,
+			__qf: expect.any(Number),
+		});
+		expect(Object.keys(weights["test/b.test.ts"]).sort()).toEqual(["__qf", "test"]);
+	});
+
 	it("narrows a re-export barrel without side effects to the names a file takes", async () => {
 		const { modules } = await build({ "test/a.test.ts": `import { Home } from "icons-pkg"; export { House as H } from "icons-pkg"; it("", () => Home);` });
 		const names = Object.keys(modules).filter((n) => n.includes("icons-pkg"));
