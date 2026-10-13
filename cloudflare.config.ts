@@ -46,6 +46,10 @@ export default defineConfig({
 			LOADER: bindings.workerLoader(),
 			// Shards of Tests runs, consumed by this same Worker (see triggers).
 			TESTS_QUEUE: bindings.queue<TestShard>({ name: "quality-flare-tests" }),
+			// API token with Account Analytics: Read, for the admin's real account usage (src/account-usage.ts).
+			ANALYTICS_TOKEN: bindings.secretsStoreSecret({ storeId: "85fcda41135f46eca687febcae69ca34", secretName: "quality-flare-analytics-token" }),
+			// The account whose usage the admin shows.
+			CLOUDFLARE_ACCOUNT_ID: bindings.text("abd87961a304b923acbc329f0b0d1919"),
 			// Audience tag of the Cloudflare Access application that protects /admin.
 			ACCESS_AUD: bindings.text("b04a2d0ead7c4054e2cf3ea58e43a1bcd1f9f276aa944fec5cb9c2f11f577bae"),
 		},

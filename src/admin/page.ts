@@ -99,12 +99,12 @@ export function renderAdminPage({ email, checks, rows, open, query = {} }: Admin
 }
 
 /** The admin's top bar: name, the two sections, and who is signed in. */
-export function renderHeader(email: string | undefined, current: "repos" | "runs"): string {
+export function renderHeader(email: string | undefined, current: "repos" | "runs" | "costs"): string {
 	const link = (href: string, id: typeof current, text: string) =>
 		`<a href="${href}"${id === current ? ' aria-current="page"' : ""}>${text}</a>`;
 	return `<header>
 			<h1>quality-flare</h1>
-			<nav>${link("/admin", "repos", "Repositórios")}${link("/admin/runs", "runs", "Execuções de testes")}</nav>
+			<nav>${link("/admin", "repos", "Repositórios")}${link("/admin/runs", "runs", "Execuções de testes")}${link("/admin/costs", "costs", "Custos")}</nav>
 			${email ? `<span class="who">${esc(email)}</span>` : ""}
 		</header>`;
 }
@@ -239,6 +239,14 @@ ${head}
 	.switch[aria-checked="true"] .track { background: var(--on); }
 	.switch[aria-checked="true"] .thumb { left: 16px; }
 	.empty { padding: 24px 0; }
+	.scroll { overflow-x: auto; }
+	.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin: 0 0 12px; }
+	.stats div { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+	.stats dt { color: var(--muted); font-size: 12px; }
+	.stats dd { margin: 0; font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+	details.plain summary { padding: 6px 0 6px 18px; font-size: 14px; color: var(--muted); }
+	details.plain summary::before { top: 13px; }
+	h2 + .stats, .usage { margin-top: 12px; }
 	.filters { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 12px; margin: 0 0 16px; font-size: 13px; }
 	.filters label { display: flex; flex-direction: column; gap: 2px; color: var(--muted); }
 	.filters input, .filters select { font: inherit; font-size: 14px; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }

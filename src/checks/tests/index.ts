@@ -1,5 +1,6 @@
 import { GitHubClient } from "../../github.ts";
 import { livePublisher } from "../../live.ts";
+import { d1MetricsStore, type ShardAttempt, type ShardOutcome } from "../../metrics.ts";
 import { d1RunStore, type RunStore } from "../../runs.ts";
 import type { Check, CheckResult } from "../types.ts";
 import { CONFIG_FILE, readTestConfig, selectTestFiles, type TestConfig } from "./config.ts";
@@ -107,17 +108,24 @@ export const tests: Check = {
 };
 
 /** Queue consumer: runs each shard, and publishes the run when its last shard is done. */
-export async function runTestShards(batch: MessageBatch<TestShard>, env: Env): Promise<void> {
+export async function runTestShards(batch: MessageBatch<TestShard>, env: Env, ctx?: ExecutionContext): Promise<void> {
 	for (const message of batch.messages) {
 		const shard = message.body;
 		const live = livePublisher(env.LIVE);
 		const credentials = { appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY };
 		const github = () => GitHubClient.forInstallation(credentials, shard.installationId);
+		// What the attempt costs, for the admin; failing to record it must not fail the shard.
+		const metrics = d1MetricsStore(env.RUNS);
+		const attempt: ShardAttempt = { runId: shard.runId, shard: shard.shard, attempt: message.attempts };
+		await metrics.start({ ...attempt, files: shard.files.length }).catch(logError);
+		const meter: ShardMeter = { tails: ctx?.exports?.ShardTail ? [ctx.exports.ShardTail({ props: attempt })] : undefined };
+		const record = (outcome: ShardOutcome) =>
+			metrics.finish({ ...attempt, outcome, codeBytes: meter.codeBytes, dynamicWorker: Boolean(meter.loaded) }).catch(logError);
 		try {
-			await processShard(shard, message.attempts, {
+			const outcome = await processShard(shard, message.attempts, {
 				jobs: d1JobStore(env.RUNS),
 				enqueue: (shards) => enqueue(env.TESTS_QUEUE, shards),
-				run: async (s) => runShard(await github(), env.LOADER, s, (event) => live.send({ runId: s.runId, ...event })),
+				run: async (s) => runShard(await github(), env.LOADER, s, (event) => live.send({ runId: s.runId, ...event }), meter),
 				publish: async (s, report, unresolved) => {
 					const job = await d1JobStore(env.RUNS).get(s.runId);
 					const result = report.files.length ? toCheckResult(report, unresolved) : NO_TESTS;
@@ -126,9 +134,11 @@ export async function runTestShards(batch: MessageBatch<TestShard>, env: Env): P
 				},
 			});
 			await live.flush();
+			await record(outcome);
 			message.ack();
 		} catch (error) {
 			console.error("quality-flare: test shard failed, retrying", shard.runId, shard.shard, error);
+			await record("error");
 			message.retry();
 		}
 	}
@@ -143,33 +153,41 @@ export interface ShardDeps {
 	publish(shard: TestShard, report: TestReport, unresolved: ShardResult["unresolved"]): Promise<void>;
 }
 
-/** Runs one shard, splitting it when it doesn't fit, and publishes the run if it was the last. */
-export async function processShard(shard: TestShard, attempts: number, deps: ShardDeps): Promise<void> {
+/** Runs one shard, splitting it when it doesn't fit, and publishes the run if it was the last. Says what it did. */
+export async function processShard(shard: TestShard, attempts: number, deps: ShardDeps): Promise<ShardOutcome> {
 	// The run was cancelled by a newer push: nothing to run or report.
 	const job = await deps.jobs.get(shard.runId);
-	if (!job) return;
+	if (!job) return "skipped";
 	const expired = job.startedAt !== undefined && (deps.now?.() ?? Date.now()) - job.startedAt > RUN_DEADLINE_MS;
 	// A shard that took the consumer down before (out of memory, most likely) tries again in halves.
-	if (!expired && attempts > 1 && shard.files.length > 1) return split(shard, deps);
+	if (!expired && attempts > 1 && shard.files.length > 1) return split(shard, deps).then(() => "split");
 	let result: ShardResult;
 	let ran = false;
+	let outcome: ShardOutcome;
 	if (expired) {
 		result = failed(shard.files, `A execução passou de ${RUN_DEADLINE_MS / 60_000} minutos e parou antes de chegar a este arquivo.`);
+		outcome = "expired";
 	} else if (attempts >= MAX_ATTEMPTS) {
 		result = failed(shard.files, `O arquivo derrubou o Worker ${attempts - 1} vezes (provavelmente faltou memória: o limite é 128 MB).`);
+		outcome = "gave-up";
 	} else {
 		try {
 			result = await deps.run(shard);
 			ran = true;
+			outcome = "ran";
 		} catch (error) {
 			// Too big, or one file took the Dynamic Worker down: halve until the culprit runs alone.
-			if ((error instanceof TooLarge || error instanceof Crashed) && shard.files.length > 1) return split(shard, deps);
+			if ((error instanceof TooLarge || error instanceof Crashed) && shard.files.length > 1) {
+				return split(shard, deps).then(() => (error instanceof TooLarge ? "too-large" : "crashed"));
+			}
 			result = failed(shard.files, error instanceof Error ? error.message : String(error));
+			outcome = "failed";
 		}
 	}
 	const recheck = ran && !shard.recheck && shard.files.length > 1 ? failedFiles(result) : [];
-	if (recheck.length && recheck.length <= MAX_RECHECKS) return rerunAlone(shard, result, recheck, deps);
+	if (recheck.length && recheck.length <= MAX_RECHECKS) return rerunAlone(shard, result, recheck, deps).then(() => "rechecked");
 	await finish(shard, shard.shard, result, deps);
+	return outcome;
 }
 
 async function finish(shard: TestShard, id: string, result: ShardResult, deps: ShardDeps): Promise<void> {
@@ -258,12 +276,22 @@ export class Crashed extends Error {
 	}
 }
 
+/** What a shard attempt used, filled in by runShard for the metrics (src/metrics.ts). */
+interface ShardMeter {
+	/** Tail Workers that record the Dynamic Worker's CPU time. */
+	tails?: Fetcher[];
+	codeBytes?: number;
+	/** Whether a Dynamic Worker was created. */
+	loaded?: boolean;
+}
+
 /** Builds a shard's files and everything they import, and runs them in a fresh Dynamic Worker. */
 async function runShard(
 	github: GitHubClient,
 	loader: WorkerLoader,
 	shard: TestShard,
 	onProgress: (event: ProgressEvent) => void,
+	meter: ShardMeter = {},
 ): Promise<ShardResult> {
 	const label = `Lote ${shard.shard}`;
 	onProgress({ type: "status", text: `${label}: baixando o código` });
@@ -289,10 +317,12 @@ async function runShard(
 	const unresolved = bundle.unresolved.filter((u) => !u.from.startsWith("node_modules/"));
 	if (!bundle.testFiles.length) return { report: { files: [] }, unresolved };
 	const size = bundleSize(bundle);
+	meter.codeBytes = size;
 	if (size > MAX_CODE_BYTES) throw new TooLarge(size);
 	onProgress({ type: "status", text: `${label}: rodando` });
+	meter.loaded = true;
 	try {
-		return { report: await runInDynamicWorker(loader, bundle, onProgress, config), unresolved };
+		return { report: await runInDynamicWorker(loader, bundle, onProgress, config, SHARD_DEADLINE_MS, meter.tails), unresolved };
 	} catch (error) {
 		if (error instanceof Error && /exceeds the maximum allowed size/.test(error.message)) throw new TooLarge(size);
 		throw new Crashed(error);
@@ -391,8 +421,10 @@ export async function runInDynamicWorker(
 	onProgress: (event: ProgressEvent) => void = () => {},
 	config: TestConfig = {},
 	deadlineMs = SHARD_DEADLINE_MS,
+	tails?: Fetcher[],
 ): Promise<TestReport> {
 	const worker = loader.load({
+		...(tails && { tails }),
 		compatibilityDate: COMPATIBILITY_DATE,
 		compatibilityFlags: ["nodejs_compat"],
 		mainModule: MAIN_MODULE,
