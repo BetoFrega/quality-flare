@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { Crashed, expireRuns, MAX_CODE_BYTES, processShard, RUN_DEADLINE_MS, SHARD_SIZE, tests, TooLarge, type ShardDeps } from "../../../src/checks/tests/index.ts";
+import { Crashed, expireRuns, MAX_CODE_BYTES, processShard, runInDynamicWorker, RUN_DEADLINE_MS, SHARD_SIZE, tests, TooLarge, type ShardDeps } from "../../../src/checks/tests/index.ts";
 import { d1JobStore, type ShardResult, type TestShard } from "../../../src/checks/tests/jobs.ts";
 import type { GitHubClient, PullRequest } from "../../../src/github.ts";
 import { d1RunStore } from "../../../src/runs.ts";
@@ -223,5 +223,16 @@ describe.skipIf(inWorkers)("Tests check shards", () => {
 			{ path: "bad.test.ts", state: "fail", tests: [], errors: [expect.stringContaining("Network connection lost.")] },
 			expect.objectContaining({ path: "c.test.ts", state: "pass" }),
 		]);
+	});
+});
+
+describe("a shard's Dynamic Worker", () => {
+	it("stops tests that run past the shard's deadline", async () => {
+		// The tests never finish: the body stays open until the request is aborted.
+		const fetch = async (_url: string, init: RequestInit) =>
+			new Response(new ReadableStream({ start: (c) => init.signal!.addEventListener("abort", () => c.error(init.signal!.reason)) }));
+		const loader = { load: () => ({ getEntrypoint: () => ({ fetch }) }) } as unknown as WorkerLoader;
+		const bundle = { modules: {}, testFiles: ["test/a.test.ts"], setupFiles: [], unresolved: [] };
+		await expect(runInDynamicWorker(loader, bundle, () => {}, {}, 100)).rejects.toThrow(/passaram de .* minutos rodando e foram interrompidos/);
 	});
 });
