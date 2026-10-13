@@ -24,8 +24,12 @@ const COMPATIBILITY_DATE = "2026-10-06";
 /** Code only changes on these; label and description edits don't need a new test run. */
 const CODE_ACTIONS = new Set(["opened", "reopened", "synchronize", "ready_for_review"]);
 
-/** Test files per shard. A shard whose code is too big splits in two until it fits. */
-export const SHARD_SIZE = 20;
+/**
+ * Test files per shard. Kept small because the Worker that builds a shard has 128 MB, and a shard
+ * that runs out of it crashes and retries in halves; building a shard costs about the same for 1
+ * file as for 5. A shard whose code is too big splits in two until it fits.
+ */
+export const SHARD_SIZE = 5;
 
 /** A Dynamic Worker takes at most 64 MB of code; past this, a shard splits instead of trying. */
 export const MAX_CODE_BYTES = 48 * 1024 * 1024;

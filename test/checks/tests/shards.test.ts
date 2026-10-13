@@ -47,7 +47,7 @@ describe.skipIf(inWorkers)("Tests check shards", () => {
 		expect(await tests.run({ github, repo: "octo/app", pr, env, installationId: 9 })).toBeNull();
 		const bodies = (sendBatch.mock.calls[0] as unknown as [{ body: TestShard }[]])[0].map((m) => m.body);
 		// "View more details" on GitHub opens this run in the admin.
-		expect(startCheckRun).toHaveBeenCalledWith("octo/app", "abc", "Tests", "Rodando 25 arquivos de teste", `https://qf.example/admin/runs/${bodies[0].runId}`);
+		expect(startCheckRun).toHaveBeenCalledWith("octo/app", "abc", "Tests", `Rodando ${SHARD_SIZE + 5} arquivos de teste`, `https://qf.example/admin/runs/${bodies[0].runId}`);
 		expect(bodies.map((b) => [b.shard, b.files.length])).toEqual([["0", SHARD_SIZE], ["1", 5]]);
 		expect(bodies[0]).toMatchObject({ repo: "octo/app", sha: "abc", installationId: 9 });
 		expect(await d1JobStore(RUNS).get(bodies[0].runId)).toEqual({ checkRunId: 55, installationId: 9, startedAt: expect.any(Number) });
