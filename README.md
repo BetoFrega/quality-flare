@@ -65,7 +65,7 @@ Roda o vitest do próprio repositório, com a config dele, num [container](https
 
 Uma opção por repositório no admin, desligada por padrão, que vale para o **Tests** e o **Container tests**. Ligada, um push na PR não roda esses checks: cada um fica em espera (check run `queued`) até alguém com acesso ao repositório (OWNER, MEMBER ou COLLABORATOR) comentar `/quality-flare run` na PR. O comentário roda o commit atual uma vez e recebe um 🚀; o próximo push volta a esperar. O **Re-run** também roda.
 
-A ideia é que agentes rodem os testes localmente enquanto trabalham e só peçam a execução quando a PR estiver pronta para o merge. O texto do check em espera diz isso ao agente. Um check em espera que a branch exige trava o merge até alguém pedir a execução. PRs abertas por bots, como as do Dependabot, rodam direto em todo push.
+A ideia é que agentes rodem os testes localmente o tempo todo e só peçam a execução remota no fim: depois de abrir a PR, corrigir as reviews e deixá-la pronta para o merge, sem push depois que a suíte fica verde. O texto do check em espera diz isso ao agente. Um check em espera que a branch exige trava o merge até alguém pedir a execução. PRs abertas por bots, como as do Dependabot, rodam direto em todo push.
 
 ### Dependabot auto-merge
 

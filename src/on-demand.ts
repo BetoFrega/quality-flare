@@ -37,8 +37,9 @@ export const WAITING_RESULT: CheckResult = {
 		`Este check só roda quando alguém com acesso ao repositório comenta \`${RUN_COMMAND}\` nesta PR. ` +
 			"O comentário roda o commit atual uma vez; um push novo volta a esperar.",
 		"",
-		"**Agente:** rode os testes localmente enquanto trabalha. Comente " +
-			`\`${RUN_COMMAND}\` só quando a PR estiver pronta para o merge e você achar que os testes vão passar, ` +
-			"não a cada ajuste: cada execução custa dinheiro.",
+		"**Agente:** rode os testes localmente o tempo todo, como sempre. Os testes remotos vêm por último: " +
+			"monte tudo, abra a PR para review, corrija as reviews e deixe a PR pronta para o merge. Só então comente " +
+			`\`${RUN_COMMAND}\`, quando achar que os testes vão passar. Depois que a suíte ficar verde, não faça mais push: ` +
+			"cada push volta a esperar e cada execução custa dinheiro.",
 	].join("\n"),
 };
