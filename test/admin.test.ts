@@ -31,6 +31,7 @@ const runs: RunStore = {
 	start: async () => 0,
 	finish: async () => {},
 	list: async () => history,
+	repos: async () => ["octo/app"],
 	get: async (id) => history.find((r) => r.id === id) ?? null,
 };
 
@@ -84,6 +85,30 @@ describe("admin", () => {
 		expect(html).toMatch(/<details open>\s*<summary>\s*<span class="name">octo\/app/);
 	});
 
+	it("filters repositories by name and state, and sorts them", async () => {
+		const { env, call } = setup();
+		await setRepoEnabled(env.SETTINGS, "octo/<secret>", true);
+		const names = (html: string) => [...html.matchAll(/<span class="name">([^<]+)<\/span>/g)].map((m) => m[1]);
+
+		expect(names(await (await call(new Request("https://worker.example/admin"))).text())).toEqual(["octo/&#60;secret&#62;", "octo/app"]);
+		expect(names(await (await call(new Request("https://worker.example/admin?sort=name-desc"))).text())).toEqual(["octo/app", "octo/&#60;secret&#62;"]);
+		expect(names(await (await call(new Request("https://worker.example/admin?q=APP"))).text())).toEqual(["octo/app"]);
+		const disabled = await (await call(new Request("https://worker.example/admin?status=disabled&sort=bogus"))).text();
+		expect(names(disabled)).toEqual(["octo/app"]);
+		expect(disabled).toContain("1 de 2");
+		expect(disabled).toContain('<option value="disabled" selected>');
+		expect(disabled).toContain('<option value="name" selected>');
+		expect(await (await call(new Request("https://worker.example/admin?q=nothing"))).text()).toContain("Nenhum repositório com esses filtros");
+	});
+
+	it("keeps the filters after a change", async () => {
+		const { call } = setup();
+		const page = await (await call(new Request("https://worker.example/admin?q=app&sort=enabled"))).text();
+		expect(page).toContain('<input type="hidden" name="back" value="q=app&#38;sort=enabled">');
+		const res = await call(post("/admin/checks", { repo: "octo/app", check: "other", enabled: "true", back: "q=app&sort=enabled&evil=1" }));
+		expect(res.headers.get("Location")).toBe("https://worker.example/admin?q=app&sort=enabled&open=octo%2Fapp#octo%2Fapp");
+	});
+
 	it("enables a repository", async () => {
 		const { env, call } = setup();
 		const res = await call(post("/admin/repos", { repo: "octo/app", enabled: "true" }));
@@ -133,6 +158,21 @@ describe("admin", () => {
 		expect(page).not.toContain("90 min 0 s");
 		expect(page).toContain(`<td class="num">—</td>`);
 		expect(page).not.toContain('http-equiv="refresh"');
+	});
+
+	it("filters and sorts test runs from the query string", async () => {
+		const { env } = setup();
+		const queries: unknown[] = [];
+		const store: RunStore = { ...runs, list: async (query) => (queries.push(query), []) };
+		const call = (path: string) => handleAdmin(new Request(`https://worker.example${path}`), env, access, { checks, runs: () => store, now: () => NOW });
+		const page = await (await call("/admin/runs?repo=octo%2Fapp&state=failure&sort=longest")).text();
+		expect(queries[0]).toEqual({ repo: "octo/app", state: "failure", sort: "longest" });
+		expect(page).toContain('<option value="octo/app" selected>');
+		expect(page).toContain('<option value="failure" selected>Falhou</option>');
+		expect(page).toContain('<option value="longest" selected>');
+		expect(page).toContain("Nenhuma execução com esses filtros");
+		await call("/admin/runs?state=whatever&sort=x");
+		expect(queries[1]).toEqual({ repo: undefined, state: undefined, sort: undefined });
 	});
 
 	it("falls back to reloading without JavaScript while tests are running", async () => {

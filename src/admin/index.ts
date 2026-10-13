@@ -5,8 +5,8 @@ import { getRepoSettings, setChecksEnabled, setRepoEnabled } from "../settings.t
 import { hub } from "../live.ts";
 import { d1RunStore, type RunStore } from "../runs.ts";
 import { LIVE_SCRIPT } from "./live-script.ts";
-import { renderAdminPage, renderMessage } from "./page.ts";
-import { renderRunPage, renderRunsPage } from "./runs-page.ts";
+import { renderAdminPage, renderMessage, repoQuery, repoSearch } from "./page.ts";
+import { renderRunPage, renderRunsPage, runQuery } from "./runs-page.ts";
 
 export const ADMIN_PATH = "/admin";
 
@@ -42,7 +42,7 @@ export async function handleAdmin(
 			repos.map(async (repo) => ({ repo, settings: await getRepoSettings(env.SETTINGS, repo.full_name) })),
 		);
 		const identity = await access.getIdentity();
-		return html(renderAdminPage({ email: identity?.email, checks, rows, open: url.searchParams.get("open") }));
+		return html(renderAdminPage({ email: identity?.email, checks, rows, open: url.searchParams.get("open"), query: repoQuery(url.searchParams) }));
 	}
 
 	if (request.method === "GET" && path === `${ADMIN_PATH}/live.js`) {
@@ -58,7 +58,10 @@ export async function handleAdmin(
 
 	if (request.method === "GET" && path === `${ADMIN_PATH}/runs`) {
 		const identity = await access.getIdentity();
-		return html(renderRunsPage(await runs(env).list(), identity?.email, now()));
+		const store = runs(env);
+		const query = runQuery(url.searchParams);
+		const [list, repos] = await Promise.all([store.list(query), store.repos()]);
+		return html(renderRunsPage({ runs: list, repos, query, email: identity?.email, now: now() }));
 	}
 
 	const runMatch = request.method === "GET" ? new RegExp(`^${ADMIN_PATH}/runs/(\\d+)$`).exec(path) : null;
@@ -93,9 +96,11 @@ export async function handleAdmin(
 			default:
 				return html(renderMessage("Página não encontrada", ""), 404);
 		}
-		// Changes to checks happen inside the repository's collapsible, so keep it open.
-		const open = path === `${ADMIN_PATH}/repos` ? "" : `?open=${encodeURIComponent(repo)}`;
-		return Response.redirect(`${url.origin}${ADMIN_PATH}${open}#${encodeURIComponent(repo)}`, 303);
+		// Return to the same filtered view. Changes to checks happen inside the repository's
+		// collapsible, so keep it open.
+		const back = repoQuery(new URLSearchParams(String(form.get("back") ?? "")));
+		const search = repoSearch(back, path === `${ADMIN_PATH}/repos` ? {} : { open: repo });
+		return Response.redirect(`${url.origin}${ADMIN_PATH}${search}#${encodeURIComponent(repo)}`, 303);
 	}
 
 	return html(renderMessage("Página não encontrada", ""), 404);
