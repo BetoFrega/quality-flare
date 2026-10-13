@@ -119,7 +119,7 @@ ${head}
 	.num { text-align: right; white-space: nowrap; }
 	.mono { font-family: ui-monospace, monospace; font-size: 13px; }
 	.state { white-space: nowrap; font-weight: 600; }
-	.success { color: var(--on); } .failure { color: #cf222e; } .neutral, .skip { color: var(--muted); } .running { color: #9a6700; }
+	.success { color: var(--on); } .failure { color: #cf222e; } .neutral, .cancelled, .skip { color: var(--muted); } .running { color: #9a6700; }
 	.meta { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); font-size: 13px; margin: 0 0 20px; }
 	h3 { font-size: 15px; margin: 24px 0 6px; overflow-wrap: anywhere; }
 	pre { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow-x: auto; font-size: 12px; margin: 6px 0 0; white-space: pre-wrap; }

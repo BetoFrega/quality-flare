@@ -69,6 +69,34 @@ describe.skipIf(inWorkers)("Tests check shards", () => {
 		expect(body).toMatchObject({ files: ["src/a.test.ts", "src/b.test.tsx"], config });
 	});
 
+	it("cancels the PR's run still going when a newer push starts one, and its queued shards drop", async () => {
+		const RUNS = await fakeD1();
+		let nextCheckRun = 55;
+		const completeCheckRun = vi.fn(async () => {});
+		const github = {
+			listFiles: async () => ["test/a.test.ts"],
+			getFileText: async () => undefined,
+			startCheckRun: async () => nextCheckRun++,
+			completeCheckRun,
+		} as unknown as GitHubClient;
+		const sendBatch = vi.fn(async () => {});
+		const env = { RUNS, TESTS_QUEUE: { sendBatch }, PUBLIC_URL: "https://qf.example" } as unknown as Env;
+		const bodies = () => (sendBatch.mock.calls.at(-1) as unknown as [{ body: TestShard }[]])[0].map((m) => m.body);
+
+		await tests.run({ github, repo: "octo/app", pr, env, installationId: 9 });
+		const [old] = bodies();
+		await tests.run({ github, repo: "octo/app", pr: { ...pr, head: { sha: "def" } } as PullRequest, env, installationId: 9 });
+
+		expect(completeCheckRun).toHaveBeenCalledExactlyOnceWith("octo/app", 55, expect.objectContaining({ conclusion: "cancelled" }));
+		const [newer, cancelled] = await d1RunStore(RUNS).list();
+		expect([newer.status, cancelled]).toEqual(["running", expect.objectContaining({ id: old.runId, status: "completed", conclusion: "cancelled" })]);
+		const run = vi.fn<ShardDeps["run"]>(async (s) => passing(s.files));
+		const publish = vi.fn<ShardDeps["publish"]>(async () => {});
+		await processShard(old, 1, { jobs: d1JobStore(RUNS), run, publish, enqueue: async () => {} });
+		expect(run).not.toHaveBeenCalled();
+		expect(publish).not.toHaveBeenCalled();
+	});
+
 	it("reports no tests right away", async () => {
 		const RUNS = await fakeD1();
 		const github = { listFiles: async () => ["src/a.ts"], getFileText: async () => undefined } as unknown as GitHubClient;

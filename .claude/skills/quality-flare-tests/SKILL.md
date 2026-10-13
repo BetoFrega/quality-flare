@@ -13,7 +13,7 @@ O check **Tests** do quality-flare baixa o commit `head` da PR, monta os módulo
 2. No admin (`https://quality-flare.frega.workers.dev/admin`), ative o repositório e o check **Tests**. Todo check começa desligado; um check desligado aparece como `neutral` ("Desativado").
 3. Opcional: exija o status check **Tests** na proteção de branch.
 
-O check roda quando a PR é aberta, reaberta, recebe commits ou sai de draft, e no botão **Re-run**. Mudar label ou descrição não roda os testes de novo.
+O check roda quando a PR é aberta, reaberta, recebe commits ou sai de draft, e no botão **Re-run**. Mudar label ou descrição não roda os testes de novo. Uma execução nova cancela a anterior da mesma PR que ainda estiver rodando: o check run antigo termina como `cancelled` e os lotes dela que ainda estão na fila são descartados.
 
 ## Convenção
 

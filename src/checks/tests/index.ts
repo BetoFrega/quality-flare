@@ -54,6 +54,8 @@ export const tests: Check = {
 		let checkRunId: number | undefined;
 		try {
 			if (runId === undefined) throw new Error("O D1 (quality-flare-runs) não respondeu; ele coordena os lotes de testes.");
+			// A newer push supersedes the PR's runs still going: their queued shards drop themselves.
+			await cancelRuns(github, repo, await runs.running(repo, pr.number, runId), d1JobStore(env.RUNS), runs, live);
 			const read = (path: string) => github.getFileText(repo, sha, path);
 			// quality-flare.json overrides, key by key, what the repository's vitest config says.
 			const config = { ...(await readVitestConfig(read)).config, ...readTestConfig(await read(CONFIG_FILE)) };
@@ -119,6 +121,8 @@ export interface ShardDeps {
 
 /** Runs one shard, splitting it when it doesn't fit, and publishes the run if it was the last. */
 export async function processShard(shard: TestShard, attempts: number, deps: ShardDeps): Promise<void> {
+	// The run was cancelled by a newer push: nothing to run or report.
+	if (!(await deps.jobs.get(shard.runId))) return;
 	// A shard that took the consumer down before (out of memory, most likely) tries again in halves.
 	if (attempts > 1 && shard.files.length > 1) return split(shard, deps);
 	let result: ShardResult;
@@ -204,6 +208,28 @@ async function runShard(
 /** A shard's files, each failed with `message`. */
 function failed(files: string[], message: string): ShardResult {
 	return { report: { files: files.map((path) => ({ path, state: "fail", errors: [message], tests: [] })) }, unresolved: [] };
+}
+
+const CANCELLED: CheckResult = {
+	conclusion: "cancelled",
+	title: "Cancelada por um push mais novo",
+	summary: "A PR recebeu commits novos enquanto os testes rodavam; os testes rodam de novo no commit novo.",
+};
+
+/** Completes the given runs as cancelled, in the history and on GitHub, and stops their shards. */
+async function cancelRuns(
+	github: GitHubClient,
+	repo: string,
+	runIds: number[],
+	jobs: JobStore,
+	runs: ReturnType<typeof d1RunStore>,
+	live: ReturnType<typeof livePublisher>,
+): Promise<void> {
+	for (const id of runIds) {
+		const job = await jobs.cancel(id);
+		if (job) await github.completeCheckRun(repo, job.checkRunId, CANCELLED).catch(logError);
+		await finishRun(runs, live, id, CANCELLED);
+	}
 }
 
 async function finishRun(
