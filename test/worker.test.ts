@@ -29,7 +29,7 @@ function delivery(event: string, payload: object, secret = env.GITHUB_WEBHOOK_SE
 }
 
 /** Fakes the GitHub API and records the check runs created. */
-function mockGitHub({ linked = [] as { number: number; repository: { nameWithOwner: string } }[], fetchedPr = pr } = {}) {
+function mockGitHub({ linked = [] as { number: number; repository: { nameWithOwner: string } }[], fetchedPr = pr, existingRuns = [] as string[] } = {}) {
 	const checkRuns: Record<string, unknown>[] = [];
 	const reactions: Record<string, unknown>[] = [];
 	const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
@@ -42,6 +42,11 @@ function mockGitHub({ linked = [] as { number: number; repository: { nameWithOwn
 		if (path === "/repos/octo/repo/issues/comments/5/reactions") {
 			reactions.push(JSON.parse(init.body as string));
 			return Response.json({ id: 1 }, { status: 201 });
+		}
+		if (path === "/repos/octo/repo/commits/abc123/check-runs") {
+			const query = new URL(url).searchParams;
+			expect(query.get("app_id")).toBe(env.GITHUB_APP_ID);
+			return Response.json({ total_count: existingRuns.filter((name) => name === query.get("check_name")).length });
 		}
 		if (path === "/repos/octo/repo/check-runs") {
 			checkRuns.push(JSON.parse(init.body as string));
@@ -176,6 +181,13 @@ describe("tests on demand", () => {
 			}),
 		]);
 		expect(checkRuns[0]).not.toHaveProperty("conclusion");
+	});
+
+	it("keeps the run a commit already has when the PR leaves draft or reopens", async () => {
+		const { checkRuns } = mockGitHub({ existingRuns: ["Tests"] });
+		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), env);
+		expect(ran).toEqual([]);
+		expect(checkRuns).toEqual([]);
 	});
 
 	it("runs on pushes with the setting off, and on PRs opened by bots", async () => {

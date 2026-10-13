@@ -181,6 +181,13 @@ export class GitHubClient {
 		});
 	}
 
+	/** Whether the App already reported a check run with this name on the commit. */
+	async hasCheckRun(repo: string, headSha: string, name: string, appId: string): Promise<boolean> {
+		const query = new URLSearchParams({ check_name: name, app_id: appId, filter: "latest" });
+		const runs = await request<{ total_count: number }>(this.token, "GET", `/repos/${repo}/commits/${headSha}/check-runs?${query}`);
+		return runs.total_count > 0;
+	}
+
 	createCheckRun(repo: string, headSha: string, name: string, result: CheckResult): Promise<unknown> {
 		const open = result.conclusion === "pending" || result.conclusion === "waiting";
 		return request(this.token, "POST", `/repos/${repo}/check-runs`, {
