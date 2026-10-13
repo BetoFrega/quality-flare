@@ -45,6 +45,13 @@ export const MAX_CODE_BYTES = 48 * 1024 * 1024;
  */
 export const RUN_DEADLINE_MS = 60 * 60_000;
 
+/**
+ * Files in one shard share the module state vitest gives each file fresh (React's pending
+ * transitions, for one), so a file can fail only because of another. Up to this many files that
+ * failed in a shard run again alone, and that result counts; past it, the shard's result stands.
+ */
+export const MAX_RECHECKS = 10;
+
 /** A one-file shard that crashed the consumer this many times (out of memory, likely) is reported as failed. */
 const MAX_ATTEMPTS = 3;
 
@@ -145,6 +152,7 @@ export async function processShard(shard: TestShard, attempts: number, deps: Sha
 	// A shard that took the consumer down before (out of memory, most likely) tries again in halves.
 	if (!expired && attempts > 1 && shard.files.length > 1) return split(shard, deps);
 	let result: ShardResult;
+	let ran = false;
 	if (expired) {
 		result = failed(shard.files, `A execução passou de ${RUN_DEADLINE_MS / 60_000} minutos e parou antes de chegar a este arquivo.`);
 	} else if (attempts >= MAX_ATTEMPTS) {
@@ -152,13 +160,20 @@ export async function processShard(shard: TestShard, attempts: number, deps: Sha
 	} else {
 		try {
 			result = await deps.run(shard);
+			ran = true;
 		} catch (error) {
 			// Too big, or one file took the Dynamic Worker down: halve until the culprit runs alone.
 			if ((error instanceof TooLarge || error instanceof Crashed) && shard.files.length > 1) return split(shard, deps);
 			result = failed(shard.files, error instanceof Error ? error.message : String(error));
 		}
 	}
-	const all = await deps.jobs.finish(shard.runId, shard.shard, result);
+	const recheck = ran && !shard.recheck && shard.files.length > 1 ? failedFiles(result) : [];
+	if (recheck.length && recheck.length <= MAX_RECHECKS) return rerunAlone(shard, result, recheck, deps);
+	await finish(shard, shard.shard, result, deps);
+}
+
+async function finish(shard: TestShard, id: string, result: ShardResult, deps: ShardDeps): Promise<void> {
+	const all = await deps.jobs.finish(shard.runId, id, result);
 	if (all) {
 		const { report, unresolved } = mergeReports(all);
 		await deps.publish(shard, report, unresolved);
@@ -204,6 +219,19 @@ function overdue(report: TestReport, unresolved: ShardResult["unresolved"]): Che
 		title: `A execução passou de ${RUN_DEADLINE_MS / 60_000} minutos`,
 		summary: n ? `${done}\n\n${toCheckResult(report, unresolved).summary}` : done,
 	};
+}
+
+function failedFiles(result: ShardResult): string[] {
+	return result.report.files.filter((f) => f.state === "fail").map((f) => f.path);
+}
+
+/** Keeps the shard's passing files and queues each failed one to run again alone. */
+async function rerunAlone(shard: TestShard, result: ShardResult, files: string[], deps: ShardDeps): Promise<void> {
+	if ((await deps.jobs.split(shard.runId, shard.shard, files.length + 1)) === "finished") return;
+	await deps.enqueue(files.map((file, i) => ({ ...shard, shard: `${shard.shard}.r${i}`, files: [file], recheck: true })));
+	const rest = new Set(files);
+	const kept = { ...result, report: { ...result.report, files: result.report.files.filter((f) => !rest.has(f.path)) } };
+	await finish(shard, `${shard.shard}.k`, kept, deps);
 }
 
 async function split(shard: TestShard, deps: ShardDeps): Promise<void> {

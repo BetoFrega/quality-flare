@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { Crashed, expireRuns, MAX_CODE_BYTES, processShard, runInDynamicWorker, RUN_DEADLINE_MS, SHARD_SIZE, tests, TooLarge, type ShardDeps } from "../../../src/checks/tests/index.ts";
+import { Crashed, expireRuns, MAX_CODE_BYTES, MAX_RECHECKS, processShard, runInDynamicWorker, RUN_DEADLINE_MS, SHARD_SIZE, tests, TooLarge, type ShardDeps } from "../../../src/checks/tests/index.ts";
 import { d1JobStore, type ShardResult, type TestShard } from "../../../src/checks/tests/jobs.ts";
 import type { GitHubClient, PullRequest } from "../../../src/github.ts";
 import { d1RunStore } from "../../../src/runs.ts";
@@ -10,6 +10,11 @@ const pr = { number: 7, body: null, head: { sha: "abc" }, labels: [] } as unknow
 
 const passing = (files: string[]): ShardResult => ({
 	report: { files: files.map((path) => ({ path, state: "pass", tests: [{ name: `${path} works`, state: "pass" }] })) },
+	unresolved: [],
+});
+
+const failedResult = (files: string[]): ShardResult => ({
+	report: { files: files.map((path) => ({ path, state: "fail", tests: [{ name: `${path} breaks`, state: "fail" }] })) },
 	unresolved: [],
 });
 
@@ -209,6 +214,29 @@ describe.skipIf(inWorkers)("Tests check shards", () => {
 		const run = vi.fn<ShardDeps["run"]>(async (s) => passing(s.files));
 		await processShard({ ...shard(["test/a.test.ts"]), runId }, 1, { jobs, run, publish: async () => {}, enqueue: async () => {} });
 		expect(run).not.toHaveBeenCalled();
+	});
+
+	it("runs the files that failed in a shard again alone, and reports that result", async () => {
+		// b fails only next to a, as when a leaves state behind that b's module also uses.
+		const run = vi.fn(async (s: TestShard) => ({
+			report: { files: s.files.map((path) => ({ path, state: path === "b.test.ts" && s.files.includes("a.test.ts") ? "fail" : "pass", tests: [] })) },
+			unresolved: [],
+		}) as ShardResult);
+		const { deps, queue, publish } = await setup(1, run);
+		queue.push({ shard: shard(["a.test.ts", "b.test.ts", "c.test.ts"]), attempts: 1 });
+		await drain(queue, deps);
+		expect(run.mock.calls.map(([s]) => [s.files, s.recheck])).toEqual([[["a.test.ts", "b.test.ts", "c.test.ts"], undefined], [["b.test.ts"], true]]);
+		expect(publish.mock.calls[0][1].files.map((f) => [f.path, f.state])).toEqual([["a.test.ts", "pass"], ["b.test.ts", "pass"], ["c.test.ts", "pass"]]);
+	});
+
+	it("keeps a shard's result when more files failed than are worth running alone", async () => {
+		const files = Array.from({ length: MAX_RECHECKS + 1 }, (_, i) => `t${i}.test.ts`);
+		const run = vi.fn(async (s: TestShard) => failedResult(s.files));
+		const { deps, queue, publish } = await setup(1, run);
+		queue.push({ shard: shard(files), attempts: 1 });
+		await drain(queue, deps);
+		expect(run).toHaveBeenCalledOnce();
+		expect(publish.mock.calls[0][1].files).toHaveLength(MAX_RECHECKS + 1);
 	});
 
 	it("isolates a file that takes the Dynamic Worker down", async () => {
