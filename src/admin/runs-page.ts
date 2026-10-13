@@ -1,4 +1,6 @@
 import { RUN_SORTS, RUN_STATES, runState, type RunQuery, type RunSort, type TestRun, type TestRunDetail } from "../runs.ts";
+import type { AttemptRow, Usage } from "../metrics.ts";
+import { renderRunUsage, usageCells } from "./costs-page.ts";
 import { esc, layout, renderHeader, select } from "./page.ts";
 
 const ICON = { success: "✓", failure: "✗", neutral: "–", cancelled: "⊘", running: "●", stale: "!" } as const;
@@ -26,11 +28,13 @@ export interface RunsPageData {
 	/** Repositories with runs, offered in the filter. */
 	repos: string[];
 	query: RunQuery;
+	/** Each run's shard usage, by run id; runs from before it was recorded are absent. */
+	usage?: Map<number, Usage>;
 	email?: string;
 	now: number;
 }
 
-export function renderRunsPage({ runs, repos, query, email, now }: RunsPageData): string {
+export function renderRunsPage({ runs, repos, query, usage = new Map(), email, now }: RunsPageData): string {
 	const filtered = Boolean(query.repo || query.state);
 	const running = runs.some((r) => runState(r, now) === "running");
 	const rows = runs
@@ -42,11 +46,12 @@ export function renderRunsPage({ runs, repos, query, email, now }: RunsPageData)
 				<td>${s === "running" ? `<span data-progress="${run.id}">Preparando…</span>` : esc(run.title ?? "")}</td>
 				<td class="num">${when(run.startedAt, now)}</td>
 				<td class="num">${duration(run, now)}</td>
+				${usageCells(usage.get(run.id))}
 			</tr>`;
 		})
 		.join("");
 	const table = runs.length
-		? `<table><thead><tr><th>Estado</th><th>PR</th><th>Resultado</th><th class="num">Início</th><th class="num">Duração</th></tr></thead><tbody>${rows}</tbody></table>`
+		? `<div class="scroll"><table><thead><tr><th>Estado</th><th>PR</th><th>Resultado</th><th class="num">Início</th><th class="num">Duração</th><th class="num" title="Dynamic Workers criados (e quedas)">DW</th><th class="num">Custo est.</th></tr></thead><tbody>${rows}</tbody></table></div>`
 		: filtered
 			? `<p class="empty">Nenhuma execução com esses filtros. <a href="/admin/runs">Limpar filtros</a></p>`
 			: `<p class="empty">Nenhuma execução ainda. O check Tests roda quando está ativo num repositório e uma PR recebe commits.</p>`;
@@ -70,7 +75,12 @@ export function renderRunsPage({ runs, repos, query, email, now }: RunsPageData)
 	);
 }
 
-export function renderRunPage(run: TestRunDetail, email: string | undefined, now: number): string {
+export function renderRunPage(
+	run: TestRunDetail,
+	email: string | undefined,
+	now: number,
+	{ usage, attempts = [] }: { usage?: Usage; attempts?: AttemptRow[] } = {},
+): string {
 	const s = runState(run, now);
 	const files = run.report?.files ?? [];
 	const fileRows = files
@@ -111,6 +121,7 @@ export function renderRunPage(run: TestRunDetail, email: string | undefined, now
 				<span>${when(run.startedAt, now)}</span>
 				<span>${duration(run, now)}</span>
 			</p>
+			${renderRunUsage(usage, attempts, now, s !== "running")}
 			${body}
 		</main>`,
 		s === "running" ? `${LIVE}${FALLBACK}` : "",

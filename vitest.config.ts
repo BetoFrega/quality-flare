@@ -5,4 +5,6 @@ import { testRuntime } from "./build/test-runtime.ts";
 export default defineConfig({
 	plugins: [testRuntime()],
 	test: { include: ["test/**/*.test.ts"] },
+	// The Worker imports cloudflare:workers (src/shard-tail.ts), which only the Workers runtime has.
+	resolve: { alias: { "cloudflare:workers": new URL("./test/cloudflare-workers.ts", import.meta.url).pathname } },
 });

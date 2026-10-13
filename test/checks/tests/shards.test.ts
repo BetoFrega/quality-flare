@@ -173,7 +173,7 @@ describe.skipIf(inWorkers)("Tests check shards", () => {
 		const { deps, publish } = await setup(1, async () => {
 			throw new TooLarge(100 * 1024 * 1024);
 		});
-		await processShard(shard(["huge.test.ts"]), 1, deps);
+		expect(await processShard(shard(["huge.test.ts"]), 1, deps)).toBe("failed");
 		expect(publish.mock.calls[0][1].files).toEqual([
 			{ path: "huge.test.ts", state: "fail", tests: [], errors: [expect.stringContaining("100 MB")] },
 		]);
@@ -182,11 +182,12 @@ describe.skipIf(inWorkers)("Tests check shards", () => {
 	it("retries a shard that crashed in halves, and gives up on a single file", async () => {
 		const run = vi.fn(async (s: TestShard) => passing(s.files));
 		const { deps, queue, publish } = await setup(1, run);
-		await processShard(shard(["a.test.ts", "b.test.ts"]), 2, deps);
+		// What each attempt did is recorded for the admin's usage view (src/metrics.ts).
+		expect(await processShard(shard(["a.test.ts", "b.test.ts"]), 2, deps)).toBe("split");
 		expect(run).not.toHaveBeenCalled();
 		expect(queue.map((q) => q.shard.files)).toEqual([["a.test.ts"], ["b.test.ts"]]);
-		await processShard(queue[0].shard, 1, deps);
-		await processShard(queue[1].shard, 3, deps);
+		expect(await processShard(queue[0].shard, 1, deps)).toBe("ran");
+		expect(await processShard(queue[1].shard, 3, deps)).toBe("gave-up");
 		expect(publish.mock.calls[0][1].files).toEqual([
 			expect.objectContaining({ path: "a.test.ts", state: "pass" }),
 			{ path: "b.test.ts", state: "fail", tests: [], errors: [expect.stringContaining("memória")] },

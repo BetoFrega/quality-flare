@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { handleAdmin } from "../src/admin/index.ts";
 import type { Check } from "../src/checks/types.ts";
+import type { MetricsStore, Usage } from "../src/metrics.ts";
 import type { RunStore, TestRunDetail } from "../src/runs.ts";
 import { getRepoSettings, setChecksEnabled, setRepoEnabled } from "../src/settings.ts";
 import { fakeKv } from "./fake-kv.ts";
@@ -35,10 +36,31 @@ const runs: RunStore = {
 	get: async (id) => history.find((r) => r.id === id) ?? null,
 };
 
+const usage: Usage = { attempts: 12, retries: 2, crashes: 1, splits: 2, dynamicWorkers: 10, cpuMs: 45_000, wallMs: 600_000 };
+const metrics: MetricsStore = {
+	start: async () => {},
+	finish: async () => {},
+	trace: async () => {},
+	byRun: async (ids) => new Map(ids.filter((id) => id === 2).map((id) => [id, usage])),
+	attempts: async (runId) =>
+		runId === 2
+			? [
+					{ runId, shard: "0", attempt: 1, files: 5, startedAt: NOW - 90_000, finishedAt: null, outcome: null, codeBytes: null, dynamicWorker: true, cpuMs: 900, dwWallMs: 1000, dwOutcome: "exceededMemory" },
+					{ runId, shard: "0", attempt: 2, files: 5, startedAt: NOW - 60_000, finishedAt: NOW - 59_000, outcome: "split", codeBytes: null, dynamicWorker: false, cpuMs: null, dwWallMs: null, dwOutcome: null },
+				]
+			: [],
+	usage: async (by, _since, repo) => [{ period: by === "day" ? "1970-01-01" : "1970-01", repo: repo ?? null, runs: 1, ...usage }],
+};
+
+const account = {
+	days: [{ date: "1970-01-01", dynamicWorkers: 1_500, cpuMs: 2_000_000, requests: 900, errors: 3, accountCpuMs: 2_100_000 }],
+	month: { period: "1970-01", dynamicWorkers: 1_500, cpuMs: 2_000_000, requests: 900, errors: 3, accountCpuMs: 2_100_000 },
+};
+
 function setup() {
 	const env = { ACCESS_AUD: "aud", SETTINGS: fakeKv() } as Env;
 	const callAs = (ctxAccess: CloudflareAccessContext | undefined, req: Request) =>
-		handleAdmin(req, env, ctxAccess, { checks, listRepos: async () => repos, runs: () => runs, now: () => NOW });
+		handleAdmin(req, env, ctxAccess, { checks, listRepos: async () => repos, runs: () => runs, metrics: () => metrics, account: async () => account, now: () => NOW });
 	return { env, callAs, call: (req: Request) => callAs(access, req) };
 }
 
@@ -211,5 +233,53 @@ describe("admin", () => {
 		const page = await res.text();
 		expect(page).toContain('<main data-live="all">');
 		expect(page).toContain('<script src="/admin/live.js" defer></script>');
+	});
+
+	it("shows what each run used and an estimated cost", async () => {
+		const { call } = setup();
+		const list = await (await call(new Request("https://worker.example/admin/runs"))).text();
+		// 10 Dynamic Workers × US$ 0.002 + 45,000 ms of CPU + requests and queue operations
+		expect(list).toContain('<td class="num">10 <span class="failure" title="quedas">1✗</span></td><td class="num">US$ 0.02</td>');
+		const page = await (await call(new Request("https://worker.example/admin/runs/2"))).text();
+		expect(page).toContain("Uso e custo");
+		expect(page).toContain("<dt>Quedas (memória)</dt><dd>1</dd>");
+		expect(page).toContain("Caiu (consumer sem memória?)");
+		expect(page).toContain('<span class="failure">exceededMemory</span>');
+		expect(page).toContain("Dividido (queda antes)");
+	});
+
+	it("leaves the usage out of a run that has none recorded, or when it can't be read", async () => {
+		const { env } = setup();
+		const broken: MetricsStore = { ...metrics, byRun: async () => Promise.reject(new Error("D1 down")) };
+		const res = await handleAdmin(new Request("https://worker.example/admin/runs"), env, access, { checks, runs: () => runs, metrics: () => broken, now: () => NOW });
+		expect(res.status).toBe(200);
+		const { call } = setup();
+		expect(await (await call(new Request("https://worker.example/admin/runs/1"))).text()).not.toContain("Uso e custo");
+	});
+
+	it("totals usage and cost per day and month, per repository", async () => {
+		const { call } = setup();
+		const page = await (await call(new Request("https://worker.example/admin/costs?repo=octo%2Fapp"))).text();
+		expect(page).toContain('<a href="/admin/costs" aria-current="page">Custos</a>');
+		expect(page).toContain('<option value="octo/app" selected>');
+		expect(page).toContain('<td class="mono">1970-01-01</td>');
+		expect(page).toContain("<h3>Testes, mês 1970-01</h3>");
+		// Under the monthly allowances, a month costs nothing.
+		expect(page).toContain("<dt>Após franquia</dt><dd>US$ 0</dd>");
+		// The account's measured usage: 500 Dynamic Workers past the 1,000 included.
+		expect(page).toContain("<dt>Cobrança estimada do mês</dt><dd>US$ 1.00</dd>");
+		expect(page).toContain("<dt>Dynamic Workers</dt><dd>1.500 de 1.000</dd>");
+	});
+
+	it("says why the account's usage is missing", async () => {
+		const { env } = setup();
+		const res = await handleAdmin(new Request("https://worker.example/admin/costs"), env, access, {
+			checks,
+			runs: () => runs,
+			metrics: () => metrics,
+			account: async () => Promise.reject(new Error("GraphQL Analytics: 403")),
+			now: () => NOW,
+		});
+		expect(await res.text()).toContain("Não deu para ler o uso real da conta: GraphQL Analytics: 403");
 	});
 });

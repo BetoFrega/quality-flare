@@ -3,7 +3,10 @@ import type { Check } from "../checks/types.ts";
 import { GitHubClient, type InstalledRepo } from "../github.ts";
 import { getRepoSettings, setChecksEnabled, setRepoEnabled } from "../settings.ts";
 import { hub } from "../live.ts";
+import { accountUsage, type AccountUsage } from "../account-usage.ts";
+import { d1MetricsStore, type MetricsStore, type Usage } from "../metrics.ts";
 import { d1RunStore, type RunStore } from "../runs.ts";
+import { renderCostsPage } from "./costs-page.ts";
 import { LIVE_SCRIPT } from "./live-script.ts";
 import { renderAdminPage, renderMessage, repoQuery, repoSearch } from "./page.ts";
 import { renderRunPage, renderRunsPage, runQuery } from "./runs-page.ts";
@@ -14,6 +17,9 @@ export interface AdminDeps {
 	checks?: Check[];
 	listRepos?: (env: Env) => Promise<InstalledRepo[]>;
 	runs?: (env: Env) => RunStore;
+	metrics?: (env: Env) => MetricsStore;
+	/** The account's real usage, from Cloudflare's analytics. */
+	account?: (env: Env) => Promise<AccountUsage>;
 	now?: () => number;
 }
 
@@ -28,7 +34,14 @@ export async function handleAdmin(
 	request: Request,
 	env: Env,
 	access: CloudflareAccessContext | undefined,
-	{ checks = allChecks, listRepos = listInstalledRepos, runs = (e) => d1RunStore(e.RUNS), now = Date.now }: AdminDeps = {},
+	{
+		checks = allChecks,
+		listRepos = listInstalledRepos,
+		runs = (e) => d1RunStore(e.RUNS),
+		metrics = (e) => d1MetricsStore(e.RUNS),
+		account = async (e) => accountUsage({ token: await e.ANALYTICS_TOKEN.get(), account: e.CLOUDFLARE_ACCOUNT_ID, script: "quality-flare" }),
+		now = Date.now,
+	}: AdminDeps = {},
 ): Promise<Response> {
 	if (!access || access.aud !== env.ACCESS_AUD) {
 		return html(renderMessage("Acesso negado", "Entre pelo Cloudflare Access para usar o admin."), 403);
@@ -61,7 +74,11 @@ export async function handleAdmin(
 		const store = runs(env);
 		const query = runQuery(url.searchParams);
 		const [list, repos] = await Promise.all([store.list(query), store.repos()]);
-		return html(renderRunsPage({ runs: list, repos, query, email: identity?.email, now: now() }));
+		// Usage is extra: the list still shows if it can't be read.
+		const usage = await metrics(env)
+			.byRun(list.map((r) => r.id))
+			.catch(logMetricsError(new Map<number, Usage>()));
+		return html(renderRunsPage({ runs: list, repos, query, usage, email: identity?.email, now: now() }));
 	}
 
 	const runMatch = request.method === "GET" ? new RegExp(`^${ADMIN_PATH}/runs/(\\d+)$`).exec(path) : null;
@@ -69,7 +86,34 @@ export async function handleAdmin(
 		const run = await runs(env).get(Number(runMatch[1]));
 		if (!run) return html(renderMessage("Execução não encontrada", ""), 404);
 		const identity = await access.getIdentity();
-		return html(renderRunPage(run, identity?.email, now()));
+		const store = metrics(env);
+		const [usage, attempts] = await Promise.all([
+			store.byRun([run.id]).then((m) => m.get(run.id)).catch(logMetricsError(undefined)),
+			store.attempts(run.id).catch(logMetricsError([])),
+		]);
+		return html(renderRunPage(run, identity?.email, now(), { usage, attempts }));
+	}
+
+	if (request.method === "GET" && path === `${ADMIN_PATH}/costs`) {
+		const identity = await access.getIdentity();
+		const at = now();
+		const day = 86_400_000;
+		const store = metrics(env);
+		const repos = await runs(env).repos();
+		const repo = repos.find((r) => r === url.searchParams.get("repo"));
+		const monthStart = (back: number) => {
+			const d = new Date(at);
+			return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - back, 1);
+		};
+		const [days, months, real] = await Promise.all([
+			store.usage("day", Math.floor(at / day) * day - 29 * day, repo).catch(logMetricsError([])),
+			store.usage("month", monthStart(11), repo).catch(logMetricsError([])),
+			account(env).catch((error: unknown) => {
+				console.error("quality-flare: could not read the account's usage", error);
+				return error instanceof Error ? error.message : String(error);
+			}),
+		]);
+		return html(renderCostsPage({ days, months, repos, repo, account: real, email: identity?.email }));
 	}
 
 	if (request.method === "POST" && path.startsWith(`${ADMIN_PATH}/`)) {
@@ -104,6 +148,13 @@ export async function handleAdmin(
 	}
 
 	return html(renderMessage("Página não encontrada", ""), 404);
+}
+
+function logMetricsError<T>(fallback: T): (error: unknown) => T {
+	return (error) => {
+		console.error("quality-flare: could not read test usage", error);
+		return fallback;
+	};
 }
 
 const invalid = () => html(renderMessage("Pedido inválido", "Repositório ou check desconhecido."), 400);

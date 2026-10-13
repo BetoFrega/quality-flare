@@ -71,8 +71,8 @@ export default {
 		return new Response(`Running ${plan.checks.length} check(s) on ${plan.pullRequests.length} pull request(s)\n`);
 	},
 	// Shards of Tests runs, enqueued by the Tests check.
-	async queue(batch, env) {
-		await runTestShards(batch, env);
+	async queue(batch, env, ctx) {
+		await runTestShards(batch, env, ctx);
 	},
 	// Fails Tests runs past their deadline (see cloudflare.config.ts triggers).
 	async scheduled(_controller, env) {
@@ -124,3 +124,4 @@ export function planDelivery(event: string | null, payload: WebhookPayload, chec
 	}
 }
 export { RunsHub } from "./live.ts";
+export { ShardTail } from "./shard-tail.ts";
