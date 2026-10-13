@@ -34,7 +34,9 @@ export default defineConfig({
 		exports: {
 			// Relays live test progress to the admin over WebSockets.
 			RunsHub: exports.durableObject({ storage: "sqlite" }),
-			// Runs one Tests run in a container (src/checks/tests/container.ts).
+			// Runs one Container tests run in a container (src/checks/tests/container.ts). Reached through
+			// `exports` from cloudflare:workers, not a binding: a container's Durable Object can't be bound with a
+			// Worker name, which bindings.durableObject always sets.
 			TestBox: exports.durableObject({ storage: "sqlite", container: testBox }),
 		},
 		env: {
@@ -54,8 +56,6 @@ export default defineConfig({
 			RUNS: bindings.d1({ id: "f30a90b8-1c92-44b0-9fe2-dcc87418b046" }),
 			// The RunsHub Durable Object (see exports).
 			LIVE: bindings.durableObject({ worker: "quality-flare", exportName: "RunsHub" }),
-			// The TestBox Durable Object (see exports): one per Tests run on the "Container" runner.
-			TEST_BOX: bindings.durableObject({ worker: "quality-flare", exportName: "TestBox" }),
 			// Loads Dynamic Workers that run each repository's tests (the "Tests" check).
 			LOADER: bindings.workerLoader(),
 			// Shards of Tests runs, consumed by this same Worker (see triggers).

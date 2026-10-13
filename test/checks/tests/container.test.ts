@@ -168,7 +168,9 @@ describe("Container tests", () => {
 			const github = { getFileText: async () => config, startCheckRun } as unknown as GitHubClient;
 			const fetch = vi.fn(async (_url: string, _init: RequestInit) => new Response(null, { status: 204 }));
 			const TEST_BOX = { idFromName: (name: string) => name, get: () => ({ fetch }) };
-			const env = { RUNS, TEST_BOX, PUBLIC_URL: "https://qf.example" } as unknown as Env;
+			const env = { RUNS, PUBLIC_URL: "https://qf.example" } as unknown as Env;
+			// The Worker's own exports, where containerTests finds TestBox (test/cloudflare-workers.ts under Node).
+			(await import("cloudflare:workers")).exports.TestBox = TEST_BOX;
 
 			expect(await containerTests.run({ github, repo: "octo/app", pr, env, installationId: 9 })).toBeNull();
 			const [run] = await d1RunStore(RUNS).list();

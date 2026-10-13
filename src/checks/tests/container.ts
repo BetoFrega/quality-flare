@@ -1,3 +1,4 @@
+import { exports } from "cloudflare:workers";
 import { GitHubClient } from "../../github.ts";
 import { livePublisher } from "../../live.ts";
 import { d1RunStore } from "../../runs.ts";
@@ -103,7 +104,7 @@ export const containerTests: Check = {
 			checkRunId = await github.startCheckRun(repo, sha, NAME, "Rodando os testes num container", detailsUrl);
 			if (config.typecheck) typecheckCheckRunId = await github.startCheckRun(repo, sha, TYPECHECK, "Rodando o typecheck num container", detailsUrl);
 			await d1JobStore(env.RUNS).create(runId, { shards: 1, checkRunId, installationId });
-			await startBox(env, { runId, repo, sha, installationId, checkRunId, typecheckCheckRunId, startedAt: Date.now() }, config);
+			await startBox({ runId, repo, sha, installationId, checkRunId, typecheckCheckRunId, startedAt: Date.now() }, config);
 			live.send({ type: "status", runId, text: "Container: iniciando" });
 			await live.flush();
 			return null;
@@ -119,8 +120,8 @@ export const containerTests: Check = {
 };
 
 /** Starts a run's container, once the run's check runs and job exist. the run's check runs and job exist. */
-export async function startBox(env: Env, job: BoxJob, config: ContainerConfig): Promise<void> {
-	const stub = env.TEST_BOX.get(env.TEST_BOX.idFromName(String(job.runId)));
+export async function startBox(job: BoxJob, config: ContainerConfig, boxes: DurableObjectNamespace = exports.TestBox): Promise<void> {
+	const stub = boxes.get(boxes.idFromName(String(job.runId)));
 	const res = await stub.fetch("https://box/start", { method: "POST", body: JSON.stringify({ job, config }) });
 	if (!res.ok) throw new Error(`O container não iniciou: ${await res.text()}`);
 }
