@@ -18,16 +18,6 @@ export class GitHubClient {
 		return new GitHubClient(res.token);
 	}
 
-	/** A token that can only read `repo`'s contents, for code that runs the repository's own scripts. */
-	static async contentsReadToken(creds: AppCredentials, installationId: number, repo: string): Promise<string> {
-		const jwt = await createAppJwt(creds.appId, creds.privateKey);
-		const res = await request<{ token: string }>(jwt, "POST", `/app/installations/${installationId}/access_tokens`, {
-			repositories: [repo.split("/")[1]],
-			permissions: { contents: "read" },
-		});
-		return res.token;
-	}
-
 	/** Every repository the App is installed on, across all installations, sorted by name. */
 	static async listInstalledRepos(creds: AppCredentials): Promise<InstalledRepo[]> {
 		const jwt = await createAppJwt(creds.appId, creds.privateKey);

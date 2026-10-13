@@ -1,18 +1,8 @@
-import { bindings, defineConfig, defineContainer, exports, triggers } from "cf/config";
+import { bindings, defineConfig, exports, triggers } from "cf/config";
 import type { TestShard } from "./src/checks/tests/jobs.ts";
 import * as entrypoint from "./src/index.ts" with { type: "cf-worker" };
 
-// The Tests check's "Container" runner (src/checks/tests/container.ts): one container per run,
-// started by the TestBox Durable Object, which picks the instance type.
-const testBox = defineContainer({
-	name: "quality-flare-tests",
-	schedulingPolicy: "durable-object",
-	images: { tests: { dockerfile: "./containers/tests/Dockerfile", buildContext: "./containers/tests" } },
-	observability: { enabled: true },
-});
-
 export default defineConfig({
-	containers: [testBox],
 	worker: {
 		name: "quality-flare",
 		compatibilityDate: "2026-10-06",
@@ -34,8 +24,6 @@ export default defineConfig({
 		exports: {
 			// Relays live test progress to the admin over WebSockets.
 			RunsHub: exports.durableObject({ storage: "sqlite" }),
-			// Runs one Tests run in a container (src/checks/tests/container.ts).
-			TestBox: exports.durableObject({ storage: "sqlite", container: testBox }),
 		},
 		env: {
 			// GitHub App ID (or Client ID), used as the JWT issuer.
@@ -54,8 +42,6 @@ export default defineConfig({
 			RUNS: bindings.d1({ id: "f30a90b8-1c92-44b0-9fe2-dcc87418b046" }),
 			// The RunsHub Durable Object (see exports).
 			LIVE: bindings.durableObject({ worker: "quality-flare", exportName: "RunsHub" }),
-			// The TestBox Durable Object (see exports): one per Tests run on the "Container" runner.
-			TEST_BOX: bindings.durableObject({ worker: "quality-flare", exportName: "TestBox" }),
 			// Loads Dynamic Workers that run each repository's tests (the "Tests" check).
 			LOADER: bindings.workerLoader(),
 			// Shards of Tests runs, consumed by this same Worker (see triggers).

@@ -4,7 +4,6 @@ import { GitHubClient, type InstalledRepo } from "../github.ts";
 import { getRepoSettings, setChecksEnabled, setRepoEnabled } from "../settings.ts";
 import { hub } from "../live.ts";
 import { accountUsage, type AccountUsage } from "../account-usage.ts";
-import { containerUsage } from "../checks/tests/container.ts";
 import { d1MetricsStore, type MetricsStore, type Usage } from "../metrics.ts";
 import { d1RunStore, type RunStore } from "../runs.ts";
 import { renderCostsPage } from "./costs-page.ts";
@@ -88,12 +87,11 @@ export async function handleAdmin(
 		if (!run) return html(renderMessage("Execução não encontrada", ""), 404);
 		const identity = await access.getIdentity();
 		const store = metrics(env);
-		const [usage, attempts, container] = await Promise.all([
+		const [usage, attempts] = await Promise.all([
 			store.byRun([run.id]).then((m) => m.get(run.id)).catch(logMetricsError(undefined)),
 			store.attempts(run.id).catch(logMetricsError([])),
-			containerUsage(env.RUNS, run.id).catch(logMetricsError(undefined)),
 		]);
-		return html(renderRunPage(run, identity?.email, now(), { usage, attempts, container }));
+		return html(renderRunPage(run, identity?.email, now(), { usage, attempts }));
 	}
 
 	if (request.method === "GET" && path === `${ADMIN_PATH}/costs`) {

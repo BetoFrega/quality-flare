@@ -25,7 +25,7 @@ const PACKAGE_FILE = /\.(c|m)?js$|\.json$|\.css$/;
 const COMPATIBILITY_DATE = "2026-10-06";
 
 /** Code only changes on these; label and description edits don't need a new test run. */
-export const CODE_ACTIONS = new Set(["opened", "reopened", "synchronize", "ready_for_review"]);
+const CODE_ACTIONS = new Set(["opened", "reopened", "synchronize", "ready_for_review"]);
 
 /**
  * A shard's limits. Each Dynamic Worker is billed, so a run packs its files into as few shards as
@@ -355,7 +355,7 @@ const CANCELLED: CheckResult = {
 };
 
 /** Completes the given runs as cancelled, in the history and on GitHub, and stops their shards. */
-export async function cancelRuns(
+async function cancelRuns(
 	github: GitHubClient,
 	repo: string,
 	runIds: number[],
@@ -370,7 +370,7 @@ export async function cancelRuns(
 	}
 }
 
-export async function finishRun(
+async function finishRun(
 	runs: ReturnType<typeof d1RunStore>,
 	live: ReturnType<typeof livePublisher>,
 	runId: number,
@@ -395,7 +395,7 @@ function chunk<T>(items: T[], size: number): T[][] {
 
 const count = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-export function cannotRun(error: unknown): CheckResult {
+function cannotRun(error: unknown): CheckResult {
 	return {
 		conclusion: "failure",
 		title: "Não foi possível rodar os testes",

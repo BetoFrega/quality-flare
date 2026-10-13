@@ -58,42 +58,6 @@ export function readTestConfig(source: string | undefined): TestConfig {
 	return tests;
 }
 
-/**
- * The `container` section of quality-flare.json, for repositories whose Tests run in a container
- * (the runner is chosen per repository in the admin). There the repository's own vitest and
- * config run, so the `tests` section doesn't apply.
- *
- * { "container": { "vitestArgs": ["--config", "vitest.unit.config.mts"], "typecheck": "npm run typecheck" } }
- */
-export interface ContainerConfig {
-	/** Shell command that installs dependencies; by default the lockfile's package manager, without install scripts. */
-	install?: string;
-	/** Arguments to `vitest run`, before the reporters quality-flare adds. */
-	vitestArgs?: string[];
-	/** Shell command reported as the "Typecheck" check; no Typecheck check without it. */
-	typecheck?: string;
-}
-
-/** The `container` section of quality-flare.json; empty when the file is missing. Throws when it is invalid. */
-export function readContainerConfig(source: string | undefined): ContainerConfig {
-	if (source === undefined) return {};
-	let json: { container?: ContainerConfig };
-	try {
-		json = JSON.parse(source);
-	} catch (error) {
-		throw new Error(`${CONFIG_FILE} não é um JSON válido: ${error instanceof Error ? error.message : String(error)}`);
-	}
-	const container = json.container ?? {};
-	for (const key of ["install", "typecheck"] as const) {
-		if (container[key] !== undefined && typeof container[key] !== "string") throw new Error(`${CONFIG_FILE}: "container.${key}" deve ser um texto.`);
-	}
-	const args = container.vitestArgs;
-	if (args !== undefined && !(Array.isArray(args) && args.every((a) => typeof a === "string" && !a.includes("\n")))) {
-		throw new Error(`${CONFIG_FILE}: "container.vitestArgs" deve ser uma lista de textos.`);
-	}
-	return container;
-}
-
 /** Test files picked by the config's include/exclude, or by `convention` when it has no include. */
 export function selectTestFiles(paths: string[], config: TestConfig, convention: (path: string) => boolean): string[] {
 	const include = config.include?.map(globToRegExp);
