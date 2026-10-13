@@ -1,5 +1,5 @@
 import type { CheckResult } from "./checks/types.ts";
-import type { PullRequest } from "./github.ts";
+import type { GitHubClient, PullRequest } from "./github.ts";
 
 /**
  * Tests on demand: with the repository's `onDemand` setting on, the checks marked `onDemand`
@@ -43,3 +43,26 @@ export const WAITING_RESULT: CheckResult = {
 			"cada push volta a esperar e cada execução custa dinheiro.",
 	].join("\n"),
 };
+
+/** Marks the comment that explains the waiting checks, so each PR gets it once. */
+export const EXPLAIN_MARKER = "<!-- quality-flare:on-demand -->";
+
+/**
+ * Keeps one comment on a PR saying that its test checks wait for a run command, updated rather
+ * than repeated. Agents that follow a PR see a queued check only as "pending", so without it they
+ * wait for a run that never starts. Drafts get it when they become ready for review.
+ */
+export async function explainWaiting(github: GitHubClient, repo: string, pr: number, checks: string[]): Promise<void> {
+	const body = [
+		EXPLAIN_MARKER,
+		`**${checks.join(", ")}** ${checks.length === 1 ? "está" : "estão"} esperando \`${RUN_COMMAND}\` e não ${checks.length === 1 ? "roda" : "rodam"} sozinho${checks.length === 1 ? "" : "s"}.`,
+		"",
+		"Rode os testes localmente enquanto trabalha. Quando a PR estiver pronta para o merge " +
+			`(reviews corrigidas, nada mais a enviar), comente \`${RUN_COMMAND}\` como primeira linha de um comentário. ` +
+			"Isso testa o commit atual uma vez; cada push novo volta a esperar outro comentário, então não faça mais push " +
+			"depois que a suíte ficar verde.",
+	].join("\n");
+	const existing = (await github.listPullRequestComments(repo, pr)).find((c) => c.body?.includes(EXPLAIN_MARKER));
+	if (!existing) await github.commentOnPullRequest(repo, pr, body);
+	else if (existing.body !== body) await github.editComment(repo, existing.id, body);
+}

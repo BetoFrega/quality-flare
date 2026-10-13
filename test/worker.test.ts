@@ -29,9 +29,16 @@ function delivery(event: string, payload: object, secret = env.GITHUB_WEBHOOK_SE
 }
 
 /** Fakes the GitHub API and records the check runs created. */
-function mockGitHub({ linked = [] as { number: number; repository: { nameWithOwner: string } }[], fetchedPr = pr, existingRuns = [] as string[] } = {}) {
+function mockGitHub({
+	linked = [] as { number: number; repository: { nameWithOwner: string } }[],
+	fetchedPr = pr,
+	existingRuns = [] as string[],
+	existingComments = [] as { id?: number; body: string }[],
+} = {}) {
 	const checkRuns: Record<string, unknown>[] = [];
 	const reactions: Record<string, unknown>[] = [];
+	const comments: { body: string }[] = [];
+	const edits: { id: string; body: string }[] = [];
 	const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
 		const path = new URL(url).pathname;
 		if (path === "/app/installations/99/access_tokens") return Response.json({ token: "inst-token" });
@@ -39,6 +46,16 @@ function mockGitHub({ linked = [] as { number: number; repository: { nameWithOwn
 		if (path === "/graphql")
 			return Response.json({ data: { repository: { pullRequest: { closingIssuesReferences: { nodes: linked } } } } });
 		if (path === "/repos/octo/repo/pulls/7") return Response.json(fetchedPr);
+		if (path === "/repos/octo/repo/issues/7/comments") {
+			if (init.method === "GET") return Response.json(existingComments);
+			comments.push(JSON.parse(init.body as string));
+			return Response.json({ id: 2 }, { status: 201 });
+		}
+		const edit = path.match(/^\/repos\/octo\/repo\/issues\/comments\/(\d+)$/);
+		if (edit && init.method === "PATCH") {
+			edits.push({ id: edit[1], ...JSON.parse(init.body as string) });
+			return Response.json({ id: Number(edit[1]) });
+		}
 		if (path === "/repos/octo/repo/issues/comments/5/reactions") {
 			reactions.push(JSON.parse(init.body as string));
 			return Response.json({ id: 1 }, { status: 201 });
@@ -55,7 +72,7 @@ function mockGitHub({ linked = [] as { number: number; repository: { nameWithOwn
 		return new Response("not found", { status: 404 });
 	});
 	vi.stubGlobal("fetch", fetchMock);
-	return { checkRuns, reactions, fetchMock };
+	return { checkRuns, reactions, comments, edits, fetchMock };
 }
 
 /** Runs a request and waits for the work it left in ctx.waitUntil. */
@@ -181,6 +198,36 @@ describe("tests on demand", () => {
 			}),
 		]);
 		expect(checkRuns[0]).not.toHaveProperty("conclusion");
+	});
+
+	it("comments once on a ready PR that its checks wait for a run command", async () => {
+		const first = mockGitHub();
+		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), env);
+		expect(first.comments).toEqual([{ body: expect.stringContaining("**Tests** está esperando `/quality-flare run`") }]);
+		expect(first.comments[0].body).toContain("pronta para o merge");
+
+		const again = mockGitHub({ existingComments: [{ id: 3, ...first.comments[0] }] });
+		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), env);
+		expect(again.comments).toEqual([]);
+		expect(again.edits).toEqual([]);
+
+		const container = { ...tests, id: "container-tests", name: "Container tests" };
+		const both = { enabled: true, enabledChecks: new Set(["tests", "container-tests"]), onDemand: true };
+		const changed = mockGitHub({ existingComments: [{ id: 3, ...first.comments[0] }] });
+		await runPlan({ pullRequests: [pr], checks: [tests, container] }, "octo/repo", 99, both, env);
+		expect(changed.comments).toEqual([]);
+		expect(changed.edits).toEqual([{ id: "3", body: expect.stringContaining("**Tests, Container tests** estão esperando") }]);
+
+		const draft = mockGitHub();
+		await runPlan({ pullRequests: [{ ...pr, draft: true }], checks: [tests] }, "octo/repo", 99, settings(true), env);
+		expect(draft.comments).toEqual([]);
+	});
+
+	it("comments when a draft with a queued check becomes ready for review", async () => {
+		const { checkRuns, comments } = mockGitHub({ existingRuns: ["Tests"] });
+		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), env);
+		expect(checkRuns).toEqual([]);
+		expect(comments).toHaveLength(1);
 	});
 
 	it("keeps the run a commit already has when the PR leaves draft or reopens", async () => {

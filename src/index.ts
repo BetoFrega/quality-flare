@@ -4,7 +4,7 @@ import { runTestShards, sweepOverdueRuns } from "./checks/tests/index.ts";
 import type { TestShard } from "./checks/tests/jobs.ts";
 import type { Check, CheckResult } from "./checks/types.ts";
 import { verifySignature } from "./crypto.ts";
-import { isRunCommand, type PullRequestComment, runsOnPush, WAITING_RESULT } from "./on-demand.ts";
+import { explainWaiting, isRunCommand, type PullRequestComment, runsOnPush, WAITING_RESULT } from "./on-demand.ts";
 import { GitHubClient, type PullRequest } from "./github.ts";
 import { getRepoSettings, type RepoSettings } from "./settings.ts";
 
@@ -98,15 +98,23 @@ export async function runPlan(plan: Plan, repo: string, installationId: number, 
 	for (const target of plan.pullRequests) {
 		// Re-run requests only carry the PR number; fetch it so labels and body are current.
 		const pr = typeof target === "number" ? await github.getPullRequest(repo, target) : target;
+		const waiting: string[] = [];
 		for (const check of checks) {
 			let result: CheckResult | null;
 			if (!settings.enabledChecks.has(check.id)) result = DISABLED_RESULT;
 			else if (check.onDemand && !plan.command && !plan.rerun && !runsOnPush(settings.onDemand, pr)) {
 				// A commit keeps the run it has: leaving draft or reopening on the same head must not queue a passed run again.
 				result = (await hasRun(github, repo, pr.head.sha, check.name, env.GITHUB_APP_ID)) ? null : WAITING_RESULT;
+				waiting.push(check.name);
 			}
 			else result = await check.run({ github, repo, pr, env, installationId });
 			if (result) await github.createCheckRun(repo, pr.head.sha, check.name, result);
+		}
+		// Agents watching a PR see a queued check as "pending", not its text; a comment reaches them.
+		if (waiting.length && !pr.draft) {
+			await explainWaiting(github, repo, pr.number, waiting).catch((error: unknown) => {
+				console.error("quality-flare: could not explain the waiting checks", error);
+			});
 		}
 	}
 }
