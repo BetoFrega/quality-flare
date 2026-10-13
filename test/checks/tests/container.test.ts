@@ -19,6 +19,9 @@ import type { GitHubClient, PullRequest } from "../../../src/github.ts";
 import { d1RunStore } from "../../../src/runs.ts";
 import { fakeD1 } from "../../fake-d1.ts";
 
+// fakeD1 needs Node's sqlite, which the Workers runtime (quality-flare's own Tests check) doesn't have.
+const inWorkers = globalThis.navigator?.userAgent === "Cloudflare-Workers";
+
 const pr = { number: 7, head: { sha: "abc" } } as PullRequest;
 
 /** vitest's JSON reporter, trimmed to what quality-flare reads. */
@@ -157,34 +160,36 @@ describe("Container tests", () => {
 		expect(boxCost({ wallMs: 225_000, cpuUs: 635_000_000 })).toBeCloseTo(0.0198, 3);
 	});
 
-	it("starts the check runs, the job and the container", async () => {
-		const RUNS = await fakeD1();
-		const startCheckRun = vi.fn(async (_repo: string, _sha: string, name: string) => (name === "Typecheck" ? 56 : 55));
-		const config = JSON.stringify({ container: { typecheck: "npm run typecheck" } });
-		const github = { getFileText: async () => config, startCheckRun } as unknown as GitHubClient;
-		const fetch = vi.fn(async (_url: string, _init: RequestInit) => new Response(null, { status: 204 }));
-		const TEST_BOX = { idFromName: (name: string) => name, get: () => ({ fetch }) };
-		const env = { RUNS, TEST_BOX, PUBLIC_URL: "https://qf.example" } as unknown as Env;
+	describe.skipIf(inWorkers)("with D1", () => {
+		it("starts the check runs, the job and the container", async () => {
+			const RUNS = await fakeD1();
+			const startCheckRun = vi.fn(async (_repo: string, _sha: string, name: string) => (name === "Typecheck" ? 56 : 55));
+			const config = JSON.stringify({ container: { typecheck: "npm run typecheck" } });
+			const github = { getFileText: async () => config, startCheckRun } as unknown as GitHubClient;
+			const fetch = vi.fn(async (_url: string, _init: RequestInit) => new Response(null, { status: 204 }));
+			const TEST_BOX = { idFromName: (name: string) => name, get: () => ({ fetch }) };
+			const env = { RUNS, TEST_BOX, PUBLIC_URL: "https://qf.example" } as unknown as Env;
 
-		expect(await containerTests.run({ github, repo: "octo/app", pr, env, installationId: 9 })).toBeNull();
-		const [run] = await d1RunStore(RUNS).list();
-		expect(startCheckRun).toHaveBeenCalledWith("octo/app", "abc", "Container tests", "Rodando os testes num container", `https://qf.example/admin/runs/${run.id}`);
-		expect(startCheckRun).toHaveBeenCalledWith("octo/app", "abc", "Typecheck", "Rodando o typecheck num container", `https://qf.example/admin/runs/${run.id}`);
-		expect(await d1JobStore(RUNS).get(run.id)).toMatchObject({ checkRunId: 55, installationId: 9 });
-		const body = JSON.parse(String(fetch.mock.calls[0][1].body));
-		expect(body).toMatchObject({ job: { runId: run.id, checkRunId: 55, typecheckCheckRunId: 56 }, config: { typecheck: "npm run typecheck" } });
-	});
+			expect(await containerTests.run({ github, repo: "octo/app", pr, env, installationId: 9 })).toBeNull();
+			const [run] = await d1RunStore(RUNS).list();
+			expect(startCheckRun).toHaveBeenCalledWith("octo/app", "abc", "Container tests", "Rodando os testes num container", `https://qf.example/admin/runs/${run.id}`);
+			expect(startCheckRun).toHaveBeenCalledWith("octo/app", "abc", "Typecheck", "Rodando o typecheck num container", `https://qf.example/admin/runs/${run.id}`);
+			expect(await d1JobStore(RUNS).get(run.id)).toMatchObject({ checkRunId: 55, installationId: 9 });
+			const body = JSON.parse(String(fetch.mock.calls[0][1].body));
+			expect(body).toMatchObject({ job: { runId: run.id, checkRunId: 55, typecheckCheckRunId: 56 }, config: { typecheck: "npm run typecheck" } });
+		});
 
-	it("doesn't cancel the PR's Tests run, nor does a Tests run cancel it", async () => {
-		const RUNS = await fakeD1();
-		const runs = d1RunStore(RUNS);
-		const workers = await runs.start({ repo: "octo/app", pr: 7, sha: "a" });
-		const container = await runs.start({ repo: "octo/app", pr: 7, sha: "a", container: true });
-		const newerWorkers = await runs.start({ repo: "octo/app", pr: 7, sha: "b" });
-		const newerContainer = await runs.start({ repo: "octo/app", pr: 7, sha: "b", container: true });
-		expect(await runs.running("octo/app", 7, newerWorkers)).toEqual([workers]);
-		expect(await runs.running("octo/app", 7, newerContainer)).toEqual([container]);
-		// The Tests check itself is unchanged.
-		expect(tests.id).toBe("tests");
+		it("doesn't cancel the PR's Tests run, nor does a Tests run cancel it", async () => {
+			const RUNS = await fakeD1();
+			const runs = d1RunStore(RUNS);
+			const workers = await runs.start({ repo: "octo/app", pr: 7, sha: "a" });
+			const container = await runs.start({ repo: "octo/app", pr: 7, sha: "a", container: true });
+			const newerWorkers = await runs.start({ repo: "octo/app", pr: 7, sha: "b" });
+			const newerContainer = await runs.start({ repo: "octo/app", pr: 7, sha: "b", container: true });
+			expect(await runs.running("octo/app", 7, newerWorkers)).toEqual([workers]);
+			expect(await runs.running("octo/app", 7, newerContainer)).toEqual([container]);
+			// The Tests check itself is unchanged.
+			expect(tests.id).toBe("tests");
+		});
 	});
 });
