@@ -74,7 +74,7 @@ export function evaluate(activity: ReviewActivity): CheckResult {
 	}
 	if (isReviewing(activity)) {
 		return {
-			conclusion: "failure",
+			conclusion: "pending",
 			title: "O Codex está revisando a PR",
 			summary: "Espere a review do Codex terminar. O check reavalia sozinho quando ela chegar.",
 		};

@@ -167,11 +167,12 @@ export class GitHubClient {
 	}
 
 	createCheckRun(repo: string, headSha: string, name: string, result: CheckResult): Promise<unknown> {
+		const pending = result.conclusion === "pending";
 		return request(this.token, "POST", `/repos/${repo}/check-runs`, {
 			name,
 			head_sha: headSha,
-			status: "completed",
-			conclusion: result.conclusion,
+			status: pending ? "in_progress" : "completed",
+			conclusion: pending ? undefined : result.conclusion,
 			output: { title: result.title, summary: result.summary },
 		});
 	}
