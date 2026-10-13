@@ -22,7 +22,7 @@ import { fakeD1 } from "../../fake-d1.ts";
 // fakeD1 needs Node's sqlite, which the Workers runtime (quality-flare's own Tests check) doesn't have.
 const inWorkers = globalThis.navigator?.userAgent === "Cloudflare-Workers";
 
-const pr = { number: 7, head: { sha: "abc" } } as PullRequest;
+const pr = { number: 7, head: { sha: "abc" }, base: { ref: "main" } } as PullRequest;
 
 /** vitest's JSON reporter, trimmed to what quality-flare reads. */
 const REPORT = JSON.stringify({
@@ -62,27 +62,34 @@ describe("Container tests", () => {
 		expect(parseVitestReport("not json")).toBeUndefined();
 	});
 
-	it("fails with the install log when dependencies don't install, and leaves Typecheck neutral", () => {
-		const results = boxResults(output("clone 0 900\ninstall 1 30000\n", { logs: { install: "npm ERR! missing lockfile" } }));
+	const commands = [{ name: "Typecheck" }, { name: "Lint" }];
+
+	it("fails with the install log when dependencies don't install, and runs no command", () => {
+		const results = boxResults(output("clone 0 900\ninstall 1 30000\n", { logs: { install: "npm ERR! missing lockfile" } }), commands);
 		expect(results.tests).toMatchObject({ conclusion: "failure", title: "A instalação das dependências falhou (código de saída 1)" });
 		expect(results.tests.summary).toContain("npm ERR! missing lockfile");
-		expect(results.typecheck).toMatchObject({ conclusion: "neutral" });
+		expect(results.commands).toEqual([]);
 	});
 
-	it("reports the tests and the typecheck separately", () => {
+	it("reports the tests and each command separately", () => {
 		const results = boxResults(
-			output("clone 0 900\ninstall 0 40000\ntests 1 140000\ntypecheck 2 28000\n", { report: REPORT, logs: { typecheck: "src/x.ts(1,1): error TS2322" } }),
+			output("clone 0 900\ninstall 0 40000\ntests 1 140000\ncommand1 2 28000\ncommand2 0 121000\n", {
+				report: REPORT,
+				logs: { command1: "src/x.ts(1,1): error TS2322" },
+			}),
+			commands,
 		);
 		expect(results.tests).toMatchObject({ conclusion: "failure", title: "2 falhas em 3 testes" });
-		expect(results.typecheck).toMatchObject({ conclusion: "failure", title: "Typecheck falhou" });
-		expect(results.typecheck?.summary).toContain("error TS2322");
+		expect(results.commands[0]).toMatchObject({ conclusion: "failure", title: "Typecheck falhou" });
+		expect(results.commands[0]?.summary).toContain("error TS2322");
+		expect(results.commands[1]).toMatchObject({ conclusion: "success", title: "Lint passou", summary: "Sem erros, em 121 s." });
 	});
 
-	it("passes when every test passes, and has no Typecheck result without a typecheck step", () => {
+	it("passes when every test passes, and leaves out a command that didn't run", () => {
 		const report = JSON.stringify({ testResults: [{ name: "/work/repo/a.test.ts", status: "passed", assertionResults: [{ title: "ok", status: "passed" }] }] });
-		const results = boxResults(output("clone 0 1\ninstall 0 1\ntests 0 1\n", { report }));
+		const results = boxResults(output("clone 0 1\ninstall 0 1\ntests 0 1\ncommand1 124 1200000\n", { report }), commands);
 		expect(results.tests).toMatchObject({ conclusion: "success", title: "1 teste passaram" });
-		expect(results.typecheck).toBeUndefined();
+		expect(results.commands).toEqual([expect.objectContaining({ title: "Typecheck falhou", summary: "Typecheck passou do limite de 20 minutos." }), undefined]);
 	});
 
 	it("fails with the log when the tests time out", () => {
@@ -91,7 +98,7 @@ describe("Container tests", () => {
 	});
 
 	describe("TestBox polling", () => {
-		const job: BoxJob = { runId: 1, repo: "octo/app", sha: "abc", installationId: 9, checkRunId: 55, typecheckCheckRunId: 56, startedAt: 0 };
+		const job: BoxJob = { runId: 1, repo: "octo/app", sha: "abc", base: "main", installationId: 9, checkRunId: 55, commands: [{ name: "Lint", checkRunId: 56 }], startedAt: 0 };
 		function deps(files: Record<string, string>, { now = 60_000, running = true, job: open = true } = {}) {
 			const d = {
 				now: () => now,
@@ -111,11 +118,18 @@ describe("Container tests", () => {
 			expect(d.status).toHaveBeenCalledWith("Container: instalando as dependências");
 		});
 
+		it("names the command running", async () => {
+			const d = deps({ current: "command1\n" });
+			await pollBox(job, d);
+			expect(d.status).toHaveBeenCalledWith("Container: rodando Lint");
+		});
+
 		it("publishes once the container is done, with its usage", async () => {
-			const d = deps({ done: "done\n", steps: "clone 0 1\ninstall 0 1\ntests 1 1\n", "report.json": REPORT, cpu: "635000000\n" });
+			const d = deps({ done: "done\n", steps: "clone 0 1\ninstall 0 1\ntests 1 1\ncommand1 1 1\n", "report.json": REPORT, "command1.log": "lint error", cpu: "635000000\n" });
 			expect(await pollBox(job, d)).toBe("done");
 			const [results, report, usage] = d.publish.mock.calls[0];
 			expect(results.tests.conclusion).toBe("failure");
+			expect(results.commands[0]?.summary).toContain("lint error");
 			expect(report?.files).toHaveLength(2);
 			expect(usage).toEqual({ wallMs: 60_000, cpuUs: 635_000_000 });
 		});
@@ -137,22 +151,33 @@ describe("Container tests", () => {
 		});
 	});
 
-	it("passes its config to the container, one vitest argument per line", () => {
-		expect(boxEnv({ repo: "octo/app", sha: "abc" }, { vitestArgs: ["--config", "vitest.unit.config.mts"], typecheck: "npm run typecheck" }, "t")).toEqual({
+	it("passes its config to the container, one vitest argument per line and the typecheck first", () => {
+		const config = { vitestArgs: ["--config", "vitest.unit.config.mts"], typecheck: "npm run typecheck", commands: { Lint: "npm run lint" } };
+		expect(boxEnv({ repo: "octo/app", sha: "abc", base: "main" }, config, "t")).toEqual({
 			REPO: "octo/app",
 			SHA: "abc",
+			BASE: "main",
 			TOKEN: "t",
 			VITEST_ARGS: "--config\nvitest.unit.config.mts",
-			TYPECHECK: "npm run typecheck",
+			COMMANDS: "2",
+			COMMAND_1: "npm run typecheck",
+			COMMAND_2: "npm run lint",
 		});
 	});
 
 	it("reads the container section of quality-flare.json apart from the tests section", () => {
-		const json = JSON.stringify({ tests: { include: ["src/**/*.test.ts"] }, container: { vitestArgs: ["--project", "node"], typecheck: "tsc" } });
-		expect(readContainerConfig(json)).toEqual({ vitestArgs: ["--project", "node"], typecheck: "tsc" });
+		const container = { vitestArgs: ["--project", "node"], typecheck: "tsc", commands: { Lint: "eslint .", "Web Workers": "turbo run test" } };
+		const json = JSON.stringify({ tests: { include: ["src/**/*.test.ts"] }, container });
+		expect(readContainerConfig(json)).toEqual(container);
 		expect(readContainerConfig(undefined)).toEqual({});
-		expect(() => readContainerConfig(JSON.stringify({ container: { vitestArgs: "--project node" } }))).toThrow(/vitestArgs/);
-		expect(() => readContainerConfig(JSON.stringify({ container: { typecheck: true } }))).toThrow(/typecheck/);
+		const invalid = (container: unknown) => () => readContainerConfig(JSON.stringify({ container }));
+		expect(invalid({ vitestArgs: "--project node" })).toThrow(/vitestArgs/);
+		expect(invalid({ typecheck: true })).toThrow(/typecheck/);
+		expect(invalid({ commands: ["npm run lint"] })).toThrow(/"container.commands" deve ligar/);
+		expect(invalid({ commands: { Lint: 1 } })).toThrow(/"container.commands" deve ligar/);
+		expect(invalid({ commands: { " ": "x" } })).toThrow(/não serve de nome/);
+		expect(invalid({ typecheck: "tsc", commands: { typecheck: "tsc" } })).toThrow(/não repita/);
+		expect(invalid({ commands: Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`c${i}`, "x"])) })).toThrow(/até 8/);
 	});
 
 	it("estimates about two cents for the run measured on macae", () => {
@@ -163,8 +188,9 @@ describe("Container tests", () => {
 	describe.skipIf(inWorkers)("with D1", () => {
 		it("starts the check runs, the job and the container", async () => {
 			const RUNS = await fakeD1();
-			const startCheckRun = vi.fn(async (_repo: string, _sha: string, name: string) => (name === "Typecheck" ? 56 : 55));
-			const config = JSON.stringify({ container: { typecheck: "npm run typecheck" } });
+			const ids: Record<string, number> = { "Container tests": 55, Typecheck: 56, Lint: 57 };
+			const startCheckRun = vi.fn(async (_repo: string, _sha: string, name: string) => ids[name]);
+			const config = JSON.stringify({ container: { typecheck: "npm run typecheck", commands: { Lint: "npm run lint" } } });
 			const github = { getFileText: async () => config, startCheckRun } as unknown as GitHubClient;
 			const fetch = vi.fn(async (_url: string, _init: RequestInit) => new Response(null, { status: 204 }));
 			const TEST_BOX = { idFromName: (name: string) => name, get: () => ({ fetch }) };
@@ -175,10 +201,18 @@ describe("Container tests", () => {
 			expect(await containerTests.run({ github, repo: "octo/app", pr, env, installationId: 9 })).toBeNull();
 			const [run] = await d1RunStore(RUNS).list();
 			expect(startCheckRun).toHaveBeenCalledWith("octo/app", "abc", "Container tests", "Rodando os testes num container", `https://qf.example/admin/runs/${run.id}`);
-			expect(startCheckRun).toHaveBeenCalledWith("octo/app", "abc", "Typecheck", "Rodando o typecheck num container", `https://qf.example/admin/runs/${run.id}`);
+			expect(startCheckRun).toHaveBeenCalledWith("octo/app", "abc", "Lint", "Esperando os testes, no mesmo container", `https://qf.example/admin/runs/${run.id}`);
 			expect(await d1JobStore(RUNS).get(run.id)).toMatchObject({ checkRunId: 55, installationId: 9 });
 			const body = JSON.parse(String(fetch.mock.calls[0][1].body));
-			expect(body).toMatchObject({ job: { runId: run.id, checkRunId: 55, typecheckCheckRunId: 56 }, config: { typecheck: "npm run typecheck" } });
+			expect(body.job).toMatchObject({
+				runId: run.id,
+				base: "main",
+				checkRunId: 55,
+				commands: [
+					{ name: "Typecheck", checkRunId: 56 },
+					{ name: "Lint", checkRunId: 57 },
+				],
+			});
 		});
 
 		it("doesn't cancel the PR's Tests run, nor does a Tests run cancel it", async () => {

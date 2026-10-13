@@ -59,20 +59,31 @@ export function readTestConfig(source: string | undefined): TestConfig {
 }
 
 /**
- * The `container` section of quality-flare.json, for repositories whose Tests run in a container
- * (the runner is chosen per repository in the admin). There the repository's own vitest and
- * config run, so the `tests` section doesn't apply.
+ * The `container` section of quality-flare.json, for the "Container tests" check. There the
+ * repository's own vitest and config run, so the `tests` section doesn't apply.
  *
- * { "container": { "vitestArgs": ["--config", "vitest.unit.config.mts"], "typecheck": "npm run typecheck" } }
+ * { "container": { "vitestArgs": ["--config", "vitest.unit.config.mts"],
+ *   "commands": { "Typecheck": "npm run typecheck", "Lint": "npm run lint" } } }
  */
 export interface ContainerConfig {
 	/** Shell command that installs dependencies; by default the lockfile's package manager, without install scripts. */
 	install?: string;
 	/** Arguments to `vitest run`, before the reporters quality-flare adds. */
 	vitestArgs?: string[];
-	/** Shell command reported as the "Typecheck" check; no Typecheck check without it. */
+	/** Shell commands run after the tests, in order, each reported as the check run named by its key. */
+	commands?: Record<string, string>;
+	/** Shorthand for a "Typecheck" command, run before the others. */
 	typecheck?: string;
 }
+
+/** A command of the container section, and the check run it reports as. */
+export interface ContainerCommand {
+	name: string;
+	run: string;
+}
+
+/** More commands than this make a run too long for its deadline anyway. */
+export const MAX_COMMANDS = 8;
 
 /** The `container` section of quality-flare.json; empty when the file is missing. Throws when it is invalid. */
 export function readContainerConfig(source: string | undefined): ContainerConfig {
@@ -91,7 +102,29 @@ export function readContainerConfig(source: string | undefined): ContainerConfig
 	if (args !== undefined && !(Array.isArray(args) && args.every((a) => typeof a === "string" && !a.includes("\n")))) {
 		throw new Error(`${CONFIG_FILE}: "container.vitestArgs" deve ser uma lista de textos.`);
 	}
+	const commands = container.commands;
+	if (commands !== undefined) {
+		if (typeof commands !== "object" || commands === null || Array.isArray(commands) || !Object.values(commands).every((c) => typeof c === "string")) {
+			throw new Error(`${CONFIG_FILE}: "container.commands" deve ligar o nome de cada check run ao seu comando, como { "Lint": "npm run lint" }.`);
+		}
+		for (const name of Object.keys(commands)) {
+			if (!name.trim() || name.length > 60 || name.includes("\n")) throw new Error(`${CONFIG_FILE}: "${name}" não serve de nome de check run em "container.commands".`);
+		}
+	}
+	const all = containerCommands(container);
+	if (new Set(all.map((c) => c.name.toLowerCase())).size < all.length) {
+		throw new Error(`${CONFIG_FILE}: "container.typecheck" já é o comando "Typecheck"; não repita esse nome em "container.commands".`);
+	}
+	if (all.length > MAX_COMMANDS) throw new Error(`${CONFIG_FILE}: "container.commands" aceita até ${MAX_COMMANDS} comandos.`);
 	return container;
+}
+
+/** The commands a container run reports on, in the order it runs them. */
+export function containerCommands(config: ContainerConfig): ContainerCommand[] {
+	return [
+		...(config.typecheck ? [{ name: "Typecheck", run: config.typecheck }] : []),
+		...Object.entries(config.commands ?? {}).map(([name, run]) => ({ name, run })),
+	];
 }
 
 /** Test files picked by the config's include/exclude, or by `convention` when it has no include. */
