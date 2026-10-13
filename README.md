@@ -19,6 +19,7 @@ Para adicionar um check, implemente a interface `Check` de [`src/checks/types.ts
 
 - ✅ Passa se a PR fecha pelo menos uma issue: palavra-chave na descrição (`Closes #12`, `fixes owner/repo#3`, `Resolves https://github.com/o/r/issues/7`) ou issue vinculada na seção **Development** da barra lateral.
 - ✅ Passa se a PR tem a label `no-issue`.
+- ⏭️ Pula (conta como aprovado) PRs que não miram a branch padrão, PRs em rascunho (a não ser que tenham a label `run-ci`) e PRs do `dependabot[bot]`.
 - ❌ Falha em qualquer outro caso, com instruções de como corrigir.
 
 ### Tests

@@ -185,7 +185,9 @@ export interface PullRequest {
 	node_id: string;
 	user: { login: string };
 	body: string | null;
+	draft: boolean;
 	head: { sha: string };
+	base: { ref: string; repo: { default_branch: string } };
 	labels: { name: string }[];
 }
 

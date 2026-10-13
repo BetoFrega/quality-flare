@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { evaluate } from "../../src/checks/closes-issue/evaluate.ts";
+import { skipResult } from "../../src/checks/closes-issue/skip.ts";
 
 describe("evaluate", () => {
 	it("passes when the no-issue label is present", () => {
@@ -26,5 +27,29 @@ describe("evaluate", () => {
 		const r = evaluate({ body: "Refs #4", labels: ["bug"], linkedIssues: [] }, "no-issue");
 		expect(r.conclusion).toBe("failure");
 		expect(r.summary).toContain("`no-issue`");
+	});
+});
+
+describe("skipResult", () => {
+	const base = { author: "beto", draft: false, labels: [] as string[], base: "main", defaultBranch: "main" };
+
+	it("evaluates a ready PR", () => {
+		expect(skipResult(base)).toBeNull();
+	});
+
+	it("skips a draft", () => {
+		expect(skipResult({ ...base, draft: true })?.conclusion).toBe("skipped");
+	});
+
+	it("evaluates a draft with the run-ci label", () => {
+		expect(skipResult({ ...base, draft: true, labels: ["Run-CI"] })).toBeNull();
+	});
+
+	it("skips a PR into another branch", () => {
+		expect(skipResult({ ...base, base: "release" })).toMatchObject({ conclusion: "skipped", title: "Skipped: targets `release`" });
+	});
+
+	it("skips Dependabot", () => {
+		expect(skipResult({ ...base, author: "dependabot[bot]" })).toMatchObject({ conclusion: "skipped", title: "Skipped: Dependabot pull request" });
 	});
 });

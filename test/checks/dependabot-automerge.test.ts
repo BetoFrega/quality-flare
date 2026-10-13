@@ -8,7 +8,7 @@ function context(login: string, errors: string[] = []) {
 	const ctx = {
 		github: { enableAutoMerge },
 		repo: "octo/repo",
-		pr: { number: 1, node_id: "PR_1", user: { login }, body: null, head: { sha: "abc" }, labels: [] },
+		pr: { number: 1, node_id: "PR_1", user: { login }, body: null, draft: false, head: { sha: "abc" }, base: { ref: "main", repo: { default_branch: "main" } }, labels: [] },
 		env: {},
 	} as unknown as CheckContext;
 	return { ctx, enableAutoMerge };

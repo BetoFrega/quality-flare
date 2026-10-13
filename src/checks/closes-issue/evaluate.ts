@@ -1,4 +1,5 @@
 import type { CheckResult } from "../types.ts";
+import { hasLabel } from "./skip.ts";
 import { formatRef, parseClosingRefs, type IssueRef } from "./keywords.ts";
 
 export interface PullRequestFacts {
@@ -9,7 +10,7 @@ export interface PullRequestFacts {
 }
 
 export function evaluate(pr: PullRequestFacts, noIssueLabel: string): CheckResult {
-	if (pr.labels.some((l) => l.toLowerCase() === noIssueLabel.toLowerCase())) {
+	if (hasLabel(pr.labels, noIssueLabel)) {
 		return {
 			conclusion: "success",
 			title: `Skipped: labeled \`${noIssueLabel}\``,
