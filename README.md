@@ -19,6 +19,8 @@ Para adicionar um check, implemente a interface `Check` de [`src/checks/types.ts
 
 - ✅ Passa se a PR fecha pelo menos uma issue: palavra-chave na descrição (`Closes #12`, `fixes owner/repo#3`, `Resolves https://github.com/o/r/issues/7`) ou issue vinculada na seção **Development** da barra lateral.
 - ✅ Passa se a PR tem a label `no-issue`.
+- ⏭️ Pula (conta como aprovado) PRs em rascunho, a não ser que tenham a label `run-ci`, e PRs do `dependabot[bot]`.
+- 🔧 PR com a label `repairs-main` (reparo de entrega): em vez de fechar uma issue, a descrição precisa de exatamente uma linha `Repairs delivery #123`, apontando para o incidente de entrega aberto pelo `github-actions[bot]` com o marcador `<!-- production-delivery-blocked -->`. O incidente fica aberto até o deploy verificar a produção. Nessa PR a label `no-issue` não dispensa nada.
 - ❌ Falha em qualquer outro caso, com instruções de como corrigir.
 
 ### Tests

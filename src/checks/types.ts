@@ -4,8 +4,11 @@ import type { GitHubClient, PullRequest } from "../github.ts";
 export type Conclusion = "success" | "failure" | "neutral" | "cancelled";
 
 export interface CheckResult {
-	/** "pending" leaves the check run in progress, for a result that waits on something outside the PR. */
-	conclusion: Conclusion | "pending";
+	/**
+	 * "pending" leaves the check run in progress, for a result that waits on something outside the PR.
+	 * "skipped" means the check does not apply to this PR; branch protection counts it as passing.
+	 */
+	conclusion: Conclusion | "skipped" | "pending";
 	title: string;
 	summary: string;
 }
