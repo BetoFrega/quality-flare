@@ -38,7 +38,7 @@ export interface RunJob {
 export interface JobStore {
 	/** Records a run waiting on `shards` shards, reported on GitHub check run `checkRunId`. */
 	create(runId: number, job: RunJob & { shards: number }): Promise<void>;
-	/** The run's job; null once it is cancelled (or for a run that never queued shards). */
+	/** The run's job; null once it is cancelled or completed (or for a run that never queued shards). */
 	get(runId: number): Promise<RunJob | null>;
 	/**
 	 * Drops the run's job, so its shards still in the queue skip their files and none of them
@@ -48,10 +48,11 @@ export interface JobStore {
 	/** Like `cancel`, also returning the results of the shards that finished. */
 	close(runId: number): Promise<(RunJob & { results: ShardResult[] }) | null>;
 	/**
-	 * Replaces `shard` with `parts` shards. Returns false if it was already split, so a message
-	 * delivered twice doesn't count its halves twice.
+	 * Replaces `shard` with `parts` shards. "repeated" if it was already split, so a message
+	 * delivered twice doesn't count its halves twice; "finished" if it already has a result, so a
+	 * shard that crashed after finishing doesn't add halves the run would also count.
 	 */
-	split(runId: number, shard: string, parts: number): Promise<boolean>;
+	split(runId: number, shard: string, parts: number): Promise<"split" | "repeated" | "finished">;
 	/**
 	 * Stores a shard's result. Returns every shard's results once this was the last one
 	 * outstanding, otherwise null. A shard finishing twice counts once.
@@ -110,10 +111,12 @@ export function d1JobStore(db: D1Database): JobStore {
 			const job: RunJob = { checkRunId: row.check_run_id, installationId: row.installation_id };
 			// The history (src/runs.ts) may not exist yet; the run then has no deadline.
 			const run = await db
-				.prepare("SELECT started_at FROM test_runs WHERE id = ?")
+				.prepare("SELECT started_at, status FROM test_runs WHERE id = ?")
 				.bind(runId)
-				.first<{ started_at: number }>()
+				.first<{ started_at: number; status: string }>()
 				.catch(() => null);
+			// A completed run's shards still queued (redeliveries, mostly) have nothing left to report.
+			if (run?.status === "completed") return null;
 			return run ? { ...job, startedAt: run.started_at } : job;
 		},
 		close,
@@ -125,9 +128,15 @@ export function d1JobStore(db: D1Database): JobStore {
 			await schema();
 			// A split shard keeps a row without a result, which marks it as done.
 			const { meta } = await db.prepare("INSERT OR IGNORE INTO test_run_shards (run_id, shard) VALUES (?, ?)").bind(runId, shard).run();
-			if (!meta.changes) return false;
+			if (!meta.changes) {
+				const row = await db
+					.prepare("SELECT result IS NOT NULL AS finished FROM test_run_shards WHERE run_id = ? AND shard = ?")
+					.bind(runId, shard)
+					.first<{ finished: number }>();
+				return row?.finished ? "finished" : "repeated";
+			}
 			await changePending(runId, parts - 1);
-			return true;
+			return "split";
 		},
 		async finish(runId, shard, result) {
 			await schema();
