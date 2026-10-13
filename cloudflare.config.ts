@@ -15,7 +15,7 @@ export default defineConfig({
 		limits: { cpuMs: 120_000 },
 		triggers: [
 			// Tests shards, one per invocation so each gets the Worker's full memory. Retries split a shard that crashed.
-			triggers.queue({ name: "quality-flare-tests", maxBatchSize: 1, maxRetries: 3, maxConcurrency: 10 }),
+			triggers.queue({ name: "quality-flare-tests", maxBatchSize: 1, maxRetries: 3, maxConcurrency: 50 }),
 		],
 		exports: {
 			// Relays live test progress to the admin over WebSockets.
