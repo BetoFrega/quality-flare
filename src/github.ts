@@ -43,6 +43,11 @@ export class GitHubClient {
 		return repos.sort((a, b) => a.full_name.localeCompare(b.full_name));
 	}
 
+	/** Reacts to a PR conversation comment, such as 🚀 on a command that started a run. */
+	reactToComment(repo: string, commentId: number, content: "rocket" | "eyes" | "+1"): Promise<unknown> {
+		return request(this.token, "POST", `/repos/${repo}/issues/comments/${commentId}/reactions`, { content });
+	}
+
 	getPullRequest(repo: string, number: number): Promise<PullRequest> {
 		return request(this.token, "GET", `/repos/${repo}/pulls/${number}`);
 	}
@@ -177,12 +182,12 @@ export class GitHubClient {
 	}
 
 	createCheckRun(repo: string, headSha: string, name: string, result: CheckResult): Promise<unknown> {
-		const pending = result.conclusion === "pending";
+		const open = result.conclusion === "pending" || result.conclusion === "waiting";
 		return request(this.token, "POST", `/repos/${repo}/check-runs`, {
 			name,
 			head_sha: headSha,
-			status: pending ? "in_progress" : "completed",
-			conclusion: pending ? undefined : result.conclusion,
+			status: result.conclusion === "waiting" ? "queued" : open ? "in_progress" : "completed",
+			conclusion: open ? undefined : result.conclusion,
 			output: { title: result.title, summary: result.summary },
 		});
 	}
@@ -193,7 +198,8 @@ export type MergeMethod = "MERGE" | "SQUASH" | "REBASE";
 export interface PullRequest {
 	number: number;
 	node_id: string;
-	user: { login: string };
+	/** `type` is "Bot" for Dependabot and other Apps. */
+	user: { login: string; type?: string };
 	body: string | null;
 	draft: boolean;
 	head: { sha: string };

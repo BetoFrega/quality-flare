@@ -1,6 +1,7 @@
 import { createHmac, generateKeyPairSync } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import worker from "../src/index.ts";
+import worker, { runPlan } from "../src/index.ts";
+import type { Check } from "../src/checks/types.ts";
 import { setChecksEnabled, setRepoEnabled } from "../src/settings.ts";
 import { fakeKv } from "./fake-kv.ts";
 
@@ -30,6 +31,7 @@ function delivery(event: string, payload: object, secret = env.GITHUB_WEBHOOK_SE
 /** Fakes the GitHub API and records the check runs created. */
 function mockGitHub({ linked = [] as { number: number; repository: { nameWithOwner: string } }[], fetchedPr = pr } = {}) {
 	const checkRuns: Record<string, unknown>[] = [];
+	const reactions: Record<string, unknown>[] = [];
 	const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
 		const path = new URL(url).pathname;
 		if (path === "/app/installations/99/access_tokens") return Response.json({ token: "inst-token" });
@@ -37,6 +39,10 @@ function mockGitHub({ linked = [] as { number: number; repository: { nameWithOwn
 		if (path === "/graphql")
 			return Response.json({ data: { repository: { pullRequest: { closingIssuesReferences: { nodes: linked } } } } });
 		if (path === "/repos/octo/repo/pulls/7") return Response.json(fetchedPr);
+		if (path === "/repos/octo/repo/issues/comments/5/reactions") {
+			reactions.push(JSON.parse(init.body as string));
+			return Response.json({ id: 1 }, { status: 201 });
+		}
 		if (path === "/repos/octo/repo/check-runs") {
 			checkRuns.push(JSON.parse(init.body as string));
 			return Response.json({ id: 1 }, { status: 201 });
@@ -44,7 +50,7 @@ function mockGitHub({ linked = [] as { number: number; repository: { nameWithOwn
 		return new Response("not found", { status: 404 });
 	});
 	vi.stubGlobal("fetch", fetchMock);
-	return { checkRuns, fetchMock };
+	return { checkRuns, reactions, fetchMock };
 }
 
 /** Runs a request and waits for the work it left in ctx.waitUntil. */
@@ -139,5 +145,61 @@ describe("webhook handler", () => {
 		const res = await run(delivery(event, payload));
 		expect(res.status).toBe(202);
 		expect(fetchMock).not.toHaveBeenCalled();
+	});
+});
+
+describe("tests on demand", () => {
+	const ran: number[] = [];
+	const tests: Check = {
+		id: "tests",
+		name: "Tests",
+		onDemand: true,
+		run: async ({ pr }) => {
+			ran.push(pr.number);
+			return { conclusion: "success", title: "Passou", summary: "" };
+		},
+	};
+	const settings = (onDemand: boolean) => ({ enabled: true, enabledChecks: new Set(["tests"]), onDemand });
+	beforeEach(() => {
+		ran.length = 0;
+	});
+
+	it("leaves a queued check run on a push, telling the agent when to ask for a run", async () => {
+		const { checkRuns } = mockGitHub();
+		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), env);
+		expect(ran).toEqual([]);
+		expect(checkRuns).toEqual([
+			expect.objectContaining({
+				name: "Tests",
+				status: "queued",
+				output: expect.objectContaining({ title: 'Aguardando "/quality-flare run"', summary: expect.stringContaining("pronta para o merge") }),
+			}),
+		]);
+		expect(checkRuns[0]).not.toHaveProperty("conclusion");
+	});
+
+	it("runs on pushes with the setting off, and on PRs opened by bots", async () => {
+		const { checkRuns } = mockGitHub();
+		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(false), env);
+		const dependabot = { ...pr, number: 8, user: { login: "dependabot[bot]", type: "Bot" } };
+		await runPlan({ pullRequests: [dependabot], checks: [tests] }, "octo/repo", 99, settings(true), env);
+		expect(ran).toEqual([7, 8]);
+		expect(checkRuns.map((r) => r.status)).toEqual(["completed", "completed"]);
+	});
+
+	it("runs the current head on a run command or a re-run, and reacts to the command", async () => {
+		const { reactions } = mockGitHub();
+		await runPlan({ pullRequests: [7], checks: [tests], command: { commentId: 5 } }, "octo/repo", 99, settings(true), env);
+		await runPlan({ pullRequests: [7], checks: [tests], rerun: true }, "octo/repo", 99, settings(true), env);
+		expect(ran).toEqual([7, 7]);
+		expect(reactions).toEqual([{ content: "rocket" }]);
+	});
+
+	it("ignores run commands with the setting off", async () => {
+		const { checkRuns, reactions } = mockGitHub();
+		await runPlan({ pullRequests: [7], checks: [tests], command: { commentId: 5 } }, "octo/repo", 99, settings(false), env);
+		expect(ran).toEqual([]);
+		expect(checkRuns).toEqual([]);
+		expect(reactions).toEqual([]);
 	});
 });

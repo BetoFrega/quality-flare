@@ -154,6 +154,13 @@ describe("admin", () => {
 		expect((await getRepoSettings(env.SETTINGS, "octo/app")).enabledChecks).toEqual(new Set());
 	});
 
+	it("turns tests on demand on for a repository", async () => {
+		const { env, call } = setup();
+		const res = await call(post("/admin/on-demand", { repo: "octo/app", enabled: "true" }));
+		expect(res.headers.get("Location")).toBe("https://worker.example/admin?open=octo%2Fapp#octo%2Fapp");
+		expect((await getRepoSettings(env.SETTINGS, "octo/app")).onDemand).toBe(true);
+	});
+
 	it("rejects cross-site posts", async () => {
 		const { env, call } = setup();
 		const res = await call(post("/admin/repos", { repo: "octo/app", enabled: "true" }, "https://evil.example"));

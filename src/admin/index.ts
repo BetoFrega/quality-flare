@@ -1,7 +1,7 @@
 import { checks as allChecks } from "../checks/index.ts";
 import type { Check } from "../checks/types.ts";
 import { GitHubClient, type InstalledRepo } from "../github.ts";
-import { getRepoSettings, setChecksEnabled, setRepoEnabled } from "../settings.ts";
+import { getRepoSettings, setChecksEnabled, setOnDemand, setRepoEnabled } from "../settings.ts";
 import { hub } from "../live.ts";
 import { accountUsage, type AccountUsage } from "../account-usage.ts";
 import { containerUsage } from "../checks/tests/container.ts";
@@ -136,6 +136,9 @@ export async function handleAdmin(
 				await setChecksEnabled(env.SETTINGS, repo, [check.id], enabled);
 				break;
 			}
+			case `${ADMIN_PATH}/on-demand`:
+				await setOnDemand(env.SETTINGS, repo, enabled);
+				break;
 			case `${ADMIN_PATH}/checks/all`:
 				await setChecksEnabled(env.SETTINGS, repo, checks.map((c) => c.id), enabled);
 				break;
