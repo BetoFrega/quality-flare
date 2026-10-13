@@ -64,8 +64,22 @@ describe("buildModules", () => {
 		});
 		expect(bundle.testFiles).toEqual(["/src/b.spec.mjs", "/test/a.test.ts"]);
 		expect(Object.keys(bundle.modules)).toEqual(expect.arrayContaining([MAIN_MODULE, RUNTIME_MODULE, "test/a.test.ts", "src/b.spec.mjs"]));
-		// Not imported: only a file tests can read with node:fs.
-		expect(bundle.modules["src/c.ts"]).toEqual({ text: "" });
+		// Neither imported nor named: left out.
+		expect(bundle.modules["src/c.ts"]).toBeUndefined();
+	});
+
+	it("carries the repository files that code names, or whose folder it names, for node:fs", async () => {
+		const { modules } = await build({
+			"test/a.test.ts": `const config = "app.config.yaml"; const all = join(__dirname, "fixtures");`,
+			"test/fixtures/one.json.txt": "1",
+			"app.config.yaml": "a: 1",
+			"docs/notes.md": "# unread",
+			"package.json": "{}",
+		});
+		expect(Object.keys(modules).filter((k) => "text" in modules[k] && !k.startsWith("__qf/"))).toEqual(
+			expect.arrayContaining(["test/fixtures/one.json.txt", "app.config.yaml", "package.json"]),
+		);
+		expect(modules["docs/notes.md"]).toBeUndefined();
 	});
 
 	it("strips types and resolves imports the way bundlers do", async () => {
