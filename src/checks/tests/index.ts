@@ -25,11 +25,15 @@ const COMPATIBILITY_DATE = "2026-10-06";
 const CODE_ACTIONS = new Set(["opened", "reopened", "synchronize", "ready_for_review"]);
 
 /**
- * Test files per shard. Kept small because the Worker that builds a shard has 128 MB, and a shard
- * that runs out of it crashes and retries in halves; building a shard costs about the same for 1
- * file as for 5. A shard whose code is too big splits in two until it fits.
+ * Test files per shard. Files in one shard share a Dynamic Worker, and so the state of modules
+ * they both import, which vitest would give each file fresh; more files per shard make that leak
+ * between files more likely. A shard whose code is too big, or that takes the Worker down, splits
+ * in two until it fits.
  */
 export const SHARD_SIZE = 5;
+
+/** A shard whose tests run this long (a test awaiting forever, mostly) stops and splits. */
+export const SHARD_DEADLINE_MS = 5 * 60_000;
 
 /** A Dynamic Worker takes at most 64 MB of code; past this, a shard splits instead of trying. */
 export const MAX_CODE_BYTES = 48 * 1024 * 1024;
@@ -358,6 +362,7 @@ export async function runInDynamicWorker(
 	bundle: TestBundle,
 	onProgress: (event: ProgressEvent) => void = () => {},
 	config: TestConfig = {},
+	deadlineMs = SHARD_DEADLINE_MS,
 ): Promise<TestReport> {
 	const worker = loader.load({
 		compatibilityDate: COMPATIBILITY_DATE,
@@ -365,11 +370,17 @@ export async function runInDynamicWorker(
 		mainModule: MAIN_MODULE,
 		modules: bundle.modules,
 		globalOutbound: null,
-		limits: { cpuMs: 30_000 },
+		limits: { cpuMs: 120_000 },
 	});
 	const { globals, testTimeout, clearMocks, mockReset, restoreMocks } = config;
 	const run: RunRequest = { files: bundle.testFiles, setupFiles: bundle.setupFiles, globals, testTimeout, clearMocks, mockReset, restoreMocks };
-	const res = await worker.getEntrypoint().fetch("http://tests/", { method: "POST", body: JSON.stringify(run) });
-	if (!res.ok) throw new Error(`O Dynamic Worker respondeu ${res.status}: ${await res.text()}`);
-	return readRun(res, onProgress);
+	const signal = AbortSignal.timeout(deadlineMs);
+	try {
+		const res = await worker.getEntrypoint().fetch("http://tests/", { method: "POST", body: JSON.stringify(run), signal });
+		if (!res.ok) throw new Error(`O Dynamic Worker respondeu ${res.status}: ${await res.text()}`);
+		return await readRun(res, onProgress);
+	} catch (error) {
+		if (signal.aborted) throw new Error(`Os testes passaram de ${deadlineMs / 60_000} minutos rodando e foram interrompidos.`);
+		throw error;
+	}
 }

@@ -14,9 +14,10 @@ export default defineConfig({
 		// Each Tests shard builds its files' module graph (TypeScript stripping and all) before running it.
 		limits: { cpuMs: 120_000 },
 		triggers: [
-			// Tests shards, one per invocation. Concurrent invocations share an isolate's 128 MB, so raising
-			// maxConcurrency makes shards run out of memory. Retries split a shard that crashed.
-			triggers.queue({ name: "quality-flare-tests", maxBatchSize: 1, maxRetries: 3, maxConcurrency: 10 }),
+			// Tests shards, one per invocation. Concurrent invocations share an isolate's 128 MB, and each
+			// holds its shard's code (SHARD_SIZE), so raising maxConcurrency makes shards run out of
+			// memory. Retries split a shard that crashed.
+			triggers.queue({ name: "quality-flare-tests", maxBatchSize: 1, maxRetries: 3, maxConcurrency: 3 }),
 			// Fails Tests runs past their deadline without waiting for their queued shards.
 			triggers.scheduled({ schedule: "*/5 * * * *" }),
 		],
