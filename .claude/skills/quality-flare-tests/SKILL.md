@@ -15,6 +15,12 @@ O check **Tests** do quality-flare baixa o commit `head` da PR, monta os módulo
 
 O check roda quando a PR é aberta, reaberta, recebe commits ou sai de draft, e no botão **Re-run**. Mudar label ou descrição não roda os testes de novo. Uma execução nova cancela a anterior da mesma PR que ainda estiver rodando: o check run antigo termina como `cancelled` e os lotes dela que ainda estão na fila são descartados.
 
+### Testes sob demanda
+
+Se o repositório estiver com **Testes sob demanda** ligado no admin, o Tests e o Container tests não rodam no push: aparecem na PR em espera (Aguardando "/quality-flare run"). Um comentário `/quality-flare run` (primeira linha do comentário, de alguém com acesso ao repositório) roda o commit atual uma vez; o próximo push volta a esperar. PRs de bots, como o Dependabot, rodam direto.
+
+**Agente:** rode os testes localmente enquanto trabalha e comente `/quality-flare run` só quando a PR estiver pronta para o merge e você achar que os testes vão passar. Não peça uma execução a cada ajuste: cada uma custa dinheiro. Se ela falhar, corrija, rode localmente e só então peça de novo.
+
 ## Convenção
 
 - **Arquivos de teste:** todo `*.test.{ts,mts,tsx,js,mjs,jsx}` e `*.spec.{…}` do repositório, fora de `node_modules/`, `dist/`, `build/`, `coverage/` e de qualquer pasta que comece com `.`.

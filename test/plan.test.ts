@@ -27,12 +27,12 @@ describe("planDelivery", () => {
 			{ action: "rerequested", check_run: { name: "B", pull_requests: [{ number: 7 }] } },
 			checks,
 		);
-		expect(plan).toEqual({ pullRequests: [7], checks: [checks[1]] });
+		expect(plan).toEqual({ pullRequests: [7], checks: [checks[1]], rerun: true });
 	});
 
 	it("re-runs every check when the whole suite is re-requested", () => {
 		const plan = planDelivery("check_suite", { action: "rerequested", check_suite: { pull_requests: [{ number: 7 }] } }, checks);
-		expect(plan).toEqual({ pullRequests: [7], checks });
+		expect(plan).toEqual({ pullRequests: [7], checks, rerun: true });
 	});
 
 	it("runs checks that listed a review event on the PR it carries", () => {
@@ -51,6 +51,25 @@ describe("planDelivery", () => {
 			checks: [reviews],
 		});
 		expect(planDelivery("issue_comment", { action: "created", issue: { number: 8 } }, [reviews])).toBeNull();
+	});
+
+	it("runs the on-demand checks on a run command from someone with access", () => {
+		const tests = { ...fake("T"), onDemand: true };
+		const reviews = { ...fake("R"), events: new Set(["issue_comment"]) };
+		const issue = { number: 7, pull_request: {} };
+		const comment = (body: string, author_association = "OWNER") => ({ id: 5, body, author_association });
+		expect(planDelivery("issue_comment", { action: "created", issue, comment: comment("/quality-flare run") }, [...checks, tests, reviews])).toEqual({
+			pullRequests: [7],
+			checks: [reviews, tests],
+			command: { commentId: 5 },
+		});
+		expect(planDelivery("issue_comment", { action: "created", issue, comment: comment("  /Quality-Flare run please\nthanks") }, [tests])?.command).toEqual({
+			commentId: 5,
+		});
+		expect(planDelivery("issue_comment", { action: "created", issue, comment: comment("/quality-flare run", "NONE") }, [tests])).toBeNull();
+		expect(planDelivery("issue_comment", { action: "created", issue, comment: comment("I ran /quality-flare run") }, [tests])).toBeNull();
+		expect(planDelivery("issue_comment", { action: "created", issue, comment: comment("/quality-flare running") }, [tests])).toBeNull();
+		expect(planDelivery("issue_comment", { action: "edited", issue, comment: comment("/quality-flare run") }, [tests])).toBeNull();
 	});
 
 	it("ignores check runs that belong to someone else", () => {

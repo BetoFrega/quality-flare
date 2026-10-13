@@ -4,6 +4,7 @@ import { runTestShards, sweepOverdueRuns } from "./checks/tests/index.ts";
 import type { TestShard } from "./checks/tests/jobs.ts";
 import type { Check, CheckResult } from "./checks/types.ts";
 import { verifySignature } from "./crypto.ts";
+import { isRunCommand, type PullRequestComment, runsOnPush, WAITING_RESULT } from "./on-demand.ts";
 import { GitHubClient, type PullRequest } from "./github.ts";
 import { getRepoSettings, type RepoSettings } from "./settings.ts";
 
@@ -26,6 +27,7 @@ interface WebhookPayload {
 	repository?: { full_name: string };
 	pull_request?: PullRequest;
 	issue?: { number: number; pull_request?: unknown };
+	comment?: PullRequestComment;
 	check_run?: { name: string; pull_requests: { number: number }[] };
 	check_suite?: { pull_requests: { number: number }[] };
 }
@@ -44,6 +46,10 @@ export interface Plan {
 	/** PR payloads, or numbers to fetch first. */
 	pullRequests: (PullRequest | number)[];
 	checks: Check[];
+	/** A `/quality-flare run` comment asked for this delivery: on-demand checks run without waiting. */
+	command?: { commentId: number };
+	/** Someone pressed "Re-run": on-demand checks run without waiting. */
+	rerun?: true;
 }
 
 export default {
@@ -80,13 +86,23 @@ export default {
 	},
 } satisfies ExportedHandler<Env, TestShard>;
 
-async function runPlan(plan: Plan, repo: string, installationId: number, settings: RepoSettings, env: Env): Promise<void> {
+export async function runPlan(plan: Plan, repo: string, installationId: number, settings: RepoSettings, env: Env): Promise<void> {
 	const github = await GitHubClient.forInstallation({ appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY }, installationId);
+	// With the on-demand setting off, a run command is just a comment.
+	const checks = plan.command && !settings.onDemand ? plan.checks.filter((c) => !c.onDemand) : plan.checks;
+	if (plan.command && checks.some((c) => c.onDemand && settings.enabledChecks.has(c.id))) {
+		await github.reactToComment(repo, plan.command.commentId, "rocket").catch((error: unknown) => {
+			console.error("quality-flare: could not react to the run command", error);
+		});
+	}
 	for (const target of plan.pullRequests) {
 		// Re-run requests only carry the PR number; fetch it so labels and body are current.
 		const pr = typeof target === "number" ? await github.getPullRequest(repo, target) : target;
-		for (const check of plan.checks) {
-			const result = settings.enabledChecks.has(check.id) ? await check.run({ github, repo, pr, env, installationId }) : DISABLED_RESULT;
+		for (const check of checks) {
+			let result: CheckResult | null;
+			if (!settings.enabledChecks.has(check.id)) result = DISABLED_RESULT;
+			else if (check.onDemand && !plan.command && !plan.rerun && !runsOnPush(settings.onDemand, pr)) result = WAITING_RESULT;
+			else result = await check.run({ github, repo, pr, env, installationId });
 			if (result) await github.createCheckRun(repo, pr.head.sha, check.name, result);
 		}
 	}
@@ -105,17 +121,24 @@ export function planDelivery(event: string | null, payload: WebhookPayload, chec
 			// Comments on plain issues come through here too; the payload has no PR, so fetch it.
 			if (!payload.issue?.pull_request) return null;
 			const interested = checks.filter((c) => c.events?.has(event));
+			const comment = payload.comment;
+			if (payload.action === "created" && comment && isRunCommand(comment)) {
+				const onDemand = checks.filter((c) => c.onDemand && !interested.includes(c));
+				if (onDemand.length) {
+					return { pullRequests: [payload.issue.number], checks: [...interested, ...onDemand], command: { commentId: comment.id } };
+				}
+			}
 			return interested.length ? { pullRequests: [payload.issue.number], checks: interested } : null;
 		}
 		case "check_run": {
 			// "Re-run" on one check run: run just that check, if it is ours.
 			const check = checks.find((c) => c.name === payload.check_run?.name);
 			if (payload.action !== "rerequested" || !check) return null;
-			return { pullRequests: payload.check_run!.pull_requests.map((p) => p.number), checks: [check] };
+			return { pullRequests: payload.check_run!.pull_requests.map((p) => p.number), checks: [check], rerun: true };
 		}
 		case "check_suite":
 			if (payload.action !== "rerequested" || !payload.check_suite) return null;
-			return { pullRequests: payload.check_suite.pull_requests.map((p) => p.number), checks };
+			return { pullRequests: payload.check_suite.pull_requests.map((p) => p.number), checks, rerun: true };
 		default: {
 			if (!event || !REVIEW_EVENTS.has(event) || !payload.pull_request) return null;
 			const interested = checks.filter((c) => c.events?.has(event));

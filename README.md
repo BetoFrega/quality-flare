@@ -61,6 +61,12 @@ Roda o vitest do próprio repositório, com a config dele, num [container](https
 - **Custo:** memória e disco pelo tempo ligado, CPU pelo que foi usado; uns US$ 0,02 por execução no Tudo Macaé (instalação + 3477 testes + typecheck em ~4 min). A página da execução no admin mostra o custo estimado.
 - ✅ Passa se todos os testes passam; ⚪ neutro se o vitest não encontra testes; ❌ falha com cada teste que falhou, ou com o log do passo que falhou.
 
+### Testes sob demanda
+
+Uma opção por repositório no admin, desligada por padrão, que vale para o **Tests** e o **Container tests**. Ligada, um push na PR não roda esses checks: cada um fica em espera (check run `queued`) até alguém com acesso ao repositório (OWNER, MEMBER ou COLLABORATOR) comentar `/quality-flare run` na PR. O comentário roda o commit atual uma vez e recebe um 🚀; o próximo push volta a esperar. O **Re-run** também roda.
+
+A ideia é que agentes rodem os testes localmente enquanto trabalham e só peçam a execução quando a PR estiver pronta para o merge. O texto do check em espera diz isso ao agente. Um check em espera que a branch exige trava o merge até alguém pedir a execução. PRs abertas por bots, como as do Dependabot, rodam direto em todo push.
+
 ### Dependabot auto-merge
 
 Faz o mesmo que o workflow `gh pr merge --auto --squash` para PRs do Dependabot, sem GitHub Actions.

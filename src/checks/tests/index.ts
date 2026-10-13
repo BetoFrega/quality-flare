@@ -74,6 +74,7 @@ export const tests: Check = {
 	id: "tests",
 	name: NAME,
 	pullRequestActions: CODE_ACTIONS,
+	onDemand: true,
 	async run({ github, repo, pr, env, installationId }) {
 		const sha = pr.head.sha;
 		const runs = d1RunStore(env.RUNS);

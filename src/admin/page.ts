@@ -1,6 +1,7 @@
 import type { Check } from "../checks/types.ts";
 import type { InstalledRepo } from "../github.ts";
 import type { RepoSettings } from "../settings.ts";
+import { RUN_COMMAND } from "../on-demand.ts";
 
 export interface AdminPageData {
 	email?: string;
@@ -135,12 +136,26 @@ function renderRepo(repo: InstalledRepo, settings: RepoSettings, checks: Check[]
 					<a href="${esc(repo.html_url)}">Abrir no GitHub</a>
 				</div>
 				<ul class="checks">${items}</ul>
+				${onDemandToggle(settings.onDemand, fields({}), checks, repo.full_name)}
 			</div>
 		</details>
 		<div class="repo-toggle">
 			${toggle("/admin/repos", fields({}), settings.enabled, `Ativar checks em ${repo.full_name}`, "Ativar checks")}
 		</div>
 	</li>`;
+}
+
+/** Turns on or off whether the test checks wait for a run command on this repository. */
+function onDemandToggle(on: boolean, fields: Record<string, string>, checks: Check[], repo: string): string {
+	const names = checks.filter((c) => c.onDemand).map((c) => c.name);
+	if (!names.length) return "";
+	return `<div class="on-demand">
+		<div class="row">
+			<span>Testes sob demanda</span>
+			${toggle("/admin/on-demand", fields, on, `Testes sob demanda em ${repo}`)}
+		</div>
+		<p class="note">Ligado, ${esc(names.join(" e "))} ficam em espera em cada push até alguém do repositório comentar <code>${esc(RUN_COMMAND)}</code> na PR, que roda o commit atual. PRs de bots, como o Dependabot, rodam direto.</p>
+	</div>`;
 }
 
 /** A switch that posts the opposite of its current state. */
@@ -238,6 +253,9 @@ ${head}
 	.thumb { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
 	.switch[aria-checked="true"] .track { background: var(--on); }
 	.switch[aria-checked="true"] .thumb { left: 16px; }
+	.on-demand { padding: 6px 0 0; border-top: 1px solid var(--line); }
+	.on-demand .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+	.on-demand .note { margin: 0; }
 	.empty { padding: 24px 0; }
 	.scroll { overflow-x: auto; }
 	.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin: 0 0 12px; }
