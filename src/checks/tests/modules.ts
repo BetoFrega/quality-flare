@@ -21,17 +21,106 @@ const FRESH_COPIES = { min: 3, max: 32 };
 const TEST_CALL = /(?<![\w$.])(?:it|test)(?:\s*\.\s*\w+)*\s*\(/g;
 /**
  * workerd's path.resolve() and relative() resolve against "/", not process.cwd() ("/bundle"),
- * so `resolve("docs")` misses the repository. This node:path resolves against the cwd.
+ * so `resolve("docs")` misses the repository. This node:path resolves against the cwd. workerd's
+ * matchesGlob() throws "not implemented"; this one follows minimatch as Node's does: `*` and `?`
+ * stay within a segment, `**` spans segments, and none of them match a leading dot.
  */
 const PATH_MODULE = "__qf/path.js";
 const PATH_SHIM = `import path from "node:path";
 import process from "node:process";
 export const resolve = (...paths) => path.posix.resolve(process.cwd(), ...paths);
 export const relative = (from, to) => path.posix.relative(resolve(from), resolve(to));
-export const { basename, delimiter, dirname, extname, format, isAbsolute, join, normalize, parse, sep, toNamespacedPath, win32, matchesGlob } = path;
-export const posix = { ...path.posix, resolve, relative };
+const NO_DOT = "(?![.])";
+const segment = (glob) => {
+	let out = "";
+	for (let i = 0; i < glob.length; i++) {
+		const c = glob[i];
+		if (c === "*") out += "[^/]*";
+		else if (c === "?") out += "[^/]";
+		else if (c === "[") {
+			const end = glob.indexOf("]", i + 2);
+			if (end === -1) out += "[[]";
+			else {
+				out += "[" + glob.slice(i + 1, end).replace(/^!/, "^") + "]";
+				i = end;
+			}
+		} else if (c === "{") {
+			let depth = 0, start = i + 1, parts = [], end = -1;
+			for (let j = i; j < glob.length; j++) {
+				if (glob[j] === "{") depth++;
+				else if (glob[j] === "}" && --depth === 0) { end = j; break; }
+				else if (glob[j] === "," && depth === 1) { parts.push(glob.slice(start, j)); start = j + 1; }
+			}
+			if (end === -1 || !parts.length) out += "[{]";
+			else {
+				parts.push(glob.slice(start, end));
+				out += "(?:" + parts.map(segment).join("|") + ")";
+				i = end;
+			}
+		} else out += /[.+^$()|{}]/.test(c) ? "[" + c + "]" : c;
+	}
+	return out;
+};
+const globs = new Map();
+const globRegExp = (pattern) => {
+	let re = globs.get(pattern);
+	if (re) return re;
+	const parts = pattern.split("/");
+	let source = "";
+	parts.forEach((part, i) => {
+		const last = i === parts.length - 1;
+		if (part === "**") source += last ? "(?:" + NO_DOT + "[^/]*(?:/" + NO_DOT + "[^/]*)*)?" : "(?:" + NO_DOT + "[^/]*/)*";
+		else source += (/^[*?[{]/.test(part) ? NO_DOT : "") + segment(part) + (last ? "" : "/");
+	});
+	re = new RegExp("^" + source + "$");
+	globs.set(pattern, re);
+	return re;
+};
+export const matchesGlob = (file, pattern) => globRegExp(pattern).test(file);
+export const { basename, delimiter, dirname, extname, format, isAbsolute, join, normalize, parse, sep, toNamespacedPath, win32 } = path;
+export const posix = { ...path.posix, resolve, relative, matchesGlob };
 posix.posix = posix;
 export default posix;`;
+/**
+ * A repository file that is also a module is a file in workerd's node:fs too, but holding the
+ * compiled module. When a test names such a file in a string ("src/instrumentation.ts"), the
+ * batch keeps its source under ORIGINALS_DIR and node:fs reads go there instead.
+ */
+const ORIGINALS_DIR = "__qf/original";
+const FS_MODULE = "__qf/fs.js";
+const FS_PROMISES_MODULE = "__qf/fs-promises.js";
+const fsShim = (originals: string[]) => `import fs from "node:fs";
+import path from "node:path";
+import process from "node:process";
+export * from "node:fs";
+const originals = new Set(${JSON.stringify(originals)});
+export const __qf_original = (file) => {
+	const name = file instanceof URL && file.protocol === "file:" ? file.pathname : file;
+	if (typeof name !== "string") return file;
+	const relative = path.posix.relative(process.cwd(), path.posix.resolve(process.cwd(), name));
+	return originals.has(relative) ? path.posix.join(process.cwd(), "${ORIGINALS_DIR}", relative) : file;
+};
+export const readFileSync = (file, ...rest) => fs.readFileSync(__qf_original(file), ...rest);
+export const readFile = (file, ...rest) => fs.readFile(__qf_original(file), ...rest);
+export const promises = { ...fs.promises, readFile: (file, ...rest) => fs.promises.readFile(__qf_original(file), ...rest) };
+export default { ...fs, readFileSync, readFile, promises };`;
+const FS_PROMISES_SHIM = `import promises from "node:fs/promises";
+import { __qf_original } from "/${FS_MODULE}";
+export * from "node:fs/promises";
+export const readFile = (file, ...rest) => promises.readFile(__qf_original(file), ...rest);
+export default { ...promises, readFile };`;
+/** Repository paths a string literal in `source` names, from the root or from `file`'s folder. */
+function namedFiles(source: string, file: string, repoFiles: Map<string, string>): string[] {
+	const names: string[] = [];
+	for (const m of source.matchAll(/["'`]((?:\.{1,2}\/)?[\w@.-]+(?:\/[\w@.-]+)*\.[cm]?[jt]sx?)["'`]/g)) {
+		// Module specifiers (imports, mocks) name the module, not its source.
+		if (/\b(?:from|import|require|mock|doMock|importActual|importMock)\s*\(?\s*$/.test(source.slice(Math.max(0, m.index - 24), m.index))) continue;
+		for (const candidate of [m[1].replace(/^\.\//, ""), join(file.slice(0, file.lastIndexOf("/") + 1), m[1])]) {
+			if (repoFiles.has(candidate)) names.push(candidate);
+		}
+	}
+	return names;
+}
 const CSS_MODULE = "__qf/css-module.js";
 const ASSET_IMPORT = /\.(svg|png|jpe?g|gif|webp|avif|ico|bmp|woff2?|ttf|otf|eot|mp4|webm|ogg|mp3|wav|flac|aac|pdf|txt)(\?.*)?$/;
 const STYLESHEET = /\.(css|scss|sass|less|styl|stylus|pcss|postcss)(\?.*)?$/;
@@ -154,6 +243,7 @@ export default { fetch: handleRequest };`,
 	const mocksOf = new Map<string, { module: string; keys: Set<string>; original: boolean }>();
 	const missingNames = new Map<Unresolved, string>();
 	const environments = new Map<string, string>();
+	const originals = [...new Set([...testFiles, ...setupFiles].flatMap((f) => namedFiles(repoFiles.get(f) ?? "", f, repoFiles)))];
 
 	const packageOf = (name: string) => {
 		if (!name.startsWith(`${PACKAGES_DIR}/`)) return undefined;
@@ -260,6 +350,12 @@ export default { fetch: handleRequest };`,
 		if (/^(node:)?path(\/posix)?$/.test(specifier)) {
 			modules[PATH_MODULE] ??= { js: PATH_SHIM };
 			return `/${PATH_MODULE}`;
+		}
+		if (originals.length && /^(node:)?fs(\/promises)?$/.test(specifier)) {
+			modules[FS_MODULE] ??= { js: fsShim(originals) };
+			if (!specifier.endsWith("/promises")) return `/${FS_MODULE}`;
+			modules[FS_PROMISES_MODULE] ??= { js: FS_PROMISES_SHIM };
+			return `/${FS_PROMISES_MODULE}`;
 		}
 		if (/^(node|cloudflare|workerd):/.test(specifier)) return specifier;
 		if (NODE_BUILTINS.has(specifier.split("/")[0])) return `node:${specifier}`;
@@ -536,6 +632,7 @@ mockFacade(${JSON.stringify(key)}, (__qf_ns) => {
 		modules[path] = { text };
 		assets += text.length;
 	};
+	for (const path of originals) modules[`${ORIGINALS_DIR}/${path}`] = { text: repoFiles.get(path)! };
 	for (const [path, text] of repoFiles) addAsset(path, text);
 	for (const pkg of packageByDir.values()) {
 		for (const path of pkg.files.keys()) if (path.endsWith(".css")) addAsset(`${pkg.dir}/${path}`, pkg.files.get(path));

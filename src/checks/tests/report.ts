@@ -97,4 +97,7 @@ export interface RunRequest {
 	setupFiles?: string[];
 	globals?: boolean;
 	testTimeout?: number;
+	clearMocks?: boolean;
+	mockReset?: boolean;
+	restoreMocks?: boolean;
 }

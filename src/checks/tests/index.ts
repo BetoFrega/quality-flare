@@ -1,11 +1,11 @@
 import { GitHubClient } from "../../github.ts";
 import { livePublisher } from "../../live.ts";
-import { d1RunStore } from "../../runs.ts";
+import { d1RunStore, type RunStore } from "../../runs.ts";
 import type { Check, CheckResult } from "../types.ts";
 import { CONFIG_FILE, readTestConfig, selectTestFiles, type TestConfig } from "./config.ts";
 import { readVitestConfig } from "./vitest-config.ts";
 import { isAsset, isLoadable, isTestFile } from "./convention.ts";
-import { d1JobStore, type JobStore, type ShardResult, type TestShard } from "./jobs.ts";
+import { d1JobStore, type JobStore, type RunJob, type ShardResult, type TestShard } from "./jobs.ts";
 import { readLockfile, type LockedPackage } from "./lockfile.ts";
 import { buildModules, bundleSize, MAIN_MODULE, type TestBundle } from "./modules.ts";
 import { type PackageFiles, readPackage, type Turns, turns } from "./packages.ts";
@@ -35,8 +35,9 @@ export const SHARD_SIZE = 5;
 export const MAX_CODE_BYTES = 48 * 1024 * 1024;
 
 /**
- * A run that hasn't finished this long after it started stops: its shards still queued report
- * their files as failed without running them, so the run completes instead of using the queue.
+ * A run that hasn't finished this long after it started stops. The cron sweep (`sweepOverdueRuns`)
+ * fails it with the shards that finished and drops the rest from the queue; a shard that surfaces
+ * before the sweep reports its files as failed without running them.
  */
 export const RUN_DEADLINE_MS = 60 * 60_000;
 
@@ -160,6 +161,47 @@ export async function processShard(shard: TestShard, attempts: number, deps: Sha
 	}
 }
 
+export interface SweepDeps {
+	runs: Pick<RunStore, "overdue" | "finish">;
+	jobs: Pick<JobStore, "close">;
+	now(): number;
+	completeCheckRun(repo: string, job: RunJob, result: CheckResult): Promise<void>;
+}
+
+/** Cron: fails every run past RUN_DEADLINE_MS with what finished, so none waits on its queued shards. */
+export async function sweepOverdueRuns(env: Env): Promise<void> {
+	const credentials = { appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY };
+	await expireRuns({
+		runs: d1RunStore(env.RUNS),
+		jobs: d1JobStore(env.RUNS),
+		now: Date.now,
+		async completeCheckRun(repo, job, result) {
+			await (await GitHubClient.forInstallation(credentials, job.installationId)).completeCheckRun(repo, job.checkRunId, result);
+		},
+	});
+}
+
+export async function expireRuns(deps: SweepDeps): Promise<void> {
+	for (const run of await deps.runs.overdue(deps.now() - RUN_DEADLINE_MS)) {
+		// Closing drops the job, so the run's shards still queued skip their files and publish nothing.
+		const job = await deps.jobs.close(run.id);
+		const { report, unresolved } = mergeReports(job?.results ?? []);
+		const result = overdue(report, unresolved);
+		if (job) await deps.completeCheckRun(run.repo, job, result).catch(logError);
+		await deps.runs.finish(run.id, result, report);
+	}
+}
+
+function overdue(report: TestReport, unresolved: ShardResult["unresolved"]): CheckResult {
+	const n = report.files.length;
+	const done = `${count(n, "arquivo")} ${n === 1 ? "terminou" : "terminaram"} antes disso; os outros não rodaram.`;
+	return {
+		conclusion: "failure",
+		title: `A execução passou de ${RUN_DEADLINE_MS / 60_000} minutos`,
+		summary: n ? `${done}\n\n${toCheckResult(report, unresolved).summary}` : done,
+	};
+}
+
 async function split(shard: TestShard, deps: ShardDeps): Promise<void> {
 	const half = Math.ceil(shard.files.length / 2);
 	await deps.jobs.split(shard.runId, shard.shard, 2);
@@ -198,9 +240,13 @@ async function runShard(
 	// Imported lazily: the bundled runtime is only needed when tests actually run.
 	const { default: runtimeSource } = await import("virtual:test-runtime");
 	const inTurn = turns();
+	const lockfile = readLockfile(files);
+	// vitest 5 clears every mock's calls before each test unless the config says otherwise.
+	const vitest = lockfile?.fromRepo("package.json", "vitest")?.version;
+	const config = { ...shard.config, clearMocks: shard.config?.clearMocks ?? Number(vitest?.split(".")[0]) >= 5 };
 	const bundle = await buildModules(files, {
 		runtimeSource,
-		lockfile: readLockfile(files),
+		lockfile,
 		fetchPackage: (pkg) => fetchPackage(pkg, inTurn),
 		testFiles: shard.files,
 		setupFiles: shard.config?.setupFiles,
@@ -214,7 +260,7 @@ async function runShard(
 	if (size > MAX_CODE_BYTES) throw new TooLarge(size);
 	onProgress({ type: "status", text: `${label}: rodando` });
 	try {
-		return { report: await runInDynamicWorker(loader, bundle, onProgress, shard.config), unresolved };
+		return { report: await runInDynamicWorker(loader, bundle, onProgress, config), unresolved };
 	} catch (error) {
 		if (error instanceof Error && /exceeds the maximum allowed size/.test(error.message)) throw new TooLarge(size);
 		throw new Crashed(error);
@@ -321,7 +367,8 @@ export async function runInDynamicWorker(
 		globalOutbound: null,
 		limits: { cpuMs: 30_000 },
 	});
-	const run: RunRequest = { files: bundle.testFiles, setupFiles: bundle.setupFiles, globals: config.globals, testTimeout: config.testTimeout };
+	const { globals, testTimeout, clearMocks, mockReset, restoreMocks } = config;
+	const run: RunRequest = { files: bundle.testFiles, setupFiles: bundle.setupFiles, globals, testTimeout, clearMocks, mockReset, restoreMocks };
 	const res = await worker.getEntrypoint().fetch("http://tests/", { method: "POST", body: JSON.stringify(run) });
 	if (!res.ok) throw new Error(`O Dynamic Worker respondeu ${res.status}: ${await res.text()}`);
 	return readRun(res, onProgress);

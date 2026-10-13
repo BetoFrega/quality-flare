@@ -1,6 +1,6 @@
 import { ADMIN_PATH, handleAdmin } from "./admin/index.ts";
 import { checks as allChecks } from "./checks/index.ts";
-import { runTestShards } from "./checks/tests/index.ts";
+import { runTestShards, sweepOverdueRuns } from "./checks/tests/index.ts";
 import type { TestShard } from "./checks/tests/jobs.ts";
 import type { Check, CheckResult } from "./checks/types.ts";
 import { verifySignature } from "./crypto.ts";
@@ -73,6 +73,10 @@ export default {
 	// Shards of Tests runs, enqueued by the Tests check.
 	async queue(batch, env) {
 		await runTestShards(batch, env);
+	},
+	// Fails Tests runs past their deadline (see cloudflare.config.ts triggers).
+	async scheduled(_controller, env) {
+		await sweepOverdueRuns(env);
 	},
 } satisfies ExportedHandler<Env, TestShard>;
 

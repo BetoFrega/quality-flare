@@ -59,6 +59,9 @@ async function configOf(path: string, source: string, read: Read, seen: Set<stri
 	return config;
 }
 
+type Flag = "globals" | "clearMocks" | "mockReset" | "restoreMocks";
+const BOOLEANS = new Set<string>(["globals", "clearMocks", "mockReset", "restoreMocks"] satisfies Flag[]);
+
 function testBlock(source: string, code: string, open: number): TestConfig {
 	const config: TestConfig = {};
 	for (const [key, value] of entries(source, code, open)) {
@@ -67,7 +70,7 @@ function testBlock(source: string, code: string, open: number): TestConfig {
 			const lead = value.end - value.start - source.slice(value.start, value.end).trimStart().length;
 			const list = stringArray(text, code.slice(value.start + lead, value.start + lead + text.length));
 			if (list) config[key] = list;
-		} else if (key === "globals" && /^(true|false)$/.test(text)) config.globals = text === "true";
+		} else if (BOOLEANS.has(key) && /^(true|false)$/.test(text)) config[key as Flag] = text === "true";
 		else if (key === "testTimeout" && /^\d[\d_]*$/.test(text)) config.testTimeout = Number(text.replace(/_/g, ""));
 		else if (key === "environment" && /^(["'`])[\w-]+\1$/.test(text)) config.environment = text.slice(1, -1);
 	}
