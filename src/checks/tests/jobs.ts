@@ -21,6 +21,8 @@ export interface TestShard {
 	files: string[];
 	/** The repository's quality-flare.json `tests` section, read once for the whole run. */
 	config?: TestConfig;
+	/** A file that failed in a bigger shard, run again alone; its result is final. */
+	recheck?: boolean;
 }
 
 export interface ShardResult {
