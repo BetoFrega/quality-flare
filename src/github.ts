@@ -37,14 +37,6 @@ export class GitHubClient {
 		return request(this.token, "GET", `/repos/${repo}/pulls/${number}`);
 	}
 
-	/** The issue, or null when it does not exist (or is not visible to the App). */
-	async getIssue(repo: string, number: number): Promise<Issue | null> {
-		const res = await fetch(`${API}/repos/${repo}/issues/${number}`, { headers: headers(this.token) });
-		if (res.status === 404) return null;
-		if (!res.ok) throw new Error(`GitHub GET /repos/${repo}/issues/${number} failed: ${res.status} ${await res.text()}`);
-		return res.json() as Promise<Issue>;
-	}
-
 	/** Issues GitHub will close when this PR merges: closing keywords plus issues linked in the sidebar. */
 	async getLinkedIssues(repo: string, number: number): Promise<IssueRef[]> {
 		const [owner, name] = repo.split("/");
@@ -195,16 +187,8 @@ export interface PullRequest {
 	body: string | null;
 	draft: boolean;
 	head: { sha: string };
+	base: { ref: string; repo: { default_branch: string } };
 	labels: { name: string }[];
-}
-
-export interface Issue {
-	number: number;
-	state: "open" | "closed";
-	user: { login: string } | null;
-	body: string | null;
-	/** Present when the "issue" is really a pull request. */
-	pull_request?: unknown;
 }
 
 export interface ReviewActivity {

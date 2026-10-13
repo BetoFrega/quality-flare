@@ -13,7 +13,7 @@ const env = {
 	ACCESS_AUD: "aud",
 } as Env;
 
-const pr = { number: 7, user: { login: "beto" }, draft: false, body: "Some change", head: { sha: "abc123" }, labels: [] as { name: string }[] };
+const pr = { number: 7, user: { login: "beto" }, draft: false, body: "Some change", head: { sha: "abc123" }, base: { ref: "main", repo: { default_branch: "main" } }, labels: [] as { name: string }[] };
 
 function delivery(event: string, payload: object, secret = env.GITHUB_WEBHOOK_SECRET) {
 	const body = JSON.stringify({ installation: { id: 99 }, repository: { full_name: "octo/repo" }, ...payload });

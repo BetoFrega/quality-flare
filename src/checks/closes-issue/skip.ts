@@ -9,6 +9,9 @@ export interface SkipFacts {
 	author: string;
 	draft: boolean;
 	labels: string[];
+	/** The branch the PR merges into, and the repository's default branch. */
+	base: string;
+	defaultBranch: string;
 }
 
 /**
@@ -17,6 +20,14 @@ export interface SkipFacts {
  * without leaving drafts stuck on a pending check.
  */
 export function skipResult(pr: SkipFacts): CheckResult | null {
+	// GitHub only closes issues when a PR merges into the default branch.
+	if (pr.base !== pr.defaultBranch) {
+		return {
+			conclusion: "skipped",
+			title: `Skipped: targets \`${pr.base}\``,
+			summary: `This check only runs on pull requests into \`${pr.defaultBranch}\`.`,
+		};
+	}
 	if (pr.draft && !hasLabel(pr.labels, RUN_CI_LABEL)) {
 		return {
 			conclusion: "skipped",
