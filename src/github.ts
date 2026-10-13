@@ -43,6 +43,15 @@ export class GitHubClient {
 		return repos.sort((a, b) => a.full_name.localeCompare(b.full_name));
 	}
 
+	/** The PR's conversation comments, oldest first. */
+	listPullRequestComments(repo: string, number: number): Promise<{ body: string | null }[]> {
+		return paginate(this.token, `/repos/${repo}/issues/${number}/comments`, (page) => page as { body: string | null }[]);
+	}
+
+	commentOnPullRequest(repo: string, number: number, body: string): Promise<unknown> {
+		return request(this.token, "POST", `/repos/${repo}/issues/${number}/comments`, { body });
+	}
+
 	/** Reacts to a PR conversation comment, such as 🚀 on a command that started a run. */
 	reactToComment(repo: string, commentId: number, content: "rocket" | "eyes" | "+1"): Promise<unknown> {
 		return request(this.token, "POST", `/repos/${repo}/issues/comments/${commentId}/reactions`, { content });
