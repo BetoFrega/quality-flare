@@ -57,7 +57,7 @@ export class GitHubClient {
 	}
 
 	/** Reacts to a PR conversation comment, such as 🚀 on a command that started a run. */
-	reactToComment(repo: string, commentId: number, content: "rocket" | "eyes" | "+1"): Promise<unknown> {
+	reactToComment(repo: string, commentId: number, content: "rocket" | "eyes" | "+1" | "confused"): Promise<unknown> {
 		return request(this.token, "POST", `/repos/${repo}/issues/comments/${commentId}/reactions`, { content });
 	}
 
@@ -195,10 +195,11 @@ export class GitHubClient {
 	}
 
 	/** Whether the App already reported a check run with this name on the commit. */
-	async hasCheckRun(repo: string, headSha: string, name: string, appId: string): Promise<boolean> {
+	/** Status of the App's latest run of the check on the commit ("queued", "in_progress", "completed"), or undefined without one. */
+	async latestCheckRunStatus(repo: string, headSha: string, name: string, appId: string): Promise<string | undefined> {
 		const query = new URLSearchParams({ check_name: name, app_id: appId, filter: "latest" });
-		const runs = await request<{ total_count: number }>(this.token, "GET", `/repos/${repo}/commits/${headSha}/check-runs?${query}`);
-		return runs.total_count > 0;
+		const runs = await request<{ check_runs: { status: string }[] }>(this.token, "GET", `/repos/${repo}/commits/${headSha}/check-runs?${query}`);
+		return runs.check_runs[0]?.status;
 	}
 
 	createCheckRun(repo: string, headSha: string, name: string, result: CheckResult): Promise<unknown> {

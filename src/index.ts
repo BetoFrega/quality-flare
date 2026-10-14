@@ -1,10 +1,11 @@
 import { ADMIN_PATH, handleAdmin } from "./admin/index.ts";
+import { codexReview } from "./checks/codex-review/index.ts";
 import { checks as allChecks } from "./checks/index.ts";
 import { runTestShards, sweepOverdueRuns } from "./checks/tests/index.ts";
 import type { TestShard } from "./checks/tests/jobs.ts";
 import type { Check, CheckResult } from "./checks/types.ts";
 import { verifySignature } from "./crypto.ts";
-import { explainWaiting, isRunCommand, type PullRequestComment, runsOnPush, WAITING_RESULT } from "./on-demand.ts";
+import { codexBlockComment, codexReviewBlock, explainWaiting, isRunCommand, type PullRequestComment, runsOnPush, WAITING_RESULT } from "./on-demand.ts";
 import { GitHubClient, type PullRequest } from "./github.ts";
 import { getRepoSettings, type RepoSettings } from "./settings.ts";
 
@@ -90,24 +91,38 @@ export async function runPlan(plan: Plan, repo: string, installationId: number, 
 	const github = await GitHubClient.forInstallation({ appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY }, installationId);
 	// With the on-demand setting off, a run command is just a comment.
 	const checks = plan.command && !settings.onDemand ? plan.checks.filter((c) => !c.onDemand) : plan.checks;
-	if (plan.command && checks.some((c) => c.onDemand && settings.enabledChecks.has(c.id))) {
-		await github.reactToComment(repo, plan.command.commentId, "rocket").catch((error: unknown) => {
-			console.error("quality-flare: could not react to the run command", error);
-		});
-	}
+	// What the run command got: 🚀 when it started a run, 👀 when every run it asked for was already going,
+	// 😕 when the Codex review held it back.
+	let commanded: "rocket" | "eyes" | "confused" | undefined;
 	for (const target of plan.pullRequests) {
 		// Re-run requests only carry the PR number; fetch it so labels and body are current.
 		const pr = typeof target === "number" ? await github.getPullRequest(repo, target) : target;
 		const waiting: string[] = [];
+		const asksForTests = plan.command && checks.some((c) => c.onDemand && settings.enabledChecks.has(c.id));
+		const codexBlock = asksForTests && settings.enabledChecks.has(codexReview.id) ? await codexBlocking(github, repo, pr.number) : undefined;
+		if (codexBlock) {
+			commanded = "confused";
+			await github.commentOnPullRequest(repo, pr.number, codexBlockComment(codexBlock)).catch((error: unknown) => {
+				console.error("quality-flare: could not explain the Codex review block", error);
+			});
+		}
 		for (const check of checks) {
+			// The Codex review comes first: a command while it blocks runs no tests.
+			if (codexBlock && check.onDemand) continue;
 			let result: CheckResult | null;
 			if (!settings.enabledChecks.has(check.id)) result = DISABLED_RESULT;
-			else if (check.onDemand && !plan.command && !plan.rerun && !runsOnPush(settings.onDemand, pr)) {
+			else if (check.onDemand && plan.command && (await runStatus(github, repo, pr.head.sha, check.name, env.GITHUB_APP_ID)) === "in_progress") {
+				// A run already going on this commit (a push on a bot's PR, an earlier command) answers this command too.
+				commanded ??= "eyes";
+				continue;
+			} else if (check.onDemand && !plan.command && !plan.rerun && !runsOnPush(settings.onDemand, pr)) {
 				// A commit keeps the run it has: leaving draft or reopening on the same head must not queue a passed run again.
-				result = (await hasRun(github, repo, pr.head.sha, check.name, env.GITHUB_APP_ID)) ? null : WAITING_RESULT;
+				result = (await runStatus(github, repo, pr.head.sha, check.name, env.GITHUB_APP_ID)) ? null : WAITING_RESULT;
 				waiting.push(check.name);
+			} else {
+				if (check.onDemand && plan.command) commanded = "rocket";
+				result = await check.run({ github, repo, pr, env, installationId });
 			}
-			else result = await check.run({ github, repo, pr, env, installationId });
 			if (result) await github.createCheckRun(repo, pr.head.sha, check.name, result);
 		}
 		// Agents watching a PR see a queued check as "pending", not its text; a comment reaches them.
@@ -117,13 +132,26 @@ export async function runPlan(plan: Plan, repo: string, installationId: number, 
 			});
 		}
 	}
+	if (plan.command && commanded) {
+		await github.reactToComment(repo, plan.command.commentId, commanded).catch((error: unknown) => {
+			console.error("quality-flare: could not react to the run command", error);
+		});
+	}
 }
 
-/** Whether the commit already has the check's run; when GitHub can't say, it doesn't, so the check waits. */
-function hasRun(github: GitHubClient, repo: string, sha: string, name: string, appId: string): Promise<boolean> {
-	return github.hasCheckRun(repo, sha, name, appId).catch((error: unknown) => {
+/** Why the Codex review blocks the PR, if it does; when GitHub can't say, it doesn't, so the command runs. */
+function codexBlocking(github: GitHubClient, repo: string, pr: number): Promise<string | undefined> {
+	return codexReviewBlock(github, repo, pr).catch((error: unknown) => {
+		console.error("quality-flare: could not read the Codex review", error);
+		return undefined;
+	});
+}
+
+/** The status of the commit's latest run of the check; when GitHub can't say, there is none, so the check runs or waits. */
+function runStatus(github: GitHubClient, repo: string, sha: string, name: string, appId: string): Promise<string | undefined> {
+	return github.latestCheckRunStatus(repo, sha, name, appId).catch((error: unknown) => {
 		console.error("quality-flare: could not list check runs", error);
-		return false;
+		return undefined;
 	});
 }
 

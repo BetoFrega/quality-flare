@@ -1,3 +1,4 @@
+import { evaluate as evaluateCodexReview } from "./checks/codex-review/evaluate.ts";
 import type { CheckResult } from "./checks/types.ts";
 import type { GitHubClient, PullRequest } from "./github.ts";
 
@@ -65,4 +66,24 @@ export async function explainWaiting(github: GitHubClient, repo: string, pr: num
 	const existing = (await github.listPullRequestComments(repo, pr)).find((c) => c.body?.includes(EXPLAIN_MARKER));
 	if (!existing) await github.commentOnPullRequest(repo, pr, body);
 	else if (existing.body !== body) await github.editComment(repo, existing.id, body);
+}
+
+/**
+ * Why the Codex review still holds the PR back, or undefined when it doesn't: open Codex
+ * suggestions or a review still running. Tests run after the review settles, since fixing its
+ * suggestions changes the code they would test.
+ */
+export async function codexReviewBlock(github: GitHubClient, repo: string, pr: number): Promise<string | undefined> {
+	const result = evaluateCodexReview(await github.getReviewActivity(repo, pr));
+	return result.conclusion === "failure" || result.conclusion === "pending" ? result.title : undefined;
+}
+
+/** The answer to a run command that came while the Codex review still holds the PR back. */
+export function codexBlockComment(reason: string): string {
+	return [
+		`Os testes não rodaram: o **Codex review** ainda bloqueia esta PR (${reason}).`,
+		"",
+		"Espere a review do Codex terminar e resolva as sugestões dela. Depois, comente " +
+			`\`${RUN_COMMAND}\` de novo para rodar a suíte.`,
+	].join("\n");
 }
