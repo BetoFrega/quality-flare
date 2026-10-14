@@ -37,6 +37,7 @@ const runs: RunStore = {
 };
 
 const usage: Usage = { attempts: 12, retries: 2, crashes: 1, splits: 2, dynamicWorkers: 10, cpuMs: 45_000, wallMs: 600_000 };
+const box = { runs: 1, wallMs: 600_000, cpuUs: 1_200_000_000, unmeasured: 0 };
 const metrics: MetricsStore = {
 	start: async () => {},
 	finish: async () => {},
@@ -50,11 +51,15 @@ const metrics: MetricsStore = {
 				]
 			: [],
 	usage: async (by, _since, repo) => [{ period: by === "day" ? "1970-01-01" : "1970-01", repo: repo ?? null, runs: 1, ...usage }],
+	// 10 minutes on, 20 minutes of vCPU.
+	containersByRun: async (ids) => new Map(ids.filter((id) => id === 1).map((id) => [id, box])),
+	containerUsage: async (by) => [{ period: by === "day" ? "1970-01-01" : "1970-01", ...box }],
 };
 
 const account = {
-	days: [{ date: "1970-01-01", dynamicWorkers: 1_500, cpuMs: 2_000_000, requests: 900, errors: 3, accountCpuMs: 2_100_000 }],
-	month: { period: "1970-01", dynamicWorkers: 1_500, cpuMs: 2_000_000, requests: 900, errors: 3, accountCpuMs: 2_100_000 },
+	days: [{ date: "1970-01-01", dynamicWorkers: 1_500, cpuMs: 2_000_000, requests: 900, errors: 3, accountCpuMs: 2_100_000, containers: { memoryGiBs: 1_000, vcpuS: 60, diskGBs: 2_000 } }],
+	// 40,000 GiB-s of memory past the 90,000 included.
+	month: { period: "1970-01", dynamicWorkers: 1_500, cpuMs: 2_000_000, requests: 900, errors: 3, accountCpuMs: 2_100_000, containers: { memoryGiBs: 130_000, vcpuS: 600, diskGBs: 7_200 } },
 };
 
 function setup() {
@@ -247,6 +252,8 @@ describe("admin", () => {
 		const list = await (await call(new Request("https://worker.example/admin/runs"))).text();
 		// 10 Dynamic Workers × US$ 0.002 + 45,000 ms of CPU + requests and queue operations
 		expect(list).toContain('<td class="num">10 <span class="failure" title="quedas">1✗</span></td><td class="num">US$ 0.02</td>');
+		// A container run: 12 GiB and 20 GB for 600 s, plus 1,200 vCPU-s.
+		expect(list).toContain('<td class="num"><span title="Rodou num container">—</span></td><td class="num">US$ 0.04</td>');
 		const page = await (await call(new Request("https://worker.example/admin/runs/2"))).text();
 		expect(page).toContain("Uso e custo");
 		expect(page).toContain("<dt>Quedas (memória)</dt><dd>1</dd>");
@@ -273,9 +280,15 @@ describe("admin", () => {
 		expect(page).toContain("<h3>Testes, mês 1970-01</h3>");
 		// Under the monthly allowances, a month costs nothing.
 		expect(page).toContain("<dt>Após franquia</dt><dd>US$ 0</dd>");
-		// The account's measured usage: 500 Dynamic Workers past the 1,000 included.
-		expect(page).toContain("<dt>Cobrança estimada do mês</dt><dd>US$ 1.00</dd>");
+		// The account's measured usage: 500 Dynamic Workers past the 1,000 included, and 40,000 GiB-s of container memory.
+		expect(page).toContain("<dt>Cobrança estimada do mês</dt><dd>US$ 1.10</dd>");
 		expect(page).toContain("<dt>Dynamic Workers</dt><dd>1.500 de 1.000</dd>");
+		expect(page).toContain("<dt>Memória dos containers</dt><dd>36,1 de 25 GiB-h</dd>");
+		expect(page).toContain("<dt>Containers após franquia</dt><dd>US$ 0.10</dd>");
+		// The Container tests estimate.
+		expect(page).toContain("<h3>Containers, mês 1970-01</h3>");
+		expect(page).toContain("<dt>Custo estimado</dt><dd>US$ 0.04</dd>");
+		expect(page).toContain("<dt>CPU dos containers</dt><dd>20 de 375 vCPU-min</dd>");
 	});
 
 	it("says why the account's usage is missing", async () => {

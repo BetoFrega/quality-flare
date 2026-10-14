@@ -5,7 +5,7 @@ import { getRepoSettings, setChecksEnabled, setOnDemand, setRepoEnabled } from "
 import { hub } from "../live.ts";
 import { accountUsage, type AccountUsage } from "../account-usage.ts";
 import { containerUsage } from "../checks/tests/container.ts";
-import { d1MetricsStore, type MetricsStore, type Usage } from "../metrics.ts";
+import { d1MetricsStore, type ContainerUsage, type MetricsStore, type Usage } from "../metrics.ts";
 import { d1RunStore, type RunStore } from "../runs.ts";
 import { renderCostsPage } from "./costs-page.ts";
 import { LIVE_SCRIPT } from "./live-script.ts";
@@ -76,10 +76,13 @@ export async function handleAdmin(
 		const query = runQuery(url.searchParams);
 		const [list, repos] = await Promise.all([store.list(query), store.repos()]);
 		// Usage is extra: the list still shows if it can't be read.
-		const usage = await metrics(env)
-			.byRun(list.map((r) => r.id))
-			.catch(logMetricsError(new Map<number, Usage>()));
-		return html(renderRunsPage({ runs: list, repos, query, usage, email: identity?.email, now: now() }));
+		const ids = list.map((r) => r.id);
+		const usageStore = metrics(env);
+		const [usage, containers] = await Promise.all([
+			usageStore.byRun(ids).catch(logMetricsError(new Map<number, Usage>())),
+			usageStore.containersByRun(ids).catch(logMetricsError(new Map<number, ContainerUsage>())),
+		]);
+		return html(renderRunsPage({ runs: list, repos, query, usage, containers, email: identity?.email, now: now() }));
 	}
 
 	const runMatch = request.method === "GET" ? new RegExp(`^${ADMIN_PATH}/runs/(\\d+)$`).exec(path) : null;
@@ -107,15 +110,18 @@ export async function handleAdmin(
 			const d = new Date(at);
 			return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - back, 1);
 		};
-		const [days, months, real] = await Promise.all([
-			store.usage("day", Math.floor(at / day) * day - 29 * day, repo).catch(logMetricsError([])),
+		const daysSince = Math.floor(at / day) * day - 29 * day;
+		const [days, months, containerDays, containerMonths, real] = await Promise.all([
+			store.usage("day", daysSince, repo).catch(logMetricsError([])),
 			store.usage("month", monthStart(11), repo).catch(logMetricsError([])),
+			store.containerUsage("day", daysSince, repo).catch(logMetricsError([])),
+			store.containerUsage("month", monthStart(11), repo).catch(logMetricsError([])),
 			account(env).catch((error: unknown) => {
 				console.error("quality-flare: could not read the account's usage", error);
 				return error instanceof Error ? error.message : String(error);
 			}),
 		]);
-		return html(renderCostsPage({ days, months, repos, repo, account: real, email: identity?.email }));
+		return html(renderCostsPage({ days, months, repos, repo, account: real, containerDays, containerMonths, email: identity?.email }));
 	}
 
 	if (request.method === "POST" && path.startsWith(`${ADMIN_PATH}/`)) {

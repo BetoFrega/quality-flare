@@ -89,6 +89,21 @@ export interface AttemptRow extends ShardAttempt {
 	dwOutcome: string | null;
 }
 
+/** Container tests runs whose container stopped, summed: of one run, or of a day or month. */
+export interface ContainerUsage {
+	runs: number;
+	/** How long the containers were on: memory and disk are billed for all of it. */
+	wallMs: number;
+	/** CPU the containers used, where it was measured. */
+	cpuUs: number;
+	/** Runs whose CPU wasn't measured (the container died before reporting it). */
+	unmeasured: number;
+}
+
+export interface ContainerRow extends ContainerUsage {
+	period: string;
+}
+
 export interface MetricsStore {
 	start(attempt: ShardAttempt & { files: number }): Promise<void>;
 	finish(attempt: ShardAttempt & { outcome: ShardOutcome; codeBytes?: number; dynamicWorker: boolean }): Promise<void>;
@@ -99,7 +114,23 @@ export interface MetricsStore {
 	attempts(runId: number): Promise<AttemptRow[]>;
 	/** Per UTC day or month since `since` (epoch milliseconds), per repository unless `repo` narrows it. */
 	usage(by: "day" | "month", since: number, repo?: string): Promise<UsageRow[]>;
+	/** Container tests runs' container usage, by run id; runs without a stopped container are absent. */
+	containersByRun(runIds: number[]): Promise<Map<number, ContainerUsage>>;
+	/** Like `usage`, for Container tests runs (table test_container_runs, src/runs.ts). */
+	containerUsage(by: "day" | "month", since: number, repo?: string): Promise<ContainerRow[]>;
 }
+
+/** Sums over test_container_runs `c` that make up a ContainerUsage. */
+const CONTAINER_USAGE = `COUNT(*) AS runs, SUM(c.wall_ms) AS wall_ms, COALESCE(SUM(c.cpu_us), 0) AS cpu_us, SUM(c.cpu_us IS NULL) AS unmeasured`;
+
+interface ContainerSql {
+	runs: number;
+	wall_ms: number;
+	cpu_us: number;
+	unmeasured: number;
+}
+
+const containerUsage = (r: ContainerSql): ContainerUsage => ({ runs: r.runs, wallMs: r.wall_ms, cpuUs: r.cpu_us, unmeasured: r.unmeasured });
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS test_shard_attempts (
 	run_id INTEGER NOT NULL,
@@ -234,6 +265,33 @@ export function d1MetricsStore(db: D1Database, now = () => Date.now()): MetricsS
 				.bind(now() - LOST_AFTER_MS, since, ...(repo ? [repo] : []))
 				.all<UsageSql & { period: string; repo: string | null; runs: number }>();
 			return results.map((r) => ({ period: r.period, repo: r.repo, runs: r.runs, ...usage(r) }));
+		},
+		// test_container_runs belongs to the run history, which creates it.
+		async containersByRun(runIds) {
+			const result = new Map<number, ContainerUsage>();
+			if (!runIds.length) return result;
+			const { results } = await db
+				.prepare(
+					`SELECT c.run_id, ${CONTAINER_USAGE} FROM test_container_runs c
+					WHERE c.wall_ms IS NOT NULL AND c.run_id IN (${runIds.map(() => "?").join(", ")}) GROUP BY c.run_id`,
+				)
+				.bind(...runIds)
+				.all<ContainerSql & { run_id: number }>();
+			for (const r of results) result.set(r.run_id, containerUsage(r));
+			return result;
+		},
+		async containerUsage(by, since, repo) {
+			const period = `strftime('${by === "day" ? "%Y-%m-%d" : "%Y-%m"}', r.started_at / 1000, 'unixepoch')`;
+			const { results } = await db
+				.prepare(
+					`SELECT ${period} AS period, ${CONTAINER_USAGE}
+					FROM test_container_runs c JOIN test_runs r ON r.id = c.run_id
+					WHERE c.wall_ms IS NOT NULL AND r.started_at >= ?${repo ? " AND r.repo = ?" : ""}
+					GROUP BY period ORDER BY period DESC`,
+				)
+				.bind(since, ...(repo ? [repo] : []))
+				.all<ContainerSql & { period: string }>();
+			return results.map((r) => ({ period: r.period, ...containerUsage(r) }));
 		},
 	};
 }

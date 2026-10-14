@@ -70,6 +70,34 @@ describe.skipIf(inWorkers)("shard usage", () => {
 		expect(await metrics.usage("day", T - 30 * DAY, "octo/app")).toEqual([expect.objectContaining({ period: "2026-10-12", repo: "octo/app", runs: 1 })]);
 		expect(await metrics.usage("day", T)).toHaveLength(1);
 	});
+	it("sums Container tests usage per run, and per UTC day or month", async () => {
+		let clock = T - DAY;
+		const db = await fakeD1();
+		const runs = d1RunStore(db, () => clock);
+		const metrics = d1MetricsStore(db, () => clock);
+		const record = (runId: number, wallMs: number, cpuUs: number | null) =>
+			db.prepare("UPDATE test_container_runs SET instance = 'standard-4', wall_ms = ?, cpu_us = ? WHERE run_id = ?").bind(wallMs, cpuUs, runId).run();
+		const a = await runs.start({ repo: "octo/app", pr: 1, sha: "aaa", container: true });
+		await record(a, 600_000, 1_000_000);
+		clock = T;
+		const b = await runs.start({ repo: "octo/other", pr: 1, sha: "bbb", container: true });
+		// The container died before reporting its CPU.
+		await record(b, 60_000, null);
+		// Still running: its container hasn't stopped.
+		const c = await runs.start({ repo: "octo/app", pr: 2, sha: "ccc", container: true });
+		const notContainer = await runs.start({ repo: "octo/app", pr: 3, sha: "ddd" });
+
+		const byRun = await metrics.containersByRun([a, b, c, notContainer]);
+		expect([...byRun.keys()].sort()).toEqual([a, b].sort());
+		expect(byRun.get(a)).toEqual({ runs: 1, wallMs: 600_000, cpuUs: 1_000_000, unmeasured: 0 });
+		expect(byRun.get(b)).toEqual({ runs: 1, wallMs: 60_000, cpuUs: 0, unmeasured: 1 });
+		expect(await metrics.containerUsage("day", T - 30 * DAY)).toEqual([
+			{ period: "2026-10-13", runs: 1, wallMs: 60_000, cpuUs: 0, unmeasured: 1 },
+			{ period: "2026-10-12", runs: 1, wallMs: 600_000, cpuUs: 1_000_000, unmeasured: 0 },
+		]);
+		expect(await metrics.containerUsage("month", T - 30 * DAY)).toEqual([{ period: "2026-10", runs: 2, wallMs: 660_000, cpuUs: 1_000_000, unmeasured: 1 }]);
+		expect(await metrics.containerUsage("day", T - 30 * DAY, "octo/app")).toEqual([expect.objectContaining({ period: "2026-10-12", runs: 1 })]);
+	});
 });
 
 describe("cost estimate", () => {
