@@ -195,18 +195,31 @@ describe("tests on demand", () => {
 		ran.length = 0;
 	});
 
-	it("leaves a queued check run on a push, telling the agent when to ask for a run", async () => {
+	it("completes a push's check run as action required, telling the agent when to ask for a run", async () => {
 		const { checkRuns } = mockGitHub();
 		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), env);
 		expect(ran).toEqual([]);
+		// Completed, so the check suite finishes and agents waiting for CI wake up to a check that blocks the merge.
 		expect(checkRuns).toEqual([
 			expect.objectContaining({
 				name: "Tests",
-				status: "queued",
+				status: "completed",
+				conclusion: "action_required",
 				output: expect.objectContaining({ title: 'Aguardando "/quality-flare run"', summary: expect.stringContaining("pronta para o merge") }),
 			}),
 		]);
-		expect(checkRuns[0]).not.toHaveProperty("conclusion");
+	});
+
+	it("treats an action-required run as waiting: a push keeps it, the comment says so, a command runs it", async () => {
+		const pushed = mockGitHub({ existingRuns: { Tests: "completed:action_required" } });
+		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), env);
+		expect(pushed.checkRuns).toEqual([]);
+		expect(pushed.comments).toEqual([{ body: expect.stringContaining("| Tests | ⏳ esperando |") }]);
+
+		const commanded = mockGitHub({ existingRuns: { Tests: "completed:action_required" } });
+		await runPlan({ pullRequests: [7], checks: [tests], command: { commentId: 5 } }, "octo/repo", 99, settings(true), env);
+		expect(ran).toEqual([7]);
+		expect(commanded.reactions).toEqual([{ content: "rocket" }]);
 	});
 
 	it("keeps one status comment on a ready PR, edited only when what it says changes", async () => {

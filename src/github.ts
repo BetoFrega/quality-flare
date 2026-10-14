@@ -203,18 +203,25 @@ export class GitHubClient {
 	}
 
 	createCheckRun(repo: string, headSha: string, name: string, result: CheckResult): Promise<unknown> {
-		const open = result.conclusion === "pending" || result.conclusion === "waiting";
+		const open = result.conclusion === "pending";
 		return request(this.token, "POST", `/repos/${repo}/check-runs`, {
 			name,
 			head_sha: headSha,
-			status: result.conclusion === "waiting" ? "queued" : open ? "in_progress" : "completed",
-			conclusion: open ? undefined : result.conclusion,
+			status: open ? "in_progress" : "completed",
+			conclusion: open ? undefined : result.conclusion === "waiting" ? WAITING_CONCLUSION : result.conclusion,
 			output: { title: result.title, summary: result.summary },
 		});
 	}
 }
 
 export type MergeMethod = "MERGE" | "SQUASH" | "REBASE";
+
+/**
+ * How a check that waits for a run command ends. A queued run never finishes, so its check suite
+ * never completes and agents waiting for CI never wake; an "action_required" run completes the
+ * suite, blocks the merge like a failure, and shows its title as the thing to do.
+ */
+export const WAITING_CONCLUSION = "action_required";
 
 export interface CheckRunState {
 	status: "queued" | "in_progress" | "completed" | string;

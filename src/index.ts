@@ -131,7 +131,7 @@ export async function runPlan(plan: Plan, repo: string, installationId: number, 
 		const reported = allChecks.filter((c) => c.onDemand && settings.enabledChecks.has(c.id)).map((c) => c.name);
 		const affectsStatus = plan.finished || checks.some((c) => c.onDemand || c.id === codexReview.id);
 		if (settings.onDemand && !runsOnPush(true, pr) && reported.length && affectsStatus) {
-			// Agents watching a PR see a queued check as "pending", not its text; the comment reaches them.
+			// Agents watching a PR see a check's title, not its text; the comment reaches them.
 			// A ready PR whose checks wait gets one; afterwards every change of state edits it.
 			await updateStatus(github, repo, pr, {
 				checks: reported,
