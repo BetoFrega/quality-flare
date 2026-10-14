@@ -17,7 +17,7 @@ O check roda quando a PR é aberta, reaberta, recebe commits ou sai de draft, e 
 
 ### Testes sob demanda
 
-Se o repositório estiver com **Testes sob demanda** ligado no admin, o Tests e o Container tests não rodam no push: aparecem na PR em espera (Aguardando "/quality-flare run"). Um comentário `/quality-flare run` (primeira linha do comentário, de alguém com acesso ao repositório) roda o commit atual uma vez; o próximo push volta a esperar. PRs de bots, como o Dependabot, rodam direto.
+Se o repositório estiver com **Testes sob demanda** ligado no admin, o Tests e o Container tests não rodam no push: aparecem na PR em espera (Aguardando "/quality-flare run"). Um comentário `/quality-flare run` (primeira linha do comentário, de alguém com acesso ao repositório) roda o commit atual uma vez; o próximo push volta a esperar. PRs de bots, como o Dependabot, rodam direto. O quality-flare mantém um único comentário de status na PR (esperando o comando, esperando o Codex review, rodando, passou ou falhou, sempre com o commit) e o edita a cada mudança; leia esse comentário para saber se precisa comentar `/quality-flare run` de novo.
 
 **Agente:** rode os testes localmente o tempo todo, como sempre. Os testes remotos vêm por último: monte tudo, abra a PR para review, corrija as reviews e deixe a PR pronta para o merge. Só então comente `/quality-flare run`, quando achar que os testes vão passar. Depois que a suíte ficar verde, não faça mais push: cada push volta a esperar e cada execução custa dinheiro. Se a execução falhar, corrija, rode localmente e só então peça de novo.
 

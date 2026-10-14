@@ -5,7 +5,7 @@ import { runTestShards, sweepOverdueRuns } from "./checks/tests/index.ts";
 import type { TestShard } from "./checks/tests/jobs.ts";
 import type { Check, CheckResult } from "./checks/types.ts";
 import { verifySignature } from "./crypto.ts";
-import { codexBlockComment, codexReviewBlock, explainWaiting, isRunCommand, type PullRequestComment, runsOnPush, WAITING_RESULT } from "./on-demand.ts";
+import { codexReviewBlock, isRunCommand, type PullRequestComment, runsOnPush, updateStatus, WAITING_RESULT } from "./on-demand.ts";
 import { GitHubClient, type PullRequest } from "./github.ts";
 import { getRepoSettings, type RepoSettings } from "./settings.ts";
 
@@ -29,7 +29,7 @@ interface WebhookPayload {
 	pull_request?: PullRequest;
 	issue?: { number: number; pull_request?: unknown };
 	comment?: PullRequestComment;
-	check_run?: { name: string; pull_requests: { number: number }[] };
+	check_run?: { name: string; head_sha: string; app: { id: number }; pull_requests: { number: number }[] };
 	check_suite?: { pull_requests: { number: number }[] };
 }
 
@@ -51,6 +51,8 @@ export interface Plan {
 	command?: { commentId: number };
 	/** Someone pressed "Re-run": on-demand checks run without waiting. */
 	rerun?: true;
+	/** An on-demand check run finished on this commit: only the status comment changes. */
+	finished?: { sha: string; appId: number };
 }
 
 export default {
@@ -97,18 +99,18 @@ export async function runPlan(plan: Plan, repo: string, installationId: number, 
 	for (const target of plan.pullRequests) {
 		// Re-run requests only carry the PR number; fetch it so labels and body are current.
 		const pr = typeof target === "number" ? await github.getPullRequest(repo, target) : target;
+		// A finished run of another App, or of a commit the PR moved past, says nothing about this PR's head.
+		if (plan.finished && (String(plan.finished.appId) !== env.GITHUB_APP_ID || plan.finished.sha !== pr.head.sha)) continue;
 		const waiting: string[] = [];
+		const runsCodex = settings.enabledChecks.has(codexReview.id);
+		let codex: Promise<string | undefined> | undefined;
+		const codexBlock = () => (codex ??= codexBlocking(github, repo, pr.number));
 		const asksForTests = plan.command && checks.some((c) => c.onDemand && settings.enabledChecks.has(c.id));
-		const codexBlock = asksForTests && settings.enabledChecks.has(codexReview.id) ? await codexBlocking(github, repo, pr.number) : undefined;
-		if (codexBlock) {
-			commanded = "confused";
-			await github.commentOnPullRequest(repo, pr.number, codexBlockComment(codexBlock)).catch((error: unknown) => {
-				console.error("quality-flare: could not explain the Codex review block", error);
-			});
-		}
+		const blocked = asksForTests && runsCodex ? await codexBlock() : undefined;
+		if (blocked) commanded = "confused";
 		for (const check of checks) {
 			// The Codex review comes first: a command while it blocks runs no tests.
-			if (codexBlock && check.onDemand) continue;
+			if (blocked && check.onDemand) continue;
 			let result: CheckResult | null;
 			if (!settings.enabledChecks.has(check.id)) result = DISABLED_RESULT;
 			else if (check.onDemand && plan.command && (await runStatus(github, repo, pr.head.sha, check.name, env.GITHUB_APP_ID)) === "in_progress") {
@@ -125,10 +127,20 @@ export async function runPlan(plan: Plan, repo: string, installationId: number, 
 			}
 			if (result) await github.createCheckRun(repo, pr.head.sha, check.name, result);
 		}
-		// Agents watching a PR see a queued check as "pending", not its text; a comment reaches them.
-		if (waiting.length && !pr.draft) {
-			await explainWaiting(github, repo, pr.number, waiting).catch((error: unknown) => {
-				console.error("quality-flare: could not explain the waiting checks", error);
+		// Bots' PRs run on push and the setting off runs everything, so neither has anything to explain.
+		const reported = allChecks.filter((c) => c.onDemand && settings.enabledChecks.has(c.id)).map((c) => c.name);
+		const affectsStatus = plan.finished || checks.some((c) => c.onDemand || c.id === codexReview.id);
+		if (settings.onDemand && !runsOnPush(true, pr) && reported.length && affectsStatus) {
+			// Agents watching a PR see a queued check as "pending", not its text; the comment reaches them.
+			// A ready PR whose checks wait gets one; afterwards every change of state edits it.
+			await updateStatus(github, repo, pr, {
+				checks: reported,
+				appId: env.GITHUB_APP_ID,
+				codexBlock: runsCodex ? codexBlock : undefined,
+				ignoredCommand: Boolean(blocked),
+				create: Boolean(plan.command) || (waiting.length > 0 && !pr.draft),
+			}).catch((error: unknown) => {
+				console.error("quality-flare: could not update the status comment", error);
 			});
 		}
 	}
@@ -149,7 +161,7 @@ function codexBlocking(github: GitHubClient, repo: string, pr: number): Promise<
 
 /** The status of the commit's latest run of the check; when GitHub can't say, there is none, so the check runs or waits. */
 function runStatus(github: GitHubClient, repo: string, sha: string, name: string, appId: string): Promise<string | undefined> {
-	return github.latestCheckRunStatus(repo, sha, name, appId).catch((error: unknown) => {
+	return github.latestCheckRun(repo, sha, name, appId).then((run) => run?.status).catch((error: unknown) => {
 		console.error("quality-flare: could not list check runs", error);
 		return undefined;
 	});
@@ -179,9 +191,14 @@ export function planDelivery(event: string | null, payload: WebhookPayload, chec
 		}
 		case "check_run": {
 			// "Re-run" on one check run: run just that check, if it is ours.
-			const check = checks.find((c) => c.name === payload.check_run?.name);
-			if (payload.action !== "rerequested" || !check) return null;
-			return { pullRequests: payload.check_run!.pull_requests.map((p) => p.number), checks: [check], rerun: true };
+			const run = payload.check_run;
+			const check = checks.find((c) => c.name === run?.name);
+			if (!run || !check) return null;
+			const pullRequests = run.pull_requests.map((p) => p.number);
+			if (payload.action === "rerequested") return { pullRequests, checks: [check], rerun: true };
+			// A finished test run changes what the status comment says.
+			if (payload.action === "completed" && check.onDemand) return { pullRequests, checks: [], finished: { sha: run.head_sha, appId: run.app.id } };
+			return null;
 		}
 		case "check_suite":
 			if (payload.action !== "rerequested" || !payload.check_suite) return null;

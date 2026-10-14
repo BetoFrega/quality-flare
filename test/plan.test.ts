@@ -24,10 +24,18 @@ describe("planDelivery", () => {
 	it("re-runs only the requested check", () => {
 		const plan = planDelivery(
 			"check_run",
-			{ action: "rerequested", check_run: { name: "B", pull_requests: [{ number: 7 }] } },
+			{ action: "rerequested", check_run: { name: "B", head_sha: "abc", app: { id: 1 }, pull_requests: [{ number: 7 }] } },
 			checks,
 		);
 		expect(plan).toEqual({ pullRequests: [7], checks: [checks[1]], rerun: true });
+	});
+
+	it("updates the status comment when an on-demand check run finishes, and nothing else", () => {
+		const tests = { ...fake("T"), onDemand: true };
+		const finished = (name: string) => ({ action: "completed", check_run: { name, head_sha: "abc", app: { id: 1 }, pull_requests: [{ number: 7 }] } });
+		expect(planDelivery("check_run", finished("T"), [...checks, tests])).toEqual({ pullRequests: [7], checks: [], finished: { sha: "abc", appId: 1 } });
+		expect(planDelivery("check_run", finished("A"), [...checks, tests])).toBeNull();
+		expect(planDelivery("check_run", { ...finished("T"), action: "created" }, [tests])).toBeNull();
 	});
 
 	it("re-runs every check when the whole suite is re-requested", () => {
@@ -74,7 +82,7 @@ describe("planDelivery", () => {
 
 	it("ignores check runs that belong to someone else", () => {
 		expect(
-			planDelivery("check_run", { action: "rerequested", check_run: { name: "C", pull_requests: [] } }, checks),
+			planDelivery("check_run", { action: "rerequested", check_run: { name: "C", head_sha: "abc", app: { id: 1 }, pull_requests: [] } }, checks),
 		).toBeNull();
 	});
 });
