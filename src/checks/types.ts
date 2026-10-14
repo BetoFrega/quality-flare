@@ -7,7 +7,7 @@ export interface CheckResult {
 	/**
 	 * "pending" leaves the check run in progress, for a result that waits on something outside the PR.
 	 * "skipped" means the check does not apply to this PR; branch protection counts it as passing.
-	 * "waiting" leaves the check run queued until someone asks for a run (see on-demand.ts).
+	 * "waiting" completes the check run as "action_required" until someone asks for a run (see on-demand.ts).
 	 */
 	conclusion: Conclusion | "skipped" | "pending" | "waiting";
 	title: string;

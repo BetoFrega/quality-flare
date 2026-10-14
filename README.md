@@ -66,7 +66,9 @@ Roda o vitest do próprio repositório, com a config dele, num [container](https
 
 ### Testes sob demanda
 
-Uma opção por repositório no admin, desligada por padrão, que vale para o **Tests** e o **Container tests**. Ligada, um push na PR não roda esses checks: cada um fica em espera (check run `queued`) até alguém com acesso ao repositório (OWNER, MEMBER ou COLLABORATOR) comentar `/quality-flare run` na PR. O comentário roda o commit atual uma vez e recebe um 🚀; o próximo push volta a esperar. Se o commit já tem uma execução rodando, o comentário não começa outra e recebe um 👀. Com o check **Codex review** ligado, o comentário também não roda nada enquanto o Codex ainda revisa a PR ou deixou sugestões sem resolver, e recebe um 😕. Sair de draft ou reabrir a PR no mesmo commit não muda nada: o commit fica com o check run que já tem. O **Re-run** também roda.
+Uma opção por repositório no admin, desligada por padrão, que vale para o **Tests** e o **Container tests**. Ligada, um push na PR não roda esses checks: cada um fica em espera até alguém com acesso ao repositório (OWNER, MEMBER ou COLLABORATOR) comentar `/quality-flare run` na PR. O comentário roda o commit atual uma vez e recebe um 🚀; o próximo push volta a esperar. Se o commit já tem uma execução rodando, o comentário não começa outra e recebe um 👀. Com o check **Codex review** ligado, o comentário também não roda nada enquanto o Codex ainda revisa a PR ou deixou sugestões sem resolver, e recebe um 😕. Sair de draft ou reabrir a PR no mesmo commit não muda nada: o commit fica com o check run que já tem. O **Re-run** também roda.
+
+O check em espera termina como **Action required** (`action_required`), com o título `Aguardando "/quality-flare run"`. Ele trava o merge como uma falha, mas termina a check suite: um check `queued` nunca terminava, e agentes que esperam o CI acabar ficavam parados sem nunca acordar.
 
 A ideia é que agentes rodem os testes localmente o tempo todo e só peçam a execução remota no fim: depois de abrir a PR, corrigir as reviews e deixá-la pronta para o merge, sem push depois que a suíte fica verde. O texto do check em espera diz isso ao agente. Como agentes que acompanham a PR só veem o check como pendente, o quality-flare também mantém **um único comentário de status** na PR e o edita a cada mudança, sem criar outro. O comentário diz o commit e o estado de cada check:
 
@@ -80,7 +82,7 @@ A ideia é que agentes rodem os testes localmente o tempo todo e só peçam a ex
 | `/quality-flare run` ou **Re-run** começa a execução, ou o commit já tinha uma rodando | 🏃 rodando |
 | A execução termina (webhook `check_run` `completed` do Tests ou do Container tests) | ✅ passaram ou ❌ falharam, check por check |
 
-Drafts não ganham o comentário, mas um comentário que já existe continua sendo atualizado. O estado vem dos check runs do quality-flare no commit, e o comentário só é editado quando o texto muda. Um check em espera que a branch exige trava o merge até alguém pedir a execução. PRs abertas por bots, como as do Dependabot, rodam direto em todo push.
+Drafts não ganham o comentário, mas um comentário que já existe continua sendo atualizado. O estado vem dos check runs do quality-flare no commit, e o comentário só é editado quando o texto muda. Um check em espera que a branch exige trava o merge, inclusive o auto-merge, até alguém pedir a execução. PRs abertas por bots, como as do Dependabot, rodam direto em todo push.
 
 ### Dependabot auto-merge
 

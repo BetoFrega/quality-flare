@@ -1,11 +1,11 @@
 import { evaluate as evaluateCodexReview } from "./checks/codex-review/evaluate.ts";
 import type { CheckResult } from "./checks/types.ts";
-import type { CheckRunState, GitHubClient, PullRequest } from "./github.ts";
+import { type CheckRunState, type GitHubClient, type PullRequest, WAITING_CONCLUSION } from "./github.ts";
 
 /**
  * Tests on demand: with the repository's `onDemand` setting on, the checks marked `onDemand`
- * (Tests, Container tests) don't run on pushes. Each push leaves a queued check run that waits
- * for someone to comment `/quality-flare run`, which runs the PR's current head once. Agents
+ * (Tests, Container tests) don't run on pushes. Each push leaves an "action_required" check run that
+ * waits for someone to comment `/quality-flare run`, which runs the PR's current head once. Agents
  * test locally while they work and ask for a run only when the PR is ready to merge.
  */
 export const RUN_COMMAND = "/quality-flare run";
@@ -30,15 +30,15 @@ export function runsOnPush(onDemand: boolean, pr: PullRequest): boolean {
 	return !onDemand || pr.user.type === "Bot";
 }
 
-/** The queued check run a push leaves while it waits for a run command. */
+/** The check run a push leaves while it waits for a run command. */
 export const WAITING_RESULT: CheckResult = {
 	conclusion: "waiting",
 	title: `Aguardando "${RUN_COMMAND}"`,
 	summary: [
-		`Este check só roda quando alguém com acesso ao repositório comenta \`${RUN_COMMAND}\` nesta PR. ` +
-			"O comentário roda o commit atual uma vez; um push novo volta a esperar.",
+		`Este check ainda não rodou: ele só roda quando alguém com acesso ao repositório comenta \`${RUN_COMMAND}\` nesta PR. ` +
+			"Ele trava o merge até lá. O comentário roda o commit atual uma vez; um push novo volta a esperar.",
 		"",
-		"**Agente:** rode os testes localmente o tempo todo, como sempre. Os testes remotos vêm por último: " +
+		"**Agente:** este check é seu para destravar. rode os testes localmente o tempo todo, como sempre. Os testes remotos vêm por último: " +
 			"monte tudo, abra a PR para review, corrija as reviews e deixe a PR pronta para o merge. Só então comente " +
 			`\`${RUN_COMMAND}\`, quando achar que os testes vão passar. Depois que a suíte ficar verde, não faça mais push: ` +
 			"cada push volta a esperar e cada execução custa dinheiro.",
@@ -73,17 +73,20 @@ export interface StatusInput {
 
 const PASSING = new Set(["success", "neutral", "skipped"]);
 
+/** A run that waits for the command: completed as action_required, or queued as before that existed. */
+const isWaiting = (run: CheckRunState | undefined) => run?.status !== "completed" || run.conclusion === WAITING_CONCLUSION;
+
 function kindOf(runs: StatusInput["runs"]): StatusKind {
 	if (runs.some((r) => r.run?.status === "in_progress")) return "running";
-	if (!runs.every((r) => r.run?.status === "completed")) return "waiting";
+	if (runs.some((r) => isWaiting(r.run))) return "waiting";
 	return runs.every((r) => PASSING.has(r.run?.conclusion ?? "")) ? "passed" : "failed";
 }
 
 function runLabel(run: CheckRunState | undefined): string {
 	if (run?.status === "in_progress") return "🏃 rodando";
-	if (run?.status !== "completed") return "⏳ esperando";
-	if (run.conclusion === "success") return "✅ passou";
-	return PASSING.has(run.conclusion ?? "") ? `➖ ${run.conclusion}` : `❌ ${run.conclusion ?? "falhou"}`;
+	if (isWaiting(run)) return "⏳ esperando";
+	if (run?.conclusion === "success") return "✅ passou";
+	return PASSING.has(run?.conclusion ?? "") ? `➖ ${run?.conclusion}` : `❌ ${run?.conclusion ?? "falhou"}`;
 }
 
 const short = (sha: string) => sha.slice(0, 7);
@@ -169,7 +172,7 @@ export interface StatusUpdate {
 /**
  * Keeps one comment per PR saying where its on-demand checks stand on the head commit: waiting
  * (for the command or for the Codex review), running, passed or failed. Agents watching a PR see
- * a queued check only as "pending", so they read this comment, and edits replace it instead of
+ * a check's title, not its text, so they read this comment, and edits replace it instead of
  * piling up new ones. It is rewritten from GitHub's state on each event that can change it.
  */
 export async function updateStatus(github: GitHubClient, repo: string, pr: PullRequest, update: StatusUpdate): Promise<void> {
