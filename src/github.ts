@@ -57,7 +57,7 @@ export class GitHubClient {
 	}
 
 	/** Reacts to a PR conversation comment, such as 🚀 on a command that started a run. */
-	reactToComment(repo: string, commentId: number, content: "rocket" | "eyes" | "+1"): Promise<unknown> {
+	reactToComment(repo: string, commentId: number, content: "rocket" | "eyes" | "+1" | "confused"): Promise<unknown> {
 		return request(this.token, "POST", `/repos/${repo}/issues/comments/${commentId}/reactions`, { content });
 	}
 

@@ -34,6 +34,7 @@ function mockGitHub({
 	fetchedPr = pr,
 	existingRuns = {} as Record<string, string>,
 	existingComments = [] as { id?: number; body: string }[],
+	review = undefined as object | undefined,
 } = {}) {
 	const checkRuns: Record<string, unknown>[] = [];
 	const reactions: Record<string, unknown>[] = [];
@@ -43,6 +44,7 @@ function mockGitHub({
 		const path = new URL(url).pathname;
 		if (path === "/app/installations/99/access_tokens") return Response.json({ token: "inst-token" });
 		expect((init.headers as Record<string, string>).Authorization).toBe("Bearer inst-token");
+		if (path === "/graphql" && review) return Response.json({ data: { repository: { pullRequest: review } } });
 		if (path === "/graphql")
 			return Response.json({ data: { repository: { pullRequest: { closingIssuesReferences: { nodes: linked } } } } });
 		if (path === "/repos/octo/repo/pulls/7") return Response.json(fetchedPr);
@@ -266,6 +268,28 @@ describe("tests on demand", () => {
 		await runPlan({ pullRequests: [7], checks: [tests], command: { commentId: 5 } }, "octo/repo", 99, settings(true), env);
 		expect(ran).toEqual([7]);
 		expect(waiting.reactions).toEqual([{ content: "rocket" }]);
+	});
+
+	it("runs no tests while the Codex review blocks the PR, and says why", async () => {
+		const codex = { login: "chatgpt-codex-connector" };
+		const review = (resolved: boolean) => ({
+			reviewThreads: { nodes: [{ isResolved: resolved, isOutdated: false, comments: { nodes: [{ author: codex, body: "**Fix the cache**", url: "u" }] } }] },
+			reviews: { nodes: [{ author: codex }] },
+			comments: { nodes: [] },
+			reactionGroups: [],
+		});
+		const both = { enabled: true, enabledChecks: new Set(["tests", "codex-review"]), onDemand: true };
+		const blocked = mockGitHub({ review: review(false) });
+		await runPlan({ pullRequests: [7], checks: [tests], command: { commentId: 5 } }, "octo/repo", 99, both, env);
+		expect(ran).toEqual([]);
+		expect(blocked.checkRuns).toEqual([]);
+		expect(blocked.comments).toEqual([{ body: expect.stringContaining("o **Codex review** ainda bloqueia esta PR (1 sugestão do Codex sem resolver)") }]);
+		expect(blocked.reactions).toEqual([{ content: "confused" }]);
+
+		const clear = mockGitHub({ review: review(true) });
+		await runPlan({ pullRequests: [7], checks: [tests], command: { commentId: 5 } }, "octo/repo", 99, both, env);
+		expect(ran).toEqual([7]);
+		expect(clear.comments).toEqual([]);
 	});
 
 	it("ignores run commands with the setting off", async () => {
