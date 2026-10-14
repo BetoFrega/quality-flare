@@ -32,7 +32,7 @@ function delivery(event: string, payload: object, secret = env.GITHUB_WEBHOOK_SE
 function mockGitHub({
 	linked = [] as { number: number; repository: { nameWithOwner: string } }[],
 	fetchedPr = pr,
-	existingRuns = [] as string[],
+	existingRuns = {} as Record<string, string>,
 	existingComments = [] as { id?: number; body: string }[],
 } = {}) {
 	const checkRuns: Record<string, unknown>[] = [];
@@ -63,7 +63,8 @@ function mockGitHub({
 		if (path === "/repos/octo/repo/commits/abc123/check-runs") {
 			const query = new URL(url).searchParams;
 			expect(query.get("app_id")).toBe(env.GITHUB_APP_ID);
-			return Response.json({ total_count: existingRuns.filter((name) => name === query.get("check_name")).length });
+			const status = existingRuns[query.get("check_name") ?? ""];
+			return Response.json({ total_count: status ? 1 : 0, check_runs: status ? [{ status }] : [] });
 		}
 		if (path === "/repos/octo/repo/check-runs") {
 			checkRuns.push(JSON.parse(init.body as string));
@@ -224,14 +225,14 @@ describe("tests on demand", () => {
 	});
 
 	it("comments when a draft with a queued check becomes ready for review", async () => {
-		const { checkRuns, comments } = mockGitHub({ existingRuns: ["Tests"] });
+		const { checkRuns, comments } = mockGitHub({ existingRuns: { Tests: "queued" } });
 		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), env);
 		expect(checkRuns).toEqual([]);
 		expect(comments).toHaveLength(1);
 	});
 
 	it("keeps the run a commit already has when the PR leaves draft or reopens", async () => {
-		const { checkRuns } = mockGitHub({ existingRuns: ["Tests"] });
+		const { checkRuns } = mockGitHub({ existingRuns: { Tests: "queued" } });
 		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), env);
 		expect(ran).toEqual([]);
 		expect(checkRuns).toEqual([]);
@@ -252,6 +253,19 @@ describe("tests on demand", () => {
 		await runPlan({ pullRequests: [7], checks: [tests], rerun: true }, "octo/repo", 99, settings(true), env);
 		expect(ran).toEqual([7, 7]);
 		expect(reactions).toEqual([{ content: "rocket" }]);
+	});
+
+	it("doesn't start a second run when the commit's run is still going, and runs a waiting one", async () => {
+		const going = mockGitHub({ existingRuns: { Tests: "in_progress" } });
+		await runPlan({ pullRequests: [7], checks: [tests], command: { commentId: 5 } }, "octo/repo", 99, settings(true), env);
+		expect(ran).toEqual([]);
+		expect(going.checkRuns).toEqual([]);
+		expect(going.reactions).toEqual([{ content: "eyes" }]);
+
+		const waiting = mockGitHub({ existingRuns: { Tests: "queued" } });
+		await runPlan({ pullRequests: [7], checks: [tests], command: { commentId: 5 } }, "octo/repo", 99, settings(true), env);
+		expect(ran).toEqual([7]);
+		expect(waiting.reactions).toEqual([{ content: "rocket" }]);
 	});
 
 	it("ignores run commands with the setting off", async () => {
