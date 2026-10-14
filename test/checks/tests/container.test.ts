@@ -118,8 +118,14 @@ describe("Container tests", () => {
 			expect(d.status).toHaveBeenCalledWith("Container: instalando as dependências");
 		});
 
-		it("names the command running", async () => {
-			const d = deps({ current: "command1\n" });
+		it("names the tests and commands still running", async () => {
+			const d = deps({ current: "tests\n" });
+			await pollBox(job, d);
+			expect(d.status).toHaveBeenCalledWith("Container: rodando os testes, Lint");
+		});
+
+		it("leaves out what already finished", async () => {
+			const d = deps({ current: "tests\n", steps: "clone 0 1\ninstall 0 1\ntests 0 1\n" });
 			await pollBox(job, d);
 			expect(d.status).toHaveBeenCalledWith("Container: rodando Lint");
 		});

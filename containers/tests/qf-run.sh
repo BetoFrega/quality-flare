@@ -1,10 +1,10 @@
 #!/bin/bash
-# One run of the "Container tests" check: clones the PR head merged into its base, installs dependencies, runs the
-# repository's own vitest and then the commands of its config, each its own check run. It reports
+# One run of the "Container tests" check: clones the PR head merged into its base, installs dependencies, then runs the
+# repository's own vitest alongside the commands of its config, each its own check run. It reports
 # only through files in
 # $OUT, which the TestBox Durable Object reads (src/checks/tests/container.ts):
 #   steps            one line per finished step: "<name> <exit code> <milliseconds>"
-#   current          the step running now
+#   current          the step running now (clone, install, or tests while tests and commands run)
 #   <step>.log       the step's output
 #   report.json      vitest's JSON report
 #   cpu              CPU the container used, in microseconds (cgroup v2 usage_usec)
@@ -24,7 +24,6 @@ mkdir -p "$OUT" /work/repo
 # limit, logging to $OUT/<name>.log.
 step() {
 	local name=$1 limit=$2 command=${3:-$1} start code
-	echo "$name" >"$OUT/current"
 	start=$(date +%s%3N)
 	timeout --kill-after=10 "$limit" bash -c "$command" >>"$OUT/$name.log" 2>&1
 	code=$?
@@ -75,18 +74,25 @@ run_command() {
 }
 
 export OUT
-export -f clone merge_base install tests run_command
+export -f step clone merge_base install tests run_command
 
 run() {
 	cd /work/repo || return
+	echo clone >"$OUT/current"
 	step clone 300 || return
 	unset TOKEN
 	# As on GitHub Actions, for scripts written for it.
 	export CI=true GITHUB_BASE_REF=$BASE GITHUB_SHA=$SHA
+	echo install >"$OUT/current"
 	step install 600 || return
-	step tests 1500
+	# Tests and commands run at the same time: one at a time left most of the vCPUs idle (lint and
+	# typecheck use about one). The commands run at a lower priority, so the tests keep the CPU their
+	# timeouts expect and the commands take what the tests leave.
+	echo tests >"$OUT/current"
+	step tests 1500 &
 	local i
-	for ((i = 1; i <= ${COMMANDS:-0}; i++)); do step "command$i" 1200 "run_command $i"; done
+	for ((i = 1; i <= ${COMMANDS:-0}; i++)); do nice -n 10 bash -c 'step "$@"' _ "command$i" 1200 "run_command $i" & done
+	wait
 }
 
 run
