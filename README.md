@@ -66,9 +66,21 @@ Roda o vitest do próprio repositório, com a config dele, num [container](https
 
 ### Testes sob demanda
 
-Uma opção por repositório no admin, desligada por padrão, que vale para o **Tests** e o **Container tests**. Ligada, um push na PR não roda esses checks: cada um fica em espera (check run `queued`) até alguém com acesso ao repositório (OWNER, MEMBER ou COLLABORATOR) comentar `/quality-flare run` na PR. O comentário roda o commit atual uma vez e recebe um 🚀; o próximo push volta a esperar. Se o commit já tem uma execução rodando, o comentário não começa outra e recebe um 👀. Com o check **Codex review** ligado, o comentário também não roda nada enquanto o Codex ainda revisa a PR ou deixou sugestões sem resolver: o quality-flare responde na PR explicando e o comentário recebe um 😕. Sair de draft ou reabrir a PR no mesmo commit não muda nada: o commit fica com o check run que já tem. O **Re-run** também roda.
+Uma opção por repositório no admin, desligada por padrão, que vale para o **Tests** e o **Container tests**. Ligada, um push na PR não roda esses checks: cada um fica em espera (check run `queued`) até alguém com acesso ao repositório (OWNER, MEMBER ou COLLABORATOR) comentar `/quality-flare run` na PR. O comentário roda o commit atual uma vez e recebe um 🚀; o próximo push volta a esperar. Se o commit já tem uma execução rodando, o comentário não começa outra e recebe um 👀. Com o check **Codex review** ligado, o comentário também não roda nada enquanto o Codex ainda revisa a PR ou deixou sugestões sem resolver, e recebe um 😕. Sair de draft ou reabrir a PR no mesmo commit não muda nada: o commit fica com o check run que já tem. O **Re-run** também roda.
 
-A ideia é que agentes rodem os testes localmente o tempo todo e só peçam a execução remota no fim: depois de abrir a PR, corrigir as reviews e deixá-la pronta para o merge, sem push depois que a suíte fica verde. O texto do check em espera diz isso ao agente, e o quality-flare também comenta uma vez na PR quando ela não é draft (ou sai de draft), porque agentes que acompanham a PR só veem o check como pendente. Um check em espera que a branch exige trava o merge até alguém pedir a execução. PRs abertas por bots, como as do Dependabot, rodam direto em todo push.
+A ideia é que agentes rodem os testes localmente o tempo todo e só peçam a execução remota no fim: depois de abrir a PR, corrigir as reviews e deixá-la pronta para o merge, sem push depois que a suíte fica verde. O texto do check em espera diz isso ao agente. Como agentes que acompanham a PR só veem o check como pendente, o quality-flare também mantém **um único comentário de status** na PR e o edita a cada mudança, sem criar outro. O comentário diz o commit e o estado de cada check:
+
+| Situação | O comentário diz |
+| --- | --- |
+| Push numa PR pronta (ou ela sai de draft) e os checks ficam esperando | ⏳ esperando `/quality-flare run`; é aqui que o comentário nasce |
+| Push depois de uma execução (rodando, verde ou vermelha) | ⏳ esperando, e que a execução no commit anterior não vale para o novo |
+| O Codex está revisando ou deixou sugestões sem resolver, com os checks esperando | ⏸️ esperando o Codex review, com o motivo |
+| `/quality-flare run` enquanto o Codex bloqueia | ⏸️ esperando o Codex review, e que o comando não rodou nada |
+| O Codex review libera (conversas resolvidas, review terminou) | ⏳ esperando `/quality-flare run` |
+| `/quality-flare run` ou **Re-run** começa a execução, ou o commit já tinha uma rodando | 🏃 rodando |
+| A execução termina (webhook `check_run` `completed` do Tests ou do Container tests) | ✅ passaram ou ❌ falharam, check por check |
+
+Drafts não ganham o comentário, mas um comentário que já existe continua sendo atualizado. O estado vem dos check runs do quality-flare no commit, e o comentário só é editado quando o texto muda. Um check em espera que a branch exige trava o merge até alguém pedir a execução. PRs abertas por bots, como as do Dependabot, rodam direto em todo push.
 
 ### Dependabot auto-merge
 
@@ -105,7 +117,7 @@ Eventos tratados:
 | `pull_request` | `opened`, `reopened`, `edited`, `synchronize`, `labeled`, `unlabeled`, `ready_for_review` |
 | `pull_request_review`, `pull_request_review_comment`, `pull_request_review_thread` | todas (só os checks que pedem esses eventos, como o Codex review) |
 | `issue_comment` | todas, em PRs (idem) |
-| `check_run` | `rerequested` (botão **Re-run**; roda só aquele check) |
+| `check_run` | `rerequested` (botão **Re-run**; roda só aquele check), `completed` (Tests e Container tests do próprio App: atualiza o comentário de status) |
 | `check_suite` | `rerequested` (roda todos os checks) |
 
 Vincular uma issue pela barra lateral não gera webhook. Depois de vincular, clique em **Re-run** no check (ou edite a descrição) para reavaliar.

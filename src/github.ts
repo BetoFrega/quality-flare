@@ -194,12 +194,12 @@ export class GitHubClient {
 		});
 	}
 
-	/** Whether the App already reported a check run with this name on the commit. */
-	/** Status of the App's latest run of the check on the commit ("queued", "in_progress", "completed"), or undefined without one. */
-	async latestCheckRunStatus(repo: string, headSha: string, name: string, appId: string): Promise<string | undefined> {
+	/** The App's latest run of the check on the commit, or undefined without one. */
+	async latestCheckRun(repo: string, headSha: string, name: string, appId: string): Promise<CheckRunState | undefined> {
 		const query = new URLSearchParams({ check_name: name, app_id: appId, filter: "latest" });
-		const runs = await request<{ check_runs: { status: string }[] }>(this.token, "GET", `/repos/${repo}/commits/${headSha}/check-runs?${query}`);
-		return runs.check_runs[0]?.status;
+		const runs = await request<{ check_runs: CheckRunState[] }>(this.token, "GET", `/repos/${repo}/commits/${headSha}/check-runs?${query}`);
+		const latest = runs.check_runs[0];
+		return latest && { status: latest.status, conclusion: latest.conclusion ?? null };
 	}
 
 	createCheckRun(repo: string, headSha: string, name: string, result: CheckResult): Promise<unknown> {
@@ -215,6 +215,12 @@ export class GitHubClient {
 }
 
 export type MergeMethod = "MERGE" | "SQUASH" | "REBASE";
+
+export interface CheckRunState {
+	status: "queued" | "in_progress" | "completed" | string;
+	/** Set once the run completes: "success", "failure", "neutral"… */
+	conclusion: string | null;
+}
 
 export interface PullRequest {
 	number: number;
