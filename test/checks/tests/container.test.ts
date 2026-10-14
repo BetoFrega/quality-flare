@@ -121,7 +121,7 @@ describe("Container tests", () => {
 		it("names the tests and commands still running", async () => {
 			const d = deps({ current: "tests\n" });
 			await pollBox(job, d);
-			expect(d.status).toHaveBeenCalledWith("Container: rodando os testes, Lint");
+			expect(d.status).toHaveBeenCalledWith("Container: rodando os testes e Lint");
 		});
 
 		it("leaves out what already finished", async () => {

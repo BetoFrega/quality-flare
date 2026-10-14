@@ -292,14 +292,12 @@ export async function pollBox(job: BoxJob, deps: PollDeps): Promise<"poll" | "do
 	return "poll";
 }
 
-/** Tests and commands run at the same time: names those that haven't finished. */
+/** The tests run alongside the commands, which run one after another: names the tests, if still running, and the command running. */
 async function runningStatus(job: BoxJob, deps: Pick<PollDeps, "read">): Promise<string> {
 	const finished = new Set(parseSteps((await deps.read("steps")) ?? "").map((s) => s.name));
-	const running = [
-		...(finished.has("tests") ? [] : ["os testes"]),
-		...job.commands.filter((_, i) => !finished.has(`command${i + 1}`)).map((c) => c.name),
-	];
-	return `Container: rodando ${running.join(", ") || "os testes"}`;
+	const command = job.commands.find((_, i) => !finished.has(`command${i + 1}`));
+	const running = [...(finished.has("tests") ? [] : ["os testes"]), ...(command ? [command.name] : [])];
+	return `Container: rodando ${running.join(" e ") || "os testes"}`;
 }
 
 const STEP_STATUS: Record<string, string> = {
