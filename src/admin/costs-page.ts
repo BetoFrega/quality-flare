@@ -1,5 +1,7 @@
 import { dayCost, monthOverage, type AccountUsage } from "../account-usage.ts";
-import { cost, INCLUDED, LOST_AFTER_MS, monthCost, PRICES, type AttemptRow, type ShardOutcome, type Usage, type UsageRow } from "../metrics.ts";
+import { INSTANCE } from "../checks/tests/container.ts";
+import { boxResources, CONTAINER_INCLUDED, containerCost, containerOverage, type ContainerResources } from "../container-costs.ts";
+import { cost, INCLUDED, LOST_AFTER_MS, monthCost, PRICES, type AttemptRow, type ContainerRow, type ContainerUsage, type ShardOutcome, type Usage, type UsageRow } from "../metrics.ts";
 import { esc, layout, renderHeader, select } from "./page.ts";
 
 /** Usage and estimated cost: the run pages' "Uso" section and the /admin/costs page. */
@@ -14,11 +16,15 @@ export function cpu(ms: number): string {
 
 const n = (value: number) => value.toLocaleString("pt-BR");
 
-/** Cells for a run in the runs list: Dynamic Workers and estimated cost. */
-export function usageCells(u: Usage | undefined): string {
-	if (!u) return '<td class="num">—</td><td class="num">—</td>';
-	const trouble = u.crashes ? ` <span class="failure" title="quedas">${u.crashes}✗</span>` : "";
-	return `<td class="num">${n(u.dynamicWorkers)}${trouble}</td><td class="num">${money(cost(u))}</td>`;
+/** A container's estimated gross cost: memory and disk for the time it was on, CPU as used. */
+export const boxesCost = (c: ContainerUsage) => containerCost(boxResources(c.wallMs, c.cpuUs));
+
+/** Cells for a run in the runs list: Dynamic Workers and estimated cost, Dynamic Workers and container together. */
+export function usageCells(u: Usage | undefined, box?: ContainerUsage): string {
+	if (!u && !box) return '<td class="num">—</td><td class="num">—</td>';
+	const trouble = u?.crashes ? ` <span class="failure" title="quedas">${u.crashes}✗</span>` : "";
+	const dw = u ? `${n(u.dynamicWorkers)}${trouble}` : '<span title="Rodou num container">—</span>';
+	return `<td class="num">${dw}</td><td class="num">${money((u ? cost(u) : 0) + (box ? boxesCost(box) : 0))}</td>`;
 }
 
 const OUTCOME: Record<ShardOutcome, string> = {
@@ -84,7 +90,21 @@ export interface CostsPageData {
 	repo?: string;
 	/** The account's real usage, or why it couldn't be read. */
 	account?: AccountUsage | string;
+	/** Container tests runs, per day and per month. */
+	containerDays?: ContainerRow[];
+	containerMonths?: ContainerRow[];
 	email?: string;
+}
+
+const hours = (seconds: number) => (seconds / 3600).toLocaleString("pt-BR", { maximumFractionDigits: 1 });
+
+/** Container usage against the monthly allowance, as Cloudflare bills it. */
+function containerItems(r: ContainerResources): [string, string][] {
+	return [
+		["Memória dos containers", `${hours(r.memoryGiBs)} de ${hours(CONTAINER_INCLUDED.memoryGiBs)} GiB-h`],
+		["CPU dos containers", `${n(Math.round(r.vcpuS / 60))} de ${n(CONTAINER_INCLUDED.vcpuS / 60)} vCPU-min`],
+		["Disco dos containers", `${hours(r.diskGBs)} de ${hours(CONTAINER_INCLUDED.diskGBs)} GB-h`],
+	];
 }
 
 /** What Cloudflare measured on the whole account: the numbers it bills, without per-run detail. */
@@ -101,6 +121,7 @@ function renderAccount(account: AccountUsage | string | undefined): string {
 			<td class="num">${n(d.requests)}</td>
 			<td class="num${d.errors ? " failure" : ""}">${n(d.errors)}</td>
 			<td class="num">${cpu(d.accountCpuMs)}</td>
+			<td class="num">${money(containerCost(d.containers))}</td>
 			<td class="num">${money(dayCost(d))}</td>
 		</tr>`,
 		)
@@ -111,18 +132,57 @@ function renderAccount(account: AccountUsage | string | undefined): string {
 		["CPU da conta", `${cpu(month.accountCpuMs)} de ${cpu(INCLUDED.cpuMs)}`],
 		["CPU do quality-flare", cpu(month.cpuMs)],
 		["Invocações com erro", n(month.errors)],
+		...containerItems(month.containers),
+		["Containers após franquia", money(containerOverage(month.containers))],
 	];
 	return `<h3>Conta Cloudflare, mês ${esc(month.period)} (medido)</h3>
 		<dl class="stats">${items.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>
-		<p class="hint">Números reais do Cloudflare Analytics para a conta inteira, sem separar por execução. A cobrança estimada é o que passa da franquia do mês (mês do calendário, UTC; o ciclo de cobrança pode ser outro). Requisições e fila ficam dentro da franquia.</p>
+		<p class="hint">Números reais do Cloudflare Analytics para a conta inteira, sem separar por execução. Containers somam memória e disco pelo tempo ligado e a CPU usada. A cobrança estimada é o que passa da franquia do mês (mês do calendário, UTC; o ciclo de cobrança pode ser outro). Requisições e fila ficam dentro da franquia.</p>
 		${
 			days.length
-				? `<details class="plain"><summary>Por dia (últimos 30 dias)</summary><div class="scroll"><table><thead><tr><th>Dia</th><th class="num">Dynamic Workers</th><th class="num">CPU do quality-flare</th><th class="num">Invocações</th><th class="num">Erros</th><th class="num">CPU da conta</th><th class="num">Custo bruto</th></tr></thead><tbody>${rows}</tbody></table></div></details>`
+				? `<details class="plain"><summary>Por dia (últimos 30 dias)</summary><div class="scroll"><table><thead><tr><th>Dia</th><th class="num">Dynamic Workers</th><th class="num">CPU do quality-flare</th><th class="num">Invocações</th><th class="num">Erros</th><th class="num">CPU da conta</th><th class="num">Containers</th><th class="num">Custo bruto</th></tr></thead><tbody>${rows}</tbody></table></div></details>`
 				: ""
 		}`;
 }
 
-export function renderCostsPage({ days, months, repos, repo, account, email }: CostsPageData): string {
+/** Estimates for the Container tests check, from what each run's container recorded. */
+function renderContainers(days: ContainerRow[], months: ContainerRow[]): string {
+	const row = (r: ContainerRow, month: boolean) => `<tr>
+		<td class="mono">${esc(r.period)}</td>
+		<td class="num">${n(r.runs)}</td>
+		<td class="num">${cpu(r.wallMs)}</td>
+		<td class="num${r.unmeasured ? " failure" : ""}" ${r.unmeasured ? `title="${r.unmeasured} sem CPU medida"` : ""}>${cpu(Math.round(r.cpuUs / 1000))}</td>
+		<td class="num">${money(boxesCost(r))}</td>
+		${month ? `<td class="num">${money(containerOverage(boxResources(r.wallMs, r.cpuUs)))}</td>` : ""}
+	</tr>`;
+	const table = (rows: ContainerRow[], month: boolean) =>
+		rows.length
+			? `<div class="scroll"><table><thead><tr><th>Período</th><th class="num">Execuções</th><th class="num">Tempo ligado</th><th class="num">CPU usada</th><th class="num">Custo</th>${month ? '<th class="num">Após franquia</th>' : ""}</tr></thead><tbody>${rows.map((r) => row(r, month)).join("")}</tbody></table></div>`
+			: '<p class="empty">Nenhum container registrado nesse período.</p>';
+	const current = months[0];
+	const summary = current
+		? `<h3>Containers, mês ${esc(current.period)}</h3><dl class="stats">${(
+				[
+					["Custo estimado", money(boxesCost(current))],
+					["Após franquia", money(containerOverage(boxResources(current.wallMs, current.cpuUs)))],
+					["Execuções", n(current.runs)],
+					["Tempo ligado", cpu(current.wallMs)],
+					...containerItems(boxResources(current.wallMs, current.cpuUs)),
+				] as [string, string][]
+			)
+				.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`)
+				.join("")}</dl>`
+		: "";
+	return `<h3>Estimativa dos Container tests</h3>
+		<p class="hint">Cada execução sobe um container ${esc(INSTANCE.name)} (${INSTANCE.vcpu} vCPU, ${INSTANCE.memoryGiB} GiB, ${INSTANCE.diskGB} GB). Memória (US$ 0,0000025 por GiB-s) e disco (US$ 0,00000007 por GB-s) contam pelo tempo ligado; CPU (US$ 0,00002 por vCPU-s) pelo que foi usado. A conta inclui por mês ${hours(CONTAINER_INCLUDED.memoryGiBs)} GiB-h de memória, ${n(CONTAINER_INCLUDED.vcpuS / 60)} vCPU-min e ${hours(CONTAINER_INCLUDED.diskGBs)} GB-h de disco.</p>
+		${summary}
+		<h3>Containers por dia (últimos 30 dias, UTC)</h3>
+		${table(days, false)}
+		<h3>Containers por mês</h3>
+		${table(months, true)}`;
+}
+
+export function renderCostsPage({ days, months, repos, repo, account, containerDays = [], containerMonths = [], email }: CostsPageData): string {
 	const head = '<tr><th>Período</th><th class="num">Execuções</th><th class="num">Lotes</th><th class="num">Retries</th><th class="num">Quedas</th><th class="num">Dynamic Workers</th><th class="num">CPU dos DW</th><th class="num">Custo</th>';
 	const row = (r: UsageRow, month: boolean) => `<tr>
 		<td class="mono">${esc(r.period)}</td>
@@ -151,7 +211,7 @@ export function renderCostsPage({ days, months, repos, repo, account, email }: C
 		<main>
 			<h2>Custos</h2>
 			${renderAccount(account)}
-			<h3>Estimativa por execução dos testes</h3>
+			<h3>Estimativa dos testes em Dynamic Workers</h3>
 			<p class="hint">Estimados a partir do que cada lote do check Tests registra: Dynamic Workers criados (US$ ${PRICES.dynamicWorker} cada), CPU dos Dynamic Workers (US$ 0,02 por milhão de ms), requisições e operações de fila. O CPU do consumer da fila não entra. A conta inclui por mês ${n(INCLUDED.dynamicWorkers)} Dynamic Workers e ${n(INCLUDED.cpuMs / 1_000_000)} milhões de ms de CPU, divididos com os outros Workers. O valor cobrado de verdade está em <a href="https://dash.cloudflare.com/?to=/:account/billing">Billing &gt; Billable Usage</a>.</p>
 			${filters}
 			${current ? `<h3>Testes, mês ${esc(current.period)}</h3>${stats(current, [["Após franquia", money(monthCost(current))]])}` : ""}
@@ -159,6 +219,7 @@ export function renderCostsPage({ days, months, repos, repo, account, email }: C
 			${table(days, false)}
 			<h3>Testes por mês</h3>
 			${table(months, true)}
+			${renderContainers(containerDays, containerMonths)}
 		</main>`,
 	);
 }

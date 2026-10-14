@@ -1,5 +1,5 @@
 import { RUN_SORTS, RUN_STATES, runState, type RunQuery, type RunSort, type TestRun, type TestRunDetail } from "../runs.ts";
-import type { AttemptRow, Usage } from "../metrics.ts";
+import type { AttemptRow, ContainerUsage, Usage } from "../metrics.ts";
 import { boxCost, INSTANCE, type BoxUsage } from "../checks/tests/container.ts";
 import { cpu, money, renderRunUsage, usageCells } from "./costs-page.ts";
 import { esc, layout, renderHeader, select } from "./page.ts";
@@ -31,11 +31,13 @@ export interface RunsPageData {
 	query: RunQuery;
 	/** Each run's shard usage, by run id; runs from before it was recorded are absent. */
 	usage?: Map<number, Usage>;
+	/** Each Container tests run's container usage, by run id. */
+	containers?: Map<number, ContainerUsage>;
 	email?: string;
 	now: number;
 }
 
-export function renderRunsPage({ runs, repos, query, usage = new Map(), email, now }: RunsPageData): string {
+export function renderRunsPage({ runs, repos, query, usage = new Map(), containers = new Map(), email, now }: RunsPageData): string {
 	const filtered = Boolean(query.repo || query.state);
 	const running = runs.some((r) => runState(r, now) === "running");
 	const rows = runs
@@ -47,7 +49,7 @@ export function renderRunsPage({ runs, repos, query, usage = new Map(), email, n
 				<td>${s === "running" ? `<span data-progress="${run.id}">Preparando…</span>` : esc(run.title ?? "")}</td>
 				<td class="num">${when(run.startedAt, now)}</td>
 				<td class="num">${duration(run, now)}</td>
-				${usageCells(usage.get(run.id))}
+				${usageCells(usage.get(run.id), containers.get(run.id))}
 			</tr>`;
 		})
 		.join("");

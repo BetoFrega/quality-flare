@@ -20,6 +20,8 @@ describe("account usage", () => {
 									{ dimensions: { date: "2026-10-13", scriptName: "other" }, sum: { cpuTimeUs: 1_000_000, requests: 9, errors: 0 } },
 									{ dimensions: { date: "2026-09-30", scriptName: "quality-flare" }, sum: { cpuTimeUs: 2_000, requests: 1, errors: 0 } },
 								],
+								// Memory and disk in byte-seconds.
+								containers: [{ dimensions: { date: "2026-10-13" }, sum: { allocatedMemory: 100_000 * 2 ** 30, allocatedDisk: 1_000 * 1e9, cpuTimeSec: 30_000 } }],
 							},
 						],
 					},
@@ -33,10 +35,11 @@ describe("account usage", () => {
 		expect(init.headers).toMatchObject({ Authorization: "Bearer t" });
 		expect(JSON.parse(String(init.body)).variables).toEqual({ account: "acc", since: "2026-09-14", until: "2026-10-13" });
 		expect(usage.days.map((d) => d.date)).toEqual(["2026-10-13", "2026-10-12", "2026-09-30"]);
-		expect(usage.days[0]).toEqual({ date: "2026-10-13", dynamicWorkers: 1422, cpuMs: 14_355_794, requests: 7444, errors: 1465, accountCpuMs: 14_356_794 });
+		expect(usage.days[0]).toEqual({ date: "2026-10-13", dynamicWorkers: 1422, cpuMs: 14_355_794, requests: 7444, errors: 1465, accountCpuMs: 14_356_794, containers: { memoryGiBs: 100_000, vcpuS: 30_000, diskGBs: 1_000 } });
 		// September stays out of October's totals.
-		expect(usage.month).toEqual({ period: "2026-10", dynamicWorkers: 1952, cpuMs: 14_355_794, requests: 7444, errors: 1465, accountCpuMs: 14_356_794 });
-		expect(monthOverage(usage.month)).toBeCloseTo(952 * 0.002, 8);
+		expect(usage.month).toEqual({ period: "2026-10", dynamicWorkers: 1952, cpuMs: 14_355_794, requests: 7444, errors: 1465, accountCpuMs: 14_356_794, containers: { memoryGiBs: 100_000, vcpuS: 30_000, diskGBs: 1_000 } });
+		// Containers: 10,000 GiB-s of memory and 7,500 vCPU-s past the allowance; disk stays inside it.
+		expect(monthOverage(usage.month)).toBeCloseTo(952 * 0.002 + 10_000 * 0.0000025 + 7_500 * 0.00002, 8);
 	});
 
 	it("fails with GraphQL's errors", async () => {
