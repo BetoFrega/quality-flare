@@ -2,6 +2,7 @@ import { exports } from "cloudflare:workers";
 import { GitHubClient } from "../../github.ts";
 import { livePublisher } from "../../live.ts";
 import { d1RunStore } from "../../runs.ts";
+import { TURBO_PATH, turboToken } from "../../turbo-cache.ts";
 import type { Check, CheckResult } from "../types.ts";
 import { CONFIG_FILE, containerCommands, readContainerConfig, type ContainerCommand, type ContainerConfig } from "./config.ts";
 import { cancelRuns, cannotRun, CODE_ACTIONS, finishRun } from "./index.ts";
@@ -178,12 +179,13 @@ export class TestBox {
 		if (!container) return new Response("Este Durable Object não tem container.", { status: 500 });
 		const credentials = { appId: this.env.GITHUB_APP_ID, privateKey: this.env.GITHUB_PRIVATE_KEY };
 		const token = await GitHubClient.contentsReadToken(credentials, job.installationId, job.repo);
+		const turbo = config.turboCache ? { api: `${this.env.PUBLIC_URL}${TURBO_PATH}`, token: await turboToken(this.env.GITHUB_WEBHOOK_SECRET, job.repo) } : undefined;
 		container.start({
 			image: container.images.tests,
 			instance: INSTANCE.name,
-			// npm and GitHub; the token reads this repository only.
+			// npm, GitHub and the Turborepo cache; the tokens reach this repository only.
 			enableInternet: true,
-			env: boxEnv(job, config, token),
+			env: boxEnv(job, config, token, turbo),
 		});
 		await container.setInactivityTimeout(INACTIVITY_MS);
 		await this.ctx.storage.put("job", job);
@@ -272,7 +274,12 @@ export async function alertFullRun(github: Pick<GitHubClient, "createIssue">, jo
 }
 
 /** The container's environment (see qf-run.sh). */
-export function boxEnv(job: Pick<BoxJob, "repo" | "sha" | "base" | "changed" | "full">, config: ContainerConfig, token: string): Record<string, string> {
+export function boxEnv(
+	job: Pick<BoxJob, "repo" | "sha" | "base" | "changed" | "full">,
+	config: ContainerConfig,
+	token: string,
+	turbo?: { api: string; token: string },
+): Record<string, string> {
 	const commands = containerCommands(config);
 	return {
 		REPO: job.repo,
@@ -280,6 +287,8 @@ export function boxEnv(job: Pick<BoxJob, "repo" | "sha" | "base" | "changed" | "
 		BASE: job.base,
 		TOKEN: token,
 		...(job.full ? { FULL: "1" } : job.changed ? { CHANGED: "1" } : {}),
+		// A full run checks what the cache would vouch for: it builds everything, and still fills the cache.
+		...(turbo ? { TURBO_API: turbo.api, TURBO_TEAM: "quality-flare", TURBO_TOKEN: turbo.token, ...(job.full ? { TURBO_FORCE: "true" } : {}) } : {}),
 		...(config.install ? { INSTALL: config.install } : {}),
 		...(config.vitestArgs?.length ? { VITEST_ARGS: config.vitestArgs.join("\n") } : {}),
 		...(commands.length ? { COMMANDS: String(commands.length) } : {}),

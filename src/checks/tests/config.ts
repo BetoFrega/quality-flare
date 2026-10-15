@@ -79,6 +79,8 @@ export interface ContainerConfig {
 	 * full run on the default branch catches what that misses (src/checks/tests/daily.ts).
 	 */
 	changed?: boolean;
+	/** Gives Turborepo, in the commands, a remote cache shared by the repository's runs (src/turbo-cache.ts). */
+	turboCache?: boolean;
 }
 
 /** A command of the container section, and the check run it reports as. */
@@ -103,7 +105,9 @@ export function readContainerConfig(source: string | undefined): ContainerConfig
 	for (const key of ["install", "typecheck"] as const) {
 		if (container[key] !== undefined && typeof container[key] !== "string") throw new Error(`${CONFIG_FILE}: "container.${key}" deve ser um texto.`);
 	}
-	if (container.changed !== undefined && typeof container.changed !== "boolean") throw new Error(`${CONFIG_FILE}: "container.changed" deve ser true ou false.`);
+	for (const key of ["changed", "turboCache"] as const) {
+		if (container[key] !== undefined && typeof container[key] !== "boolean") throw new Error(`${CONFIG_FILE}: "container.${key}" deve ser true ou false.`);
+	}
 	const args = container.vitestArgs;
 	if (args !== undefined && !(Array.isArray(args) && args.every((a) => typeof a === "string" && !a.includes("\n")))) {
 		throw new Error(`${CONFIG_FILE}: "container.vitestArgs" deve ser uma lista de textos.`);

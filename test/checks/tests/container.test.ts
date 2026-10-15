@@ -201,6 +201,15 @@ describe("Container tests", () => {
 		expect(boxEnv(job, {}, "t")).not.toHaveProperty("CHANGED");
 	});
 
+	it("points Turborepo at the repository's remote cache, which a full run doesn't trust", () => {
+		const job = { repo: "octo/app", sha: "abc", base: "main" };
+		const turbo = { api: "https://qf.example/turbo", token: "tt" };
+		expect(boxEnv(job, { turboCache: true }, "t", turbo)).toMatchObject({ TURBO_API: "https://qf.example/turbo", TURBO_TEAM: "quality-flare", TURBO_TOKEN: "tt" });
+		expect(boxEnv(job, { turboCache: true }, "t", turbo)).not.toHaveProperty("TURBO_FORCE");
+		expect(boxEnv({ ...job, full: true }, { turboCache: true }, "t", turbo)).toMatchObject({ TURBO_FORCE: "true" });
+		expect(boxEnv(job, {}, "t")).not.toHaveProperty("TURBO_API");
+	});
+
 	it("reads the container section of quality-flare.json apart from the tests section", () => {
 		const container = { vitestArgs: ["--project", "node"], typecheck: "tsc", commands: { Lint: "eslint .", "Web Workers": "turbo run test" } };
 		const json = JSON.stringify({ tests: { include: ["src/**/*.test.ts"] }, container });
@@ -210,7 +219,8 @@ describe("Container tests", () => {
 		expect(invalid({ vitestArgs: "--project node" })).toThrow(/vitestArgs/);
 		expect(invalid({ typecheck: true })).toThrow(/typecheck/);
 		expect(invalid({ changed: "yes" })).toThrow(/"container.changed" deve ser true ou false/);
-		expect(readContainerConfig(JSON.stringify({ container: { changed: true } }))).toEqual({ changed: true });
+		expect(invalid({ turboCache: 1 })).toThrow(/"container.turboCache" deve ser true ou false/);
+		expect(readContainerConfig(JSON.stringify({ container: { changed: true, turboCache: true } }))).toEqual({ changed: true, turboCache: true });
 		expect(invalid({ commands: ["npm run lint"] })).toThrow(/"container.commands" deve ligar/);
 		expect(invalid({ commands: { Lint: 1 } })).toThrow(/"container.commands" deve ligar/);
 		expect(invalid({ commands: { " ": "x" } })).toThrow(/não serve de nome/);
