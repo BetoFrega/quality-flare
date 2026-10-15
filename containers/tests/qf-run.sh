@@ -13,7 +13,8 @@
 #
 # Environment: REPO ("owner/repo"), SHA, BASE (the PR's base branch), TOKEN (read-only, this
 # repository only), and optionally INSTALL (a shell command), VITEST_ARGS (one argument per line),
-# and COMMANDS (how many) with COMMAND_1, COMMAND_2… (shell commands, run as steps command1…).
+# COMMANDS (how many) with COMMAND_1, COMMAND_2… (shell commands, run as steps command1…), CHANGED=1
+# (only the tests that depend on what the PR changed, plus ALWAYS_RUN) or FULL=1 (SHA on its own, everything).
 set -u
 
 OUT=/work/out
@@ -40,7 +41,15 @@ clone() {
 		git config http.extraHeader "Authorization: Basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)" &&
 		git fetch -q --filter=blob:none origin "$SHA" "+refs/heads/$BASE:refs/remotes/origin/$BASE" &&
 		git checkout -q "$SHA" &&
-		merge_base
+		if [ -n "${FULL:-}" ]; then compare_with_nothing; else merge_base; fi
+}
+
+# A full run tests a branch's commit on its own. Commands that check only what changed against
+# origin/$BASE (turbo --affected) would find nothing changed, so origin/$BASE becomes a commit with no
+# files and no shared history: against it, everything changed, as on a repository's first commit.
+compare_with_nothing() {
+	git update-ref "refs/remotes/origin/$BASE" \
+		"$(git -c user.name=quality-flare -c user.email=quality-flare@users.noreply.github.com commit-tree "$(git hash-object -w -t tree /dev/null)" -m "quality-flare: nothing")"
 }
 
 # Like GitHub Actions on pull_request, the checks run on the PR merged into its base: a PR behind its
@@ -64,7 +73,23 @@ install() {
 tests() {
 	local args=()
 	[ -n "${VITEST_ARGS:-}" ] && mapfile -t args <<<"$VITEST_ARGS"
+	[ -n "${CHANGED:-}" ] && affected
 	npx --no-install vitest run "${args[@]}" --reporter=dot --reporter=json --outputFile.json="$OUT/report.json"
+}
+
+# Narrows the tests (args) to the files whose imports reach what the PR changed (vitest lists all of them
+# when package.json or the vitest config changed), plus ALWAYS_RUN (one vitest filter per line): tests
+# that read files or run scripts, which vitest's module graph can't connect to a change. If vitest
+# can't list them, every test runs.
+affected() {
+	local listed file files=() always=()
+	listed=$(npx --no-install vitest list "${args[@]}" --changed "origin/$BASE" --filesOnly) || return 0
+	while IFS= read -r file; do [ -f "$file" ] && files+=("$file"); done <<<"$listed"
+	[ -n "${ALWAYS_RUN:-}" ] && mapfile -t always <<<"$ALWAYS_RUN"
+	echo "Só os testes afetados pela PR: ${#files[@]} arquivo(s), mais ${#always[@]} filtro(s) que sempre rodam."
+	# No file at all: a filter nothing matches, which --passWithNoTests turns into a pass.
+	((${#files[@]} + ${#always[@]})) || files=(--changed "origin/$BASE")
+	args+=("${files[@]}" "${always[@]}" --passWithNoTests)
 }
 
 # run_command <n>: the shell command COMMAND_<n>.
@@ -80,7 +105,7 @@ commands() {
 }
 
 export OUT
-export -f step clone merge_base install tests run_command commands
+export -f step clone merge_base compare_with_nothing install affected tests run_command commands
 
 run() {
 	cd /work/repo || return

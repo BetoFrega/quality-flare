@@ -30,6 +30,8 @@ export default defineConfig({
 			triggers.queue({ name: "quality-flare-tests", maxBatchSize: 1, maxRetries: 3, maxConcurrency: 2 }),
 			// Fails Tests runs past their deadline without waiting for their queued shards.
 			triggers.scheduled({ schedule: "*/5 * * * *" }),
+			// The daily full run on default branches (src/checks/tests/daily.ts, DAILY_CRON).
+			triggers.scheduled({ schedule: "0 9 * * *" }),
 		],
 		exports: {
 			// Relays live test progress to the admin over WebSockets.
@@ -54,6 +56,8 @@ export default defineConfig({
 			SETTINGS: bindings.kv({ id: "a5795e2f7f424adb8edb5576967d0087" }),
 			// History of Tests check runs, shown in the admin.
 			RUNS: bindings.d1({ id: "f30a90b8-1c92-44b0-9fe2-dcc87418b046" }),
+			// Turborepo artifacts of Container tests runs (src/turbo-cache.ts); a lifecycle rule expires them.
+			TURBO_CACHE: bindings.r2({ name: "quality-flare-turbo-cache" }),
 			// The RunsHub Durable Object (see exports).
 			LIVE: bindings.durableObject({ worker: "quality-flare", exportName: "RunsHub" }),
 			// Loads Dynamic Workers that run each repository's tests (the "Tests" check).

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { readContainerConfig } from "../../../src/checks/tests/config.ts";
 import {
+	alertFullRun,
 	BOX_DEADLINE_MS,
 	boxCost,
 	boxEnv,
@@ -92,6 +93,27 @@ describe("Container tests", () => {
 		expect(results.commands).toEqual([expect.objectContaining({ title: "Typecheck falhou", summary: "Typecheck passou do limite de 20 minutos." }), undefined]);
 	});
 
+	it("says when only the PR's affected tests ran, and passes when none were affected", () => {
+		const report = JSON.stringify({ testResults: [{ name: "/work/repo/a.test.ts", status: "passed", assertionResults: [{ title: "ok", status: "passed" }] }] });
+		expect(boxResults(output("clone 0 1\ninstall 0 1\ntests 0 1\n", { report }), [], true).tests.title).toBe("1 teste passaram, só os afetados pela PR");
+		const none = output("clone 0 1\ninstall 0 1\ntests 0 1\n", { report: JSON.stringify({ testResults: [] }) });
+		expect(boxResults(none, [], true).tests).toMatchObject({ conclusion: "success", title: "Nenhum teste afetado pela PR" });
+		expect(boxResults(none).tests).toMatchObject({ conclusion: "neutral", title: "Nenhum teste encontrado" });
+	});
+
+	it("opens an issue when the daily full run fails, naming what failed", async () => {
+		const job: BoxJob = { runId: 3, repo: "octo/app", sha: "abcdef123", base: "main", installationId: 9, checkRunId: 1, commands: [{ name: "Lint", checkRunId: 2 }], startedAt: 0, full: true };
+		const createIssue = vi.fn(async () => "https://github.com/octo/app/issues/1");
+		const passed = { conclusion: "success", title: "ok", summary: "" } as const;
+		expect(await alertFullRun({ createIssue }, job, { tests: passed, commands: [passed] }, "https://qf/admin/runs/3")).toBeUndefined();
+		expect(createIssue).not.toHaveBeenCalled();
+		await alertFullRun({ createIssue }, job, { tests: passed, commands: [{ conclusion: "failure", title: "Lint falhou", summary: "" }] }, "https://qf/admin/runs/3");
+		const [repo, title, body] = createIssue.mock.calls[0] as unknown as string[];
+		expect([repo, title]).toEqual(["octo/app", "A run completa de main falhou em abcdef1"]);
+		expect(body).toContain("- **Lint**: Lint falhou");
+		expect(body).toContain("https://qf/admin/runs/3");
+	});
+
 	it("fails with the log when the tests time out", () => {
 		const results = boxResults(output("clone 0 1\ninstall 0 1\ntests 124 1500000\n", { logs: { tests: "····" } }));
 		expect(results.tests).toMatchObject({ conclusion: "failure", title: "Os testes passaram do limite de 25 minutos" });
@@ -171,6 +193,25 @@ describe("Container tests", () => {
 		});
 	});
 
+	it("tells the container to run only the affected tests, or everything on a full run", () => {
+		const job = { repo: "octo/app", sha: "abc", base: "main" };
+		expect(boxEnv({ ...job, changed: true }, { changed: true }, "t")).toMatchObject({ CHANGED: "1" });
+		expect(boxEnv({ ...job, changed: true }, { changed: true, alwaysRun: ["bin/", "src/a.test.ts"] }, "t")).toMatchObject({ ALWAYS_RUN: "bin/\nsrc/a.test.ts" });
+		expect(boxEnv({ ...job, full: true }, { changed: true, alwaysRun: ["bin/"] }, "t")).not.toHaveProperty("ALWAYS_RUN");
+		expect(boxEnv({ ...job, full: true }, { changed: true }, "t")).toMatchObject({ FULL: "1" });
+		expect(boxEnv({ ...job, full: true }, { changed: true }, "t")).not.toHaveProperty("CHANGED");
+		expect(boxEnv(job, {}, "t")).not.toHaveProperty("CHANGED");
+	});
+
+	it("points Turborepo at the repository's remote cache, which a full run doesn't trust", () => {
+		const job = { repo: "octo/app", sha: "abc", base: "main" };
+		const turbo = { api: "https://qf.example/turbo", token: "tt" };
+		expect(boxEnv(job, { turboCache: true }, "t", turbo)).toMatchObject({ TURBO_API: "https://qf.example/turbo", TURBO_TEAM: "quality-flare", TURBO_TOKEN: "tt" });
+		expect(boxEnv(job, { turboCache: true }, "t", turbo)).not.toHaveProperty("TURBO_FORCE");
+		expect(boxEnv({ ...job, full: true }, { turboCache: true }, "t", turbo)).toMatchObject({ TURBO_FORCE: "true" });
+		expect(boxEnv(job, {}, "t")).not.toHaveProperty("TURBO_API");
+	});
+
 	it("reads the container section of quality-flare.json apart from the tests section", () => {
 		const container = { vitestArgs: ["--project", "node"], typecheck: "tsc", commands: { Lint: "eslint .", "Web Workers": "turbo run test" } };
 		const json = JSON.stringify({ tests: { include: ["src/**/*.test.ts"] }, container });
@@ -179,6 +220,10 @@ describe("Container tests", () => {
 		const invalid = (container: unknown) => () => readContainerConfig(JSON.stringify({ container }));
 		expect(invalid({ vitestArgs: "--project node" })).toThrow(/vitestArgs/);
 		expect(invalid({ typecheck: true })).toThrow(/typecheck/);
+		expect(invalid({ changed: "yes" })).toThrow(/"container.changed" deve ser true ou false/);
+		expect(invalid({ alwaysRun: "bin/" })).toThrow(/"container.alwaysRun" deve ser uma lista/);
+		expect(invalid({ turboCache: 1 })).toThrow(/"container.turboCache" deve ser true ou false/);
+		expect(readContainerConfig(JSON.stringify({ container: { changed: true, turboCache: true } }))).toEqual({ changed: true, turboCache: true });
 		expect(invalid({ commands: ["npm run lint"] })).toThrow(/"container.commands" deve ligar/);
 		expect(invalid({ commands: { Lint: 1 } })).toThrow(/"container.commands" deve ligar/);
 		expect(invalid({ commands: { " ": "x" } })).toThrow(/não serve de nome/);
@@ -196,7 +241,7 @@ describe("Container tests", () => {
 			const RUNS = await fakeD1();
 			const ids: Record<string, number> = { "Container tests": 55, Typecheck: 56, Lint: 57 };
 			const startCheckRun = vi.fn(async (_repo: string, _sha: string, name: string) => ids[name]);
-			const config = JSON.stringify({ container: { typecheck: "npm run typecheck", commands: { Lint: "npm run lint" } } });
+			const config = JSON.stringify({ container: { typecheck: "npm run typecheck", commands: { Lint: "npm run lint" }, changed: true } });
 			const github = { getFileText: async () => config, startCheckRun } as unknown as GitHubClient;
 			const fetch = vi.fn(async (_url: string, _init: RequestInit) => new Response(null, { status: 204 }));
 			const TEST_BOX = { idFromName: (name: string) => name, get: () => ({ fetch }) };
@@ -213,6 +258,7 @@ describe("Container tests", () => {
 			expect(body.job).toMatchObject({
 				runId: run.id,
 				base: "main",
+				changed: true,
 				checkRunId: 55,
 				commands: [
 					{ name: "Typecheck", checkRunId: 56 },

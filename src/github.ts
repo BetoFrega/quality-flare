@@ -43,6 +43,33 @@ export class GitHubClient {
 		return repos.sort((a, b) => a.full_name.localeCompare(b.full_name));
 	}
 
+	/** Every installation's repositories with the installation that reaches them, for work no webhook starts. */
+	static async listInstallationRepos(creds: AppCredentials): Promise<InstallationRepo[]> {
+		const jwt = await createAppJwt(creds.appId, creds.privateKey);
+		const installations = await paginate<Installation>(jwt, "/app/installations", (page) => page as Installation[]);
+		const repos: InstallationRepo[] = [];
+		for (const installation of installations) {
+			const client = await GitHubClient.forInstallation(creds, installation.id);
+			const page = await paginate<{ full_name: string; default_branch: string }>(client.token, "/installation/repositories", (p) =>
+				(p as { repositories: { full_name: string; default_branch: string }[] }).repositories,
+			);
+			repos.push(...page.map((r) => ({ installationId: installation.id, repo: r.full_name, defaultBranch: r.default_branch })));
+		}
+		return repos;
+	}
+
+	/** The commit a branch points at. */
+	async branchHead(repo: string, branch: string): Promise<string> {
+		const res = await request<{ commit: { sha: string } }>(this.token, "GET", `/repos/${repo}/branches/${encodeURIComponent(branch)}`);
+		return res.commit.sha;
+	}
+
+	/** Opens an issue; resolves to its URL. Needs the App's "Issues: Read and write" permission. */
+	async createIssue(repo: string, title: string, body: string): Promise<string> {
+		const issue = await request<{ html_url: string }>(this.token, "POST", `/repos/${repo}/issues`, { title, body });
+		return issue.html_url;
+	}
+
 	/** The PR's conversation comments, oldest first. */
 	listPullRequestComments(repo: string, number: number): Promise<{ id: number; body: string | null }[]> {
 		return paginate(this.token, `/repos/${repo}/issues/${number}/comments`, (page) => page as { id: number; body: string | null }[]);
@@ -257,6 +284,13 @@ export interface InstalledRepo {
 	full_name: string;
 	html_url: string;
 	private: boolean;
+}
+
+export interface InstallationRepo {
+	installationId: number;
+	/** "owner/repo" */
+	repo: string;
+	defaultBranch: string;
 }
 
 interface Installation {

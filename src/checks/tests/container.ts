@@ -2,6 +2,7 @@ import { exports } from "cloudflare:workers";
 import { GitHubClient } from "../../github.ts";
 import { livePublisher } from "../../live.ts";
 import { d1RunStore } from "../../runs.ts";
+import { TURBO_PATH, turboToken } from "../../turbo-cache.ts";
 import type { Check, CheckResult } from "../types.ts";
 import { CONFIG_FILE, containerCommands, readContainerConfig, type ContainerCommand, type ContainerConfig } from "./config.ts";
 import { cancelRuns, cannotRun, CODE_ACTIONS, finishRun } from "./index.ts";
@@ -66,6 +67,10 @@ export interface BoxJob {
 	commands: BoxCommand[];
 	/** Epoch milliseconds. */
 	startedAt: number;
+	/** Only the tests that depend on what the PR changed (the config's `changed`). */
+	changed?: true;
+	/** The daily run on the default branch: every test, with nothing to compare against (see qf-run.sh). */
+	full?: true;
 }
 
 export interface BoxCommand {
@@ -96,41 +101,63 @@ export const containerTests: Check = {
 	name: NAME,
 	pullRequestActions: CODE_ACTIONS,
 	onDemand: true,
-	async run({ github, repo, pr, env, installationId }) {
-		const sha = pr.head.sha;
+	run({ github, repo, pr, env, installationId }) {
 		const base = pr.base.ref;
-		const runs = d1RunStore(env.RUNS);
-		const runId = await runs.start({ repo, pr: pr.number, sha, container: true }).catch(logError);
-		const live = livePublisher(runId === undefined ? undefined : env.LIVE);
-		live.send({ type: "started", runId: runId!, repo, pr: pr.number, sha });
-		let checkRunId: number | undefined;
-		const commands: BoxCommand[] = [];
-		try {
-			if (runId === undefined) throw new Error("O D1 (quality-flare-runs) não respondeu; ele acompanha o container.");
-			// A newer push supersedes the PR's container run still going: its TestBox sees the job gone and destroys the container.
-			await cancelRuns(github, repo, await runs.running(repo, pr.number, runId), d1JobStore(env.RUNS), runs, live);
-			// A PR branched before the repository added its config runs with the base branch's, not vitest's defaults.
-			const config = readContainerConfig((await github.getFileText(repo, sha, CONFIG_FILE)) ?? (await github.getFileText(repo, base, CONFIG_FILE)));
-			const detailsUrl = `${env.PUBLIC_URL}/admin/runs/${runId}`;
-			checkRunId = await github.startCheckRun(repo, sha, NAME, "Rodando os testes num container", detailsUrl);
-			for (const { name } of containerCommands(config)) {
-				commands.push({ name, checkRunId: await github.startCheckRun(repo, sha, name, "Esperando os testes, no mesmo container", detailsUrl) });
-			}
-			await d1JobStore(env.RUNS).create(runId, { shards: 1, checkRunId, installationId });
-			await startBox({ runId, repo, sha, base, installationId, checkRunId, commands, startedAt: Date.now() }, config);
-			live.send({ type: "status", runId, text: "Container: iniciando" });
-			await live.flush();
-			return null;
-		} catch (error) {
-			const result = cannotRun(error);
-			if (runId !== undefined) await finishRun(runs, live, runId, result);
-			for (const command of commands) await github.completeCheckRun(repo, command.checkRunId, result).catch(logError);
-			if (checkRunId === undefined) return result;
-			await github.completeCheckRun(repo, checkRunId, result);
-			return null;
-		}
+		// A PR branched before the repository added its config runs with the base branch's, not vitest's defaults.
+		const config = async () => readContainerConfig((await github.getFileText(repo, pr.head.sha, CONFIG_FILE)) ?? (await github.getFileText(repo, base, CONFIG_FILE)));
+		return startRun({ github, env, installationId, repo, pr: pr.number, sha: pr.head.sha, base, config });
 	},
 };
+
+/** What one Container tests run tests, and where it reports. */
+export interface RunTarget {
+	github: GitHubClient;
+	env: Env;
+	installationId: number;
+	repo: string;
+	/** 0 for a full run, which has no PR. */
+	pr: number;
+	sha: string;
+	base: string;
+	/** The commit on its own, with every test, ignoring `changed`: the daily run on the default branch. */
+	full?: boolean;
+	/** Reads the run's config; an invalid one fails the run. */
+	config(): Promise<ContainerConfig>;
+}
+
+/** Starts a run: its history, check runs, job and container. Resolves to a result only when it couldn't start and has no check run. */
+export async function startRun({ github, env, installationId, repo, pr, sha, base, full, config: readConfig }: RunTarget): Promise<CheckResult | null> {
+	const runs = d1RunStore(env.RUNS);
+	const runId = await runs.start({ repo, pr, sha, container: true }).catch(logError);
+	const live = livePublisher(runId === undefined ? undefined : env.LIVE);
+	live.send({ type: "started", runId: runId!, repo, pr, sha });
+	let checkRunId: number | undefined;
+	const commands: BoxCommand[] = [];
+	try {
+		if (runId === undefined) throw new Error("O D1 (quality-flare-runs) não respondeu; ele acompanha o container.");
+		// A newer push supersedes the PR's container run still going: its TestBox sees the job gone and destroys the container.
+		await cancelRuns(github, repo, await runs.running(repo, pr, runId), d1JobStore(env.RUNS), runs, live);
+		const config = await readConfig();
+		const detailsUrl = `${env.PUBLIC_URL}/admin/runs/${runId}`;
+		checkRunId = await github.startCheckRun(repo, sha, NAME, full ? "Rodando todos os testes num container" : "Rodando os testes num container", detailsUrl);
+		for (const { name } of containerCommands(config)) {
+			commands.push({ name, checkRunId: await github.startCheckRun(repo, sha, name, "Esperando os testes, no mesmo container", detailsUrl) });
+		}
+		await d1JobStore(env.RUNS).create(runId, { shards: 1, checkRunId, installationId });
+		const scope = full ? { full: true as const } : config.changed ? { changed: true as const } : {};
+		await startBox({ runId, repo, sha, base, installationId, checkRunId, commands, startedAt: Date.now(), ...scope }, config);
+		live.send({ type: "status", runId, text: "Container: iniciando" });
+		await live.flush();
+		return null;
+	} catch (error) {
+		const result = cannotRun(error);
+		if (runId !== undefined) await finishRun(runs, live, runId, result);
+		for (const command of commands) await github.completeCheckRun(repo, command.checkRunId, result).catch(logError);
+		if (checkRunId === undefined) return result;
+		await github.completeCheckRun(repo, checkRunId, result);
+		return null;
+	}
+}
 
 /** Starts a run's container, once the run's check runs and job exist. */
 export async function startBox(job: BoxJob, config: ContainerConfig, boxes: DurableObjectNamespace = exports.TestBox): Promise<void> {
@@ -152,12 +179,13 @@ export class TestBox {
 		if (!container) return new Response("Este Durable Object não tem container.", { status: 500 });
 		const credentials = { appId: this.env.GITHUB_APP_ID, privateKey: this.env.GITHUB_PRIVATE_KEY };
 		const token = await GitHubClient.contentsReadToken(credentials, job.installationId, job.repo);
+		const turbo = config.turboCache ? { api: `${this.env.PUBLIC_URL}${TURBO_PATH}`, token: await turboToken(this.env.GITHUB_WEBHOOK_SECRET, job.repo) } : undefined;
 		container.start({
 			image: container.images.tests,
 			instance: INSTANCE.name,
-			// npm and GitHub; the token reads this repository only.
+			// npm, GitHub and the Turborepo cache; the tokens reach this repository only.
 			enableInternet: true,
-			env: boxEnv(job, config, token),
+			env: boxEnv(job, config, token, turbo),
 		});
 		await container.setInactivityTimeout(INACTIVITY_MS);
 		await this.ctx.storage.put("job", job);
@@ -205,6 +233,7 @@ export class TestBox {
 			await github.completeCheckRun(job.repo, command.checkRunId, results.commands[i] ?? NOT_RUN).catch(logError);
 		}
 		await d1RunStore(this.env.RUNS).finish(job.runId, results.tests, report).catch(logError);
+		if (job.full) await alertFullRun(github, job, results, `${this.env.PUBLIC_URL}/admin/runs/${job.runId}`).catch(logError);
 		const live = livePublisher(this.env.LIVE);
 		live.send({ type: "finished", runId: job.runId, conclusion: results.tests.conclusion, title: results.tests.title });
 		await live.flush();
@@ -223,14 +252,43 @@ export class TestBox {
 	}
 }
 
+/**
+ * A failed full run means something broke that the PRs' runs, limited to what each changed, missed: an issue says so,
+ * since nobody watches the default branch's check runs.
+ */
+export async function alertFullRun(github: Pick<GitHubClient, "createIssue">, job: BoxJob, results: BoxResults, runUrl: string): Promise<string | undefined> {
+	const failed = [{ name: NAME, result: results.tests }, ...job.commands.map((c, i) => ({ name: c.name, result: results.commands[i] }))].filter(
+		(c) => c.result?.conclusion === "failure",
+	);
+	if (!failed.length) return undefined;
+	const body = [
+		`A run completa diária do quality-flare em \`${job.base}\` (${job.sha}) falhou:`,
+		"",
+		...failed.map((c) => `- **${c.name}**: ${c.result!.title}`),
+		"",
+		"As PRs rodam só os testes afetados pelo que mudam, então alguma mudança já na branch quebrou algo que a run dela não cobriu.",
+		"",
+		`Detalhes: ${runUrl}`,
+	].join("\n");
+	return github.createIssue(job.repo, `A run completa de ${job.base} falhou em ${job.sha.slice(0, 7)}`, body);
+}
+
 /** The container's environment (see qf-run.sh). */
-export function boxEnv(job: Pick<BoxJob, "repo" | "sha" | "base">, config: ContainerConfig, token: string): Record<string, string> {
+export function boxEnv(
+	job: Pick<BoxJob, "repo" | "sha" | "base" | "changed" | "full">,
+	config: ContainerConfig,
+	token: string,
+	turbo?: { api: string; token: string },
+): Record<string, string> {
 	const commands = containerCommands(config);
 	return {
 		REPO: job.repo,
 		SHA: job.sha,
 		BASE: job.base,
 		TOKEN: token,
+		...(job.full ? { FULL: "1" } : job.changed ? { CHANGED: "1", ...(config.alwaysRun?.length ? { ALWAYS_RUN: config.alwaysRun.join("\n") } : {}) } : {}),
+		// A full run checks what the cache would vouch for: it builds everything, and still fills the cache.
+		...(turbo ? { TURBO_API: turbo.api, TURBO_TEAM: "quality-flare", TURBO_TOKEN: turbo.token, ...(job.full ? { TURBO_FORCE: "true" } : {}) } : {}),
 		...(config.install ? { INSTALL: config.install } : {}),
 		...(config.vitestArgs?.length ? { VITEST_ARGS: config.vitestArgs.join("\n") } : {}),
 		...(commands.length ? { COMMANDS: String(commands.length) } : {}),
@@ -276,7 +334,7 @@ export async function pollBox(job: BoxJob, deps: PollDeps): Promise<"poll" | "do
 	}
 	if (await deps.read("done")) {
 		const output = await readOutput(deps, job.commands.length);
-		await deps.publish(boxResults(output, job.commands), output.report ? parseVitestReport(output.report) : undefined, { wallMs, cpuUs: output.cpuUs });
+		await deps.publish(boxResults(output, job.commands, job.changed), output.report ? parseVitestReport(output.report) : undefined, { wallMs, cpuUs: output.cpuUs });
 		return "done";
 	}
 	if (wallMs > BOX_DEADLINE_MS || !deps.running()) {
@@ -329,7 +387,7 @@ export function parseSteps(text: string): Step[] {
 const TIMED_OUT = 124;
 
 /** The check run results of a run whose container finished. */
-export function boxResults(output: BoxOutput, commands: Pick<BoxCommand, "name">[] = []): BoxResults {
+export function boxResults(output: BoxOutput, commands: Pick<BoxCommand, "name">[] = [], changed = false): BoxResults {
 	const step = (name: string) => output.steps.find((s) => s.name === name);
 	for (const name of ["clone", "install"] as const) {
 		const s = step(name);
@@ -344,8 +402,10 @@ export function boxResults(output: BoxOutput, commands: Pick<BoxCommand, "name">
 		const why = tests?.exitCode === TIMED_OUT ? "Os testes passaram do limite de 25 minutos." : "O vitest terminou sem gerar o relatório.";
 		return { ...results, tests: logFailure(why, output.logs.tests) };
 	}
-	if (!report.files.length) return { ...results, tests: NO_TESTS };
-	return { ...results, tests: toCheckResult(report) };
+	if (!report.files.length) return { ...results, tests: changed ? NOTHING_AFFECTED : NO_TESTS };
+	const result = toCheckResult(report);
+	if (changed && result.conclusion === "success") result.title += ", só os afetados pela PR";
+	return { ...results, tests: result };
 }
 
 /** Results when the run stopped early: Container tests fails with why, and the commands that didn't finish didn't run. */
@@ -458,6 +518,12 @@ const NO_TESTS: CheckResult = {
 	conclusion: "neutral",
 	title: "Nenhum teste encontrado",
 	summary: "O vitest do repositório não encontrou arquivos de teste.",
+};
+
+const NOTHING_AFFECTED: CheckResult = {
+	conclusion: "success",
+	title: "Nenhum teste afetado pela PR",
+	summary: "Nenhum arquivo de teste depende do que a PR mudou (`vitest --changed`). A run completa diária da branch principal roda todos.",
 };
 
 function logError(error: unknown): undefined {

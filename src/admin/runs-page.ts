@@ -45,7 +45,7 @@ export function renderRunsPage({ runs, repos, query, usage = new Map(), containe
 			const s = runState(run, now);
 			return `<tr>
 				<td class="state ${s}"><a href="/admin/runs/${run.id}">${ICON[s]} ${LABEL[s]}</a></td>
-				<td><a href="https://github.com/${esc(run.repo)}/pull/${run.pr}">${esc(run.repo)}#${run.pr}</a> <span class="mono">${esc(run.sha.slice(0, 7))}</span></td>
+				<td>${target(run)} <span class="mono">${esc(run.sha.slice(0, 7))}</span></td>
 				<td>${s === "running" ? `<span data-progress="${run.id}">Preparando…</span>` : esc(run.title ?? "")}</td>
 				<td class="num">${when(run.startedAt, now)}</td>
 				<td class="num">${duration(run, now)}</td>
@@ -119,7 +119,7 @@ export function renderRunPage(
 			<p class="hint"><a href="/admin/runs">← Execuções de testes</a></p>
 			<h2 class="state ${s}">${ICON[s]} ${esc(run.title ?? LABEL[s])}</h2>
 			<p class="meta">
-				<a href="https://github.com/${esc(run.repo)}/pull/${run.pr}">${esc(run.repo)}#${run.pr}</a>
+				${target(run)}
 				<span class="mono">${esc(run.sha)}</span>
 				<span>${when(run.startedAt, now)}</span>
 				<span>${duration(run, now)}</span>
@@ -174,4 +174,10 @@ function renderContainerUsage(u: BoxUsage): string {
 		<dl class="stats">${items.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>
 		<p class="hint">Estimativa sem a franquia mensal: memória e disco pelo tempo ligado, CPU pelo que foi usado.</p>
 	</section>`;
+}
+
+/** The PR a run tested, or the commit for a full run, which has none (pr 0). */
+function target(run: Pick<TestRun, "repo" | "pr" | "sha">): string {
+	if (!run.pr) return `<a href="https://github.com/${esc(run.repo)}/commit/${esc(run.sha)}">${esc(run.repo)} (run completa)</a>`;
+	return `<a href="https://github.com/${esc(run.repo)}/pull/${run.pr}">${esc(run.repo)}#${run.pr}</a>`;
 }
