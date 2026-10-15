@@ -37,6 +37,8 @@ export function parseSuggestion(body: string): { priority?: string; title: strin
 	return { priority, title: title || "Sugestão do Codex" };
 }
 
+const RUNNING = /^(in[ _-]?progress|running|queued|pending)$/i;
+
 /**
  * Whether a Codex review is running. The summary comment, when Codex posts one, is updated as each
  * review finishes; older setups only show 👀 on the PR while reviewing.
@@ -44,17 +46,31 @@ export function parseSuggestion(body: string): { priority?: string; title: strin
 export function isReviewing(activity: ReviewActivity): boolean {
 	const summary = activity.comments.findLast((c) => isCodex(c.author) && c.body.includes(SUMMARY_MARKER));
 	if (summary) {
-		const status = summary.body.match(/<!-- codex-[\w-]+:v\d+ (\{.*?\}) -->/)?.[1];
-		if (status) {
-			try {
-				if ((JSON.parse(status) as { status?: string }).status !== "completed") return true;
-			} catch {
-				// Unknown format: fall back to the table.
-			}
-		}
+		if (markerStatuses(summary.body).some((s) => RUNNING.test(s))) return true;
 		return /\|\s*[^|\n]*\b(in progress|running|queued|pending)\b/i.test(summary.body);
 	}
 	return activity.eyesFrom.some(isCodex);
+}
+
+/**
+ * Statuses in the summary's hidden markers. `codex-security-review:v1` has its own `status`;
+ * `codex-review-state:v1` nests one object per review: `{"code_review":{"status":"running"},…}`.
+ */
+function markerStatuses(body: string): string[] {
+	const statuses: string[] = [];
+	for (const [, json] of body.matchAll(/<!-- codex-[\w-]+:v\d+ (\{.*?\}) -->/g)) {
+		let state: unknown;
+		try {
+			state = JSON.parse(json);
+		} catch {
+			continue; // Unknown format: the table still says what is running.
+		}
+		for (const entry of [state, ...Object.values(state ?? {})]) {
+			const status = (entry as { status?: unknown } | null)?.status;
+			if (typeof status === "string") statuses.push(status);
+		}
+	}
+	return statuses;
 }
 
 export function evaluate(activity: ReviewActivity): CheckResult {
