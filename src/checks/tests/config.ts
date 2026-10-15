@@ -75,8 +75,10 @@ export interface ContainerConfig {
 	/** Shorthand for a "Typecheck" command, run before the others. */
 	typecheck?: string;
 	/**
-	 * Runs only the test files that depend on what the PR changed (`vitest --changed origin/<base>`). A daily
-	 * full run on the default branch catches what that misses (src/checks/tests/daily.ts).
+	 * Runs only the test files that depend on what the PR changed (`vitest --changed origin/<base>`), where a
+	 * package.json or package-lock.json change stands for the files that use the packages it changed
+	 * (containers/tests/qf-related.mjs). A daily full run on the default branch catches what that misses
+	 * (src/checks/tests/daily.ts).
 	 */
 	changed?: boolean;
 	/**
