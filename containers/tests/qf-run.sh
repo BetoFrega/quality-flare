@@ -78,18 +78,45 @@ tests() {
 }
 
 # Narrows the tests (args) to the files whose imports reach what the PR changed (vitest lists all of them
-# when package.json or the vitest config changed), plus ALWAYS_RUN (one vitest filter per line): tests
-# that read files or run scripts, which vitest's module graph can't connect to a change. If vitest
-# can't list them, every test runs.
+# when the vitest config changed), plus ALWAYS_RUN (one vitest filter per line): tests that read files or
+# run scripts, which vitest's module graph can't connect to a change. If vitest can't list them, every
+# test runs.
 affected() {
-	local listed file files=() always=()
-	listed=$(npx --no-install vitest list "${args[@]}" --changed "origin/$BASE" --filesOnly) || return 0
+	local listed file files=() always=() since=origin/$BASE index=()
+	if git diff --name-only "origin/$BASE" HEAD | grep -qE '(^|/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$'; then
+		related_index || return 0
+		since=HEAD index=(GIT_INDEX_FILE=/work/related-index)
+	fi
+	listed=$(env "${index[@]}" npx --no-install vitest list "${args[@]}" --changed "$since" --filesOnly) || return 0
 	while IFS= read -r file; do [ -f "$file" ] && files+=("$file"); done <<<"$listed"
 	[ -n "${ALWAYS_RUN:-}" ] && mapfile -t always <<<"$ALWAYS_RUN"
 	echo "Só os testes afetados pela PR: ${#files[@]} arquivo(s), mais ${#always[@]} filtro(s) que sempre rodam."
 	# No file at all: a filter nothing matches, which --passWithNoTests turns into a pass.
-	((${#files[@]} + ${#always[@]})) || files=(--changed "origin/$BASE")
+	((${#files[@]} + ${#always[@]})) || files=(--changed "$since")
 	args+=("${files[@]}" "${always[@]}" --passWithNoTests)
+}
+
+# A package.json or lockfile changed: vitest would run every test for a package.json and none for a
+# lockfile. qf-related turns them into the files that use the packages that changed (the vitest config
+# in args tells it which packages the run itself uses), which vitest
+# --changed HEAD then sees as staged: removed from a copy of the index, /work/related-index.
+# Fails (every test runs) when the change reaches everything.
+related_index() {
+	local related config i
+	for ((i = 0; i < ${#args[@]}; i++)); do
+		case ${args[i]} in
+		--config | -c) config=${args[i + 1]-} ;;
+		--config=*) config=${args[i]#--config=} ;;
+		esac
+	done
+	related=$(node /usr/local/lib/qf-related.mjs "origin/$BASE" ${config:+"$config"}) || return 1
+	if [ "$related" = all ]; then
+		echo "A PR muda pacotes que a configuração do vitest usa: todos os testes rodam."
+		return 1
+	fi
+	echo "A PR muda package.json ou lockfile: $(grep -c . <<<"$related") arquivo(s) contam como mudados."
+	cp "$(git rev-parse --absolute-git-dir)/index" /work/related-index &&
+		{ [ -z "$related" ] || GIT_INDEX_FILE=/work/related-index git --literal-pathspecs rm -q --cached --ignore-unmatch --pathspec-from-file=- <<<"$related"; }
 }
 
 # run_command <n>: the shell command COMMAND_<n>.
@@ -105,7 +132,7 @@ commands() {
 }
 
 export OUT
-export -f step clone merge_base compare_with_nothing install affected tests run_command commands
+export -f step clone merge_base compare_with_nothing install affected related_index tests run_command commands
 
 run() {
 	cd /work/repo || return
