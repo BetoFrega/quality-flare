@@ -60,6 +60,16 @@ describe("isReviewing", () => {
 		expect(isReviewing(activity({ comments: [{ author: CODEX, body: summary("completed", "⏳ **In progress**") }] }))).toBe(true);
 	});
 
+	it("reads the per-review state Codex nests in codex-review-state", () => {
+		// Copied from macae-classificados #2156, trimmed.
+		const state = (code: string, security: string) =>
+			`<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {"code_review":{"commit_sha":"de0fac6","has_any_findings":null,"status":"${code}"},"security_review":{"commit_sha":"86d17e8","has_any_findings":false,"status":"${security}"}} -->\n<!-- codex-security-review:v1 {"headSha":"86d17e8","mergeGateEnabled":false,"status":"${security}"} -->\n## Codex Review Summary`;
+		const reviewing = (body: string) => isReviewing(activity({ comments: [{ author: CODEX, body }] }));
+		expect(reviewing(state("completed", "completed"))).toBe(false);
+		expect(reviewing(state("running", "completed"))).toBe(true);
+		expect(reviewing(state("completed", "running"))).toBe(true);
+	});
+
 	it("trusts the summary over a 👀 that was not removed yet", () => {
 		expect(isReviewing(activity({ comments: [{ author: CODEX, body: summary("completed") }], eyesFrom: [CODEX] }))).toBe(false);
 	});
