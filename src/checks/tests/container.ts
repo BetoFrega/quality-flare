@@ -286,7 +286,7 @@ export function boxEnv(
 		SHA: job.sha,
 		BASE: job.base,
 		TOKEN: token,
-		...(job.full ? { FULL: "1" } : job.changed ? { CHANGED: "1" } : {}),
+		...(job.full ? { FULL: "1" } : job.changed ? { CHANGED: "1", ...(config.alwaysRun?.length ? { ALWAYS_RUN: config.alwaysRun.join("\n") } : {}) } : {}),
 		// A full run checks what the cache would vouch for: it builds everything, and still fills the cache.
 		...(turbo ? { TURBO_API: turbo.api, TURBO_TEAM: "quality-flare", TURBO_TOKEN: turbo.token, ...(job.full ? { TURBO_FORCE: "true" } : {}) } : {}),
 		...(config.install ? { INSTALL: config.install } : {}),

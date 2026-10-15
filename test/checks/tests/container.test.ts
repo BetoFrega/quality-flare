@@ -196,6 +196,8 @@ describe("Container tests", () => {
 	it("tells the container to run only the affected tests, or everything on a full run", () => {
 		const job = { repo: "octo/app", sha: "abc", base: "main" };
 		expect(boxEnv({ ...job, changed: true }, { changed: true }, "t")).toMatchObject({ CHANGED: "1" });
+		expect(boxEnv({ ...job, changed: true }, { changed: true, alwaysRun: ["bin/", "src/a.test.ts"] }, "t")).toMatchObject({ ALWAYS_RUN: "bin/\nsrc/a.test.ts" });
+		expect(boxEnv({ ...job, full: true }, { changed: true, alwaysRun: ["bin/"] }, "t")).not.toHaveProperty("ALWAYS_RUN");
 		expect(boxEnv({ ...job, full: true }, { changed: true }, "t")).toMatchObject({ FULL: "1" });
 		expect(boxEnv({ ...job, full: true }, { changed: true }, "t")).not.toHaveProperty("CHANGED");
 		expect(boxEnv(job, {}, "t")).not.toHaveProperty("CHANGED");
@@ -219,6 +221,7 @@ describe("Container tests", () => {
 		expect(invalid({ vitestArgs: "--project node" })).toThrow(/vitestArgs/);
 		expect(invalid({ typecheck: true })).toThrow(/typecheck/);
 		expect(invalid({ changed: "yes" })).toThrow(/"container.changed" deve ser true ou false/);
+		expect(invalid({ alwaysRun: "bin/" })).toThrow(/"container.alwaysRun" deve ser uma lista/);
 		expect(invalid({ turboCache: 1 })).toThrow(/"container.turboCache" deve ser true ou false/);
 		expect(readContainerConfig(JSON.stringify({ container: { changed: true, turboCache: true } }))).toEqual({ changed: true, turboCache: true });
 		expect(invalid({ commands: ["npm run lint"] })).toThrow(/"container.commands" deve ligar/);

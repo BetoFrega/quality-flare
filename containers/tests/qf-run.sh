@@ -14,7 +14,7 @@
 # Environment: REPO ("owner/repo"), SHA, BASE (the PR's base branch), TOKEN (read-only, this
 # repository only), and optionally INSTALL (a shell command), VITEST_ARGS (one argument per line),
 # COMMANDS (how many) with COMMAND_1, COMMAND_2… (shell commands, run as steps command1…), CHANGED=1
-# (only the tests that depend on what the PR changed) or FULL=1 (SHA on its own, everything).
+# (only the tests that depend on what the PR changed, plus ALWAYS_RUN) or FULL=1 (SHA on its own, everything).
 set -u
 
 OUT=/work/out
@@ -73,9 +73,23 @@ install() {
 tests() {
 	local args=()
 	[ -n "${VITEST_ARGS:-}" ] && mapfile -t args <<<"$VITEST_ARGS"
-	# vitest still runs everything when a file every test depends on changed (package.json, its config).
-	[ -n "${CHANGED:-}" ] && args+=(--changed "origin/$BASE" --passWithNoTests)
+	[ -n "${CHANGED:-}" ] && affected
 	npx --no-install vitest run "${args[@]}" --reporter=dot --reporter=json --outputFile.json="$OUT/report.json"
+}
+
+# Narrows the tests (args) to the files whose imports reach what the PR changed (vitest lists all of them
+# when package.json or the vitest config changed), plus ALWAYS_RUN (one vitest filter per line): tests
+# that read files or run scripts, which vitest's module graph can't connect to a change. If vitest
+# can't list them, every test runs.
+affected() {
+	local listed file files=() always=()
+	listed=$(npx --no-install vitest list "${args[@]}" --changed "origin/$BASE" --filesOnly) || return 0
+	while IFS= read -r file; do [ -f "$file" ] && files+=("$file"); done <<<"$listed"
+	[ -n "${ALWAYS_RUN:-}" ] && mapfile -t always <<<"$ALWAYS_RUN"
+	echo "Só os testes afetados pela PR: ${#files[@]} arquivo(s), mais ${#always[@]} filtro(s) que sempre rodam."
+	# No file at all: a filter nothing matches, which --passWithNoTests turns into a pass.
+	((${#files[@]} + ${#always[@]})) || files=(--changed "origin/$BASE")
+	args+=("${files[@]}" "${always[@]}" --passWithNoTests)
 }
 
 # run_command <n>: the shell command COMMAND_<n>.
@@ -91,7 +105,7 @@ commands() {
 }
 
 export OUT
-export -f step clone merge_base compare_with_nothing install tests run_command commands
+export -f step clone merge_base compare_with_nothing install affected tests run_command commands
 
 run() {
 	cd /work/repo || return

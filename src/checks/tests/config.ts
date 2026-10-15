@@ -79,6 +79,11 @@ export interface ContainerConfig {
 	 * full run on the default branch catches what that misses (src/checks/tests/daily.ts).
 	 */
 	changed?: boolean;
+	/**
+	 * With `changed`, vitest filters (paths) that run on every PR anyway: tests that read files or run scripts,
+	 * which vitest's module graph can't connect to the change, such as { "alwaysRun": ["bin/"] }.
+	 */
+	alwaysRun?: string[];
 	/** Gives Turborepo, in the commands, a remote cache shared by the repository's runs (src/turbo-cache.ts). */
 	turboCache?: boolean;
 }
@@ -108,9 +113,11 @@ export function readContainerConfig(source: string | undefined): ContainerConfig
 	for (const key of ["changed", "turboCache"] as const) {
 		if (container[key] !== undefined && typeof container[key] !== "boolean") throw new Error(`${CONFIG_FILE}: "container.${key}" deve ser true ou false.`);
 	}
-	const args = container.vitestArgs;
-	if (args !== undefined && !(Array.isArray(args) && args.every((a) => typeof a === "string" && !a.includes("\n")))) {
-		throw new Error(`${CONFIG_FILE}: "container.vitestArgs" deve ser uma lista de textos.`);
+	for (const key of ["vitestArgs", "alwaysRun"] as const) {
+		const list = container[key];
+		if (list !== undefined && !(Array.isArray(list) && list.every((a) => typeof a === "string" && a.trim() !== "" && !a.includes("\n")))) {
+			throw new Error(`${CONFIG_FILE}: "container.${key}" deve ser uma lista de textos.`);
+		}
 	}
 	const commands = container.commands;
 	if (commands !== undefined) {
