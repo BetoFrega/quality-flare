@@ -92,11 +92,11 @@ run() {
 	echo install >"$OUT/current"
 	step install 600 || return
 	# The commands run one after another alongside the tests: alone, the tests leave vCPUs idle and
-	# lint or typecheck use about one. At a lower priority, so the tests keep the CPU their timeouts
+	# lint or typecheck use about one. At the lowest priority, so the tests keep the CPU their timeouts
 	# expect; not all at once, so neither do the commands starve each other's timed tests.
 	echo tests >"$OUT/current"
 	step tests 1500 &
-	nice -n 10 bash -c commands &
+	nice -n 19 bash -c commands &
 	wait
 }
 
