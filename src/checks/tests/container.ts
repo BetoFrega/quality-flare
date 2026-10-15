@@ -288,22 +288,22 @@ export async function pollBox(job: BoxJob, deps: PollDeps): Promise<"poll" | "do
 		return "done";
 	}
 	const current = (await deps.read("current"))?.trim() ?? "";
-	const command = job.commands[commandIndex(current)];
-	deps.status(command ? `Container: rodando ${command.name}` : (STEP_STATUS[current] ?? "Iniciando o container"));
+	deps.status(current === "tests" ? await runningStatus(job, deps) : (STEP_STATUS[current] ?? "Iniciando o container"));
 	return "poll";
+}
+
+/** The tests run alongside the commands, which run one after another: names the tests, if still running, and the command running. */
+async function runningStatus(job: BoxJob, deps: Pick<PollDeps, "read">): Promise<string> {
+	const finished = new Set(parseSteps((await deps.read("steps")) ?? "").map((s) => s.name));
+	const command = job.commands.find((_, i) => !finished.has(`command${i + 1}`));
+	const running = [...(finished.has("tests") ? [] : ["os testes"]), ...(command ? [command.name] : [])];
+	return `Container: rodando ${running.join(" e ") || "os testes"}`;
 }
 
 const STEP_STATUS: Record<string, string> = {
 	clone: "Container: baixando o código",
 	install: "Container: instalando as dependências",
-	tests: "Container: rodando os testes",
 };
-
-/** qf-run.sh names the step of the n-th command (from 1) `command<n>`; -1 for other steps. */
-function commandIndex(step: string): number {
-	const match = /^command(\d+)$/.exec(step);
-	return match ? Number(match[1]) - 1 : -1;
-}
 
 async function readCpu(deps: Pick<PollDeps, "read">): Promise<number | undefined> {
 	const cpu = Number((await deps.read("cpu").catch(() => undefined))?.trim());

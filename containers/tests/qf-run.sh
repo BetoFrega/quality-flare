@@ -1,10 +1,10 @@
 #!/bin/bash
-# One run of the "Container tests" check: clones the PR head merged into its base, installs dependencies, runs the
-# repository's own vitest and then the commands of its config, each its own check run. It reports
+# One run of the "Container tests" check: clones the PR head merged into its base, installs dependencies, then runs the
+# repository's own vitest alongside its config's commands (one after another), each its own check run. It reports
 # only through files in
 # $OUT, which the TestBox Durable Object reads (src/checks/tests/container.ts):
 #   steps            one line per finished step: "<name> <exit code> <milliseconds>"
-#   current          the step running now
+#   current          the step running now (clone, install, or tests while tests and commands run)
 #   <step>.log       the step's output
 #   report.json      vitest's JSON report
 #   cpu              CPU the container used, in microseconds (cgroup v2 usage_usec)
@@ -24,7 +24,6 @@ mkdir -p "$OUT" /work/repo
 # limit, logging to $OUT/<name>.log.
 step() {
 	local name=$1 limit=$2 command=${3:-$1} start code
-	echo "$name" >"$OUT/current"
 	start=$(date +%s%3N)
 	timeout --kill-after=10 "$limit" bash -c "$command" >>"$OUT/$name.log" 2>&1
 	code=$?
@@ -74,20 +73,33 @@ run_command() {
 	bash -c "${!var}"
 }
 
+# The commands, one after another.
+commands() {
+	local i
+	for ((i = 1; i <= ${COMMANDS:-0}; i++)); do step "command$i" 1200 "run_command $i"; done
+}
+
 export OUT
-export -f clone merge_base install tests run_command
+export -f step clone merge_base install tests run_command commands
 
 run() {
 	cd /work/repo || return
+	echo clone >"$OUT/current"
 	step clone 300 || return
 	unset TOKEN
 	# As on GitHub Actions, for scripts written for it.
 	export CI=true GITHUB_BASE_REF=$BASE GITHUB_SHA=$SHA
+	echo install >"$OUT/current"
 	step install 600 || return
-	step tests 1500
-	local i
-	for ((i = 1; i <= ${COMMANDS:-0}; i++)); do step "command$i" 1200 "run_command $i"; done
+	# The commands run one after another alongside the tests: alone, the tests leave vCPUs idle and
+	# lint or typecheck use about one. At the lowest priority, so the tests keep the CPU their timeouts
+	# expect; not all at once, so neither do the commands starve each other's timed tests.
+	echo tests >"$OUT/current"
+	step tests 1500 &
+	nice -n 19 bash -c commands &
+	wait
 }
+
 
 run
 grep -s usage_usec /sys/fs/cgroup/cpu.stat | cut -d' ' -f2 >"$OUT/cpu"
