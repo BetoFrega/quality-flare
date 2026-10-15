@@ -88,7 +88,8 @@ affected() {
 		since=HEAD index=(GIT_INDEX_FILE=/work/related-index)
 	fi
 	listed=$(env "${index[@]}" npx --no-install vitest list "${args[@]}" --changed "$since" --filesOnly) || return 0
-	while IFS= read -r file; do [ -f "$file" ] && files+=("$file"); done <<<"$listed"
+	# With several vitest projects each line starts with its project's name: "[unit] src/a.test.ts".
+	while IFS= read -r file; do file=${file#\[*\] }; [ -f "$file" ] && files+=("$file"); done <<<"$listed"
 	[ -n "${ALWAYS_RUN:-}" ] && mapfile -t always <<<"$ALWAYS_RUN"
 	echo "Só os testes afetados pela PR: ${#files[@]} arquivo(s), mais ${#always[@]} filtro(s) que sempre rodam."
 	# No file at all: a filter nothing matches, which --passWithNoTests turns into a pass.
