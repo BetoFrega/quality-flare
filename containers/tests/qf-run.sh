@@ -13,7 +13,8 @@
 #
 # Environment: REPO ("owner/repo"), SHA, BASE (the PR's base branch), TOKEN (read-only, this
 # repository only), and optionally INSTALL (a shell command), VITEST_ARGS (one argument per line),
-# and COMMANDS (how many) with COMMAND_1, COMMAND_2… (shell commands, run as steps command1…).
+# COMMANDS (how many) with COMMAND_1, COMMAND_2… (shell commands, run as steps command1…), CHANGED=1
+# (only the tests that depend on what the PR changed) or FULL=1 (SHA on its own, everything).
 set -u
 
 OUT=/work/out
@@ -40,7 +41,15 @@ clone() {
 		git config http.extraHeader "Authorization: Basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)" &&
 		git fetch -q --filter=blob:none origin "$SHA" "+refs/heads/$BASE:refs/remotes/origin/$BASE" &&
 		git checkout -q "$SHA" &&
-		merge_base
+		if [ -n "${FULL:-}" ]; then compare_with_nothing; else merge_base; fi
+}
+
+# A full run tests a branch's commit on its own. Commands that check only what changed against
+# origin/$BASE (turbo --affected) would find nothing changed, so origin/$BASE becomes a commit with no
+# files and no shared history: against it, everything changed, as on a repository's first commit.
+compare_with_nothing() {
+	git update-ref "refs/remotes/origin/$BASE" \
+		"$(git -c user.name=quality-flare -c user.email=quality-flare@users.noreply.github.com commit-tree "$(git hash-object -w -t tree /dev/null)" -m "quality-flare: nothing")"
 }
 
 # Like GitHub Actions on pull_request, the checks run on the PR merged into its base: a PR behind its
@@ -64,6 +73,8 @@ install() {
 tests() {
 	local args=()
 	[ -n "${VITEST_ARGS:-}" ] && mapfile -t args <<<"$VITEST_ARGS"
+	# vitest still runs everything when a file every test depends on changed (package.json, its config).
+	[ -n "${CHANGED:-}" ] && args+=(--changed "origin/$BASE" --passWithNoTests)
 	npx --no-install vitest run "${args[@]}" --reporter=dot --reporter=json --outputFile.json="$OUT/report.json"
 }
 
@@ -80,7 +91,7 @@ commands() {
 }
 
 export OUT
-export -f step clone merge_base install tests run_command commands
+export -f step clone merge_base compare_with_nothing install tests run_command commands
 
 run() {
 	cd /work/repo || return

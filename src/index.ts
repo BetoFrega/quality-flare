@@ -1,6 +1,7 @@
 import { ADMIN_PATH, handleAdmin } from "./admin/index.ts";
 import { codexReview } from "./checks/codex-review/index.ts";
 import { checks as allChecks } from "./checks/index.ts";
+import { DAILY_CRON, runDailyFullRuns } from "./checks/tests/daily.ts";
 import { runTestShards, sweepOverdueRuns } from "./checks/tests/index.ts";
 import type { TestShard } from "./checks/tests/jobs.ts";
 import type { Check, CheckResult } from "./checks/types.ts";
@@ -83,9 +84,10 @@ export default {
 	async queue(batch, env, ctx) {
 		await runTestShards(batch, env, ctx);
 	},
-	// Fails Tests runs past their deadline (see cloudflare.config.ts triggers).
-	async scheduled(_controller, env) {
-		await sweepOverdueRuns(env);
+	// Fails Tests runs past their deadline, and once a day runs every test on default branches (see cloudflare.config.ts triggers).
+	async scheduled(controller, env) {
+		if (controller.cron === DAILY_CRON) await runDailyFullRuns(env);
+		else await sweepOverdueRuns(env);
 	},
 } satisfies ExportedHandler<Env, TestShard>;
 

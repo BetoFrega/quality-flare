@@ -30,6 +30,8 @@ export default defineConfig({
 			triggers.queue({ name: "quality-flare-tests", maxBatchSize: 1, maxRetries: 3, maxConcurrency: 2 }),
 			// Fails Tests runs past their deadline without waiting for their queued shards.
 			triggers.scheduled({ schedule: "*/5 * * * *" }),
+			// The daily full run on default branches (src/checks/tests/daily.ts, DAILY_CRON).
+			triggers.scheduled({ schedule: "0 9 * * *" }),
 		],
 		exports: {
 			// Relays live test progress to the admin over WebSockets.

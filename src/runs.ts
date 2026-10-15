@@ -29,6 +29,8 @@ export interface RunStore {
 	start(run: { repo: string; pr: number; sha: string; container?: boolean }): Promise<number>;
 	/** Ids of the PR's runs still running, other than `except`, of the same check as `except`. */
 	running(repo: string, pr: number, except: number): Promise<number[]>;
+	/** Whether the PR (0 for full runs) already has a run of the commit, of either check. */
+	ran(repo: string, pr: number, sha: string): Promise<boolean>;
 	/** Runs still running that started before `startedBefore` (epoch milliseconds). */
 	overdue(startedBefore: number): Promise<{ id: number; repo: string }[]>;
 	finish(id: number, result: CheckResult, report?: TestReport): Promise<void>;
@@ -123,6 +125,10 @@ export function d1RunStore(db: D1Database, now = () => Date.now()): RunStore {
 				.bind(repo, pr, except, except)
 				.all<{ id: number }>();
 			return results.map((r) => r.id);
+		},
+		async ran(repo, pr, sha) {
+			await schema();
+			return Boolean(await db.prepare("SELECT 1 FROM test_runs WHERE repo = ? AND pr = ? AND sha = ? LIMIT 1").bind(repo, pr, sha).first());
 		},
 		async overdue(startedBefore) {
 			await schema();
