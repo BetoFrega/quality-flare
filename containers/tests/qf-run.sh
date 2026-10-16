@@ -14,7 +14,8 @@
 # Environment: REPO ("owner/repo"), SHA, BASE (the PR's base branch), TOKEN (read-only, this
 # repository only), and optionally INSTALL (a shell command), VITEST_ARGS (one argument per line),
 # COMMANDS (how many) with COMMAND_1, COMMAND_2… (shell commands, run as steps command1…), CHANGED=1
-# (only the tests that depend on what the PR changed, plus ALWAYS_RUN) or FULL=1 (SHA on its own, everything).
+# (only the tests that depend on what the PR changed, plus ALWAYS_RUN) or FULL=1 (SHA on its own, everything;
+# Turborepo's --affected sees every package changed).
 set -u
 
 OUT=/work/out
@@ -44,11 +45,14 @@ clone() {
 		if [ -n "${FULL:-}" ]; then compare_with_nothing; else merge_base; fi
 }
 
-# A full run tests a branch's commit on its own. Commands that check only what changed against
-# origin/$BASE (turbo --affected) would find nothing changed, so origin/$BASE becomes a commit with no
-# files and no shared history: against it, everything changed, as on a repository's first commit.
+# A full run tests a branch's commit on its own, so origin/$BASE stays the branch itself: commands
+# that read the base (a rule that compares a file with the base's copy) find the files as they are.
+# Turborepo's --affected would then find nothing changed, so TURBO_SCM_BASE (set in run) points it at
+# refs/quality-flare/nothing, a commit with no files and no shared history: against it, everything
+# changed, as on a repository's first commit. A command that sets TURBO_SCM_BASE itself should keep
+# the one it gets.
 compare_with_nothing() {
-	git update-ref "refs/remotes/origin/$BASE" \
+	git update-ref refs/quality-flare/nothing \
 		"$(git -c user.name=quality-flare -c user.email=quality-flare@users.noreply.github.com commit-tree "$(git hash-object -w -t tree /dev/null)" -m "quality-flare: nothing")"
 }
 
@@ -142,6 +146,7 @@ run() {
 	unset TOKEN
 	# As on GitHub Actions, for scripts written for it.
 	export CI=true GITHUB_BASE_REF=$BASE GITHUB_SHA=$SHA
+	[ -n "${FULL:-}" ] && export TURBO_SCM_BASE=refs/quality-flare/nothing TURBO_SCM_HEAD=HEAD
 	echo install >"$OUT/current"
 	step install 600 || return
 	# The commands run one after another alongside the tests: alone, the tests leave vCPUs idle and

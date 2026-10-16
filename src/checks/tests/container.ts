@@ -527,6 +527,7 @@ const NOTHING_AFFECTED: CheckResult = {
 };
 
 function logError(error: unknown): undefined {
-	console.error("quality-flare: container run", error);
+	// Workers Logs keeps an Error's stack but not its message, which says what GitHub answered.
+	console.error("quality-flare: container run", error instanceof Error ? `${error.message}\n${error.stack}` : error);
 	return undefined;
 }
