@@ -9,6 +9,8 @@
 #   progress.json    tests so far, while they run (qf-progress.mjs)
 #   report.json      vitest's JSON report
 #   cpu              CPU the container used, in microseconds (cgroup v2 usage_usec)
+#   snapshot         with SNAPSHOT=1, while the run waits for TestBox to snapshot the container: the install ran on
+#                    the base's lockfile. TestBox removes it once the snapshot is taken.
 #   done             written last
 # Then it waits for the Durable Object to read them and destroy the container.
 #
@@ -16,11 +18,17 @@
 # repository only), and optionally INSTALL (a shell command), VITEST_ARGS (one argument per line),
 # COMMANDS (how many) with COMMAND_1, COMMAND_2… (shell commands, run as steps command1…), CHANGED=1
 # (only the tests that depend on what the PR changed, plus ALWAYS_RUN) or FULL=1 (SHA on its own, everything;
-# Turborepo's --affected sees every package changed), and CACHE_PATHS (one path per line) with CACHE_API and
-# CACHE_TOKEN.
+# Turborepo's --affected sees every package changed), CACHE_PATHS (one path per line) with CACHE_API and
+# CACHE_TOKEN, and SNAPSHOT=1.
+#
+# With SNAPSHOT=1 the container may start from a snapshot of an earlier run's (TestBox decides): /work/repo
+# then already has a clone and its node_modules. The clone is brought to SHA and cleaned of everything else,
+# and the install is skipped when the lockfile is the one installed there.
 set -u
 
 OUT=/work/out
+# A container from a snapshot still has the earlier run's output.
+rm -rf "$OUT"
 mkdir -p "$OUT" /work/repo
 : >"$OUT/steps"
 
@@ -39,12 +47,23 @@ step() {
 # (turbo --affected, diffs). Blobs are fetched as needed, so the token stays in the repository's git
 # config for the whole run; it reads only this repository, which the code under test already has.
 clone() {
-	git init -q . &&
-		git remote add origin "https://github.com/$REPO" &&
+	if [ -d .git ]; then git remote set-url origin "https://github.com/$REPO"
+	else git init -q . && git remote add origin "https://github.com/$REPO"
+	fi &&
 		git config http.extraHeader "Authorization: Basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)" &&
 		git fetch -q --filter=blob:none origin "$SHA" "+refs/heads/$BASE:refs/remotes/origin/$BASE" &&
-		git checkout -q "$SHA" &&
+		git checkout -q -f "$SHA" &&
+		clean_snapshot &&
 		if [ -n "${FULL:-}" ]; then compare_with_nothing; else merge_base; fi
+}
+
+# What an earlier run left in a clone from a snapshot goes, but for the installed dependencies (every
+# node_modules) and the config's cache paths: no build output of another commit reaches the tests.
+clean_snapshot() {
+	local keep=(-e node_modules) path
+	[ -f /work/installed ] || return 0
+	[ -n "${CACHE_PATHS:-}" ] && while IFS= read -r path; do keep+=(-e "/$path"); done <<<"$CACHE_PATHS"
+	git clean -q -ffdx "${keep[@]}"
 }
 
 # A full run tests a branch's commit on its own, so origin/$BASE stays the branch itself: commands
@@ -67,7 +86,39 @@ merge_base() {
 	return 1
 }
 
+# Skipped when the container came from a snapshot that installed the same lockfile (and command). /work/installed
+# says which; it goes first, so a failed install never claims one.
 install() {
+	local key
+	key=$({ cat package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb 2>/dev/null; echo "${INSTALL:-}"; } | sha256sum | cut -d' ' -f1)
+	if [ -d node_modules ] && [ "$(cat /work/installed 2>/dev/null)" = "$key" ]; then
+		echo "Dependências já instaladas: o container veio de um snapshot com este lockfile."
+		return
+	fi
+	rm -f /work/installed
+	install_dependencies || return
+	echo "$key" >/work/installed
+	# A PR that changes the lockfile would leave a snapshot most PRs can't use.
+	if [ -n "${SNAPSHOT:-}" ] && git diff --quiet "origin/$BASE" HEAD -- package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb; then
+		wait_for_snapshot
+	fi
+}
+
+# The snapshot is taken now, before any of the repository's code runs, so no run can leave anything in the
+# node_modules of the next. Without the token in the git config, though the clone still needs it for the
+# blobs it fetches as needed.
+wait_for_snapshot() {
+	local header i=0
+	header=$(git config http.extraHeader)
+	git config --unset-all http.extraHeader
+	touch "$OUT/snapshot"
+	while [ -e "$OUT/snapshot" ] && ((i++ < 300)); do sleep 1; done
+	[ -e "$OUT/snapshot" ] && echo "O snapshot não foi tirado a tempo; a run segue sem ele."
+	rm -f "$OUT/snapshot"
+	git config http.extraHeader "$header"
+}
+
+install_dependencies() {
 	if [ -n "${INSTALL:-}" ]; then bash -c "$INSTALL"
 	elif [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile --ignore-scripts
 	elif [ -f yarn.lock ]; then yarn install --frozen-lockfile --ignore-scripts
@@ -168,7 +219,7 @@ commands() {
 }
 
 export OUT
-export -f step clone merge_base compare_with_nothing install affected related_index tests run_command commands
+export -f step clone clean_snapshot merge_base compare_with_nothing install install_dependencies wait_for_snapshot affected related_index tests run_command commands
 
 run() {
 	cd /work/repo || return

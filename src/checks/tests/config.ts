@@ -94,6 +94,11 @@ export interface ContainerConfig {
 	 * them over; such a cache must only skip work whose inputs didn't change, as ESLint's `--cache-strategy content` does.
 	 */
 	cache?: string[];
+	/**
+	 * Starts each run from a snapshot of the last container that installed the base branch's lockfile, with the
+	 * clone and node_modules already there, so a run on that lockfile skips the install (src/checks/tests/container.ts).
+	 */
+	snapshot?: boolean;
 }
 
 /** A command of the container section, and the check run it reports as. */
@@ -118,7 +123,7 @@ export function readContainerConfig(source: string | undefined): ContainerConfig
 	for (const key of ["install", "typecheck"] as const) {
 		if (container[key] !== undefined && typeof container[key] !== "string") throw new Error(`${CONFIG_FILE}: "container.${key}" deve ser um texto.`);
 	}
-	for (const key of ["changed", "turboCache"] as const) {
+	for (const key of ["changed", "turboCache", "snapshot"] as const) {
 		if (container[key] !== undefined && typeof container[key] !== "boolean") throw new Error(`${CONFIG_FILE}: "container.${key}" deve ser true ou false.`);
 	}
 	for (const key of ["vitestArgs", "alwaysRun", "cache"] as const) {

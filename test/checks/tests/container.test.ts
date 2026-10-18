@@ -271,6 +271,12 @@ describe("Container tests", () => {
 		expect(boxEnv(job, { turboCache: true }, "t", turbo)).not.toHaveProperty("CACHE_PATHS");
 	});
 
+	it("tells the container when its install may become the repository's snapshot", () => {
+		const job = { repo: "octo/app", sha: "abc", base: "main" };
+		expect(boxEnv(job, { snapshot: true }, "t")).toMatchObject({ SNAPSHOT: "1" });
+		expect(boxEnv(job, {}, "t")).not.toHaveProperty("SNAPSHOT");
+	});
+
 	it("reads the container section of quality-flare.json apart from the tests section", () => {
 		const container = { vitestArgs: ["--project", "node"], typecheck: "tsc", commands: { Lint: "eslint .", "Web Workers": "turbo run test" } };
 		const json = JSON.stringify({ tests: { include: ["src/**/*.test.ts"] }, container });
@@ -282,6 +288,7 @@ describe("Container tests", () => {
 		expect(invalid({ changed: "yes" })).toThrow(/"container.changed" deve ser true ou false/);
 		expect(invalid({ alwaysRun: "bin/" })).toThrow(/"container.alwaysRun" deve ser uma lista/);
 		expect(invalid({ turboCache: 1 })).toThrow(/"container.turboCache" deve ser true ou false/);
+		expect(invalid({ snapshot: "yes" })).toThrow(/"container.snapshot" deve ser true ou false/);
 		expect(invalid({ cache: ".eslintcache" })).toThrow(/"container.cache" deve ser uma lista/);
 		expect(invalid({ cache: ["/etc"] })).toThrow(/dentro do repositório/);
 		expect(invalid({ cache: ["a/../../b"] })).toThrow(/dentro do repositório/);

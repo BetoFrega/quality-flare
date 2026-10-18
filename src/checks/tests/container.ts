@@ -79,7 +79,23 @@ export interface BoxJob {
 	changed?: true;
 	/** The daily run on the default branch: every test, with nothing to compare against (see qf-run.sh). */
 	full?: true;
+	/** The snapshot its container started from (see TestBox.start). */
+	restored?: string;
 }
+
+/** The last snapshot kept for a repository (the config's `snapshot`), in SETTINGS under snapshotKey. */
+export interface SavedSnapshot {
+	id: string;
+	/** The image it was taken on; a snapshot doesn't start on another. */
+	image: string;
+	size: number;
+	/** The commit whose run took it. */
+	sha: string;
+	/** Epoch milliseconds. */
+	at: number;
+}
+
+export const snapshotKey = (repo: string) => `snapshot:${repo.toLowerCase()}`;
 
 export interface BoxCommand {
 	name: string;
@@ -185,27 +201,84 @@ export class TestBox {
 		const { job, config } = (await request.json()) as { job: BoxJob; config: ContainerConfig };
 		const container = this.ctx.container;
 		if (!container) return new Response("Este Durable Object não tem container.", { status: 500 });
-		const credentials = { appId: this.env.GITHUB_APP_ID, privateKey: this.env.GITHUB_PRIVATE_KEY };
-		const token = await GitHubClient.contentsReadToken(credentials, job.installationId, job.repo);
-		// The config's Turborepo cache and its `cache` paths are both kept by src/turbo-cache.ts.
-		const turbo = config.turboCache || config.cache?.length ? { api: `${this.env.PUBLIC_URL}${TURBO_PATH}`, token: await turboToken(this.env.GITHUB_WEBHOOK_SECRET, job.repo) } : undefined;
-		container.start({
-			image: container.images.tests,
-			instance: INSTANCE.name,
-			// npm, GitHub and quality-flare's caches; the tokens reach this repository only.
-			enableInternet: true,
-			env: boxEnv(job, config, token, turbo),
-		});
+		const started = await this.start(container, job, config);
 		await container.setInactivityTimeout(INACTIVITY_MS);
-		await this.ctx.storage.put("job", job);
+		await this.ctx.storage.put({ job: started, config });
 		await this.ctx.storage.setAlarm(Date.now() + POLL_MS);
 		return new Response(null, { status: 204 });
 	}
 
+	/**
+	 * Starts the run's container. With the config's `snapshot`, from the repository's last snapshot when it was
+	 * taken on this image: its clone and installed dependencies save the run the install (qf-run.sh).
+	 */
+	private async start(container: Container, job: BoxJob, config: ContainerConfig, fresh = false): Promise<BoxJob> {
+		const credentials = { appId: this.env.GITHUB_APP_ID, privateKey: this.env.GITHUB_PRIVATE_KEY };
+		const token = await GitHubClient.contentsReadToken(credentials, job.installationId, job.repo);
+		// The config's Turborepo cache and its `cache` paths are both kept by src/turbo-cache.ts.
+		const turbo = config.turboCache || config.cache?.length ? { api: `${this.env.PUBLIC_URL}${TURBO_PATH}`, token: await turboToken(this.env.GITHUB_WEBHOOK_SECRET, job.repo) } : undefined;
+		// npm, GitHub and quality-flare's caches; the tokens reach this repository only.
+		const options = { instance: INSTANCE.name, enableInternet: true, env: boxEnv(job, config, token, turbo) };
+		const { restored: _, ...rest } = job;
+		const saved = config.snapshot && !fresh ? await this.env.SETTINGS.get<SavedSnapshot>(snapshotKey(job.repo), "json") : null;
+		if (saved && saved.image === container.images.tests) {
+			try {
+				container.start({ ...options, containerSnapshot: { id: saved.id } });
+				return { ...rest, restored: saved.id };
+			} catch (error) {
+				logError(error);
+			}
+		}
+		container.start({ ...options, image: container.images.tests });
+		return rest;
+	}
+
+	/** Forgets the repository's snapshot, unless a newer one already replaced it. */
+	private async forgetSnapshot(repo: string, id: string): Promise<void> {
+		const saved = await this.env.SETTINGS.get<SavedSnapshot>(snapshotKey(repo), "json");
+		if (saved?.id === id) await this.env.SETTINGS.delete(snapshotKey(repo));
+	}
+
+	/**
+	 * A container that just installed the base's lockfile waits, before running anything else, with qf-run.sh's
+	 * `snapshot` file: it becomes the repository's snapshot, and the run goes on once the file is gone.
+	 */
+	private async takeSnapshot(container: Container, job: BoxJob): Promise<void> {
+		if ((await readFile(container, "snapshot").catch(() => undefined)) === undefined) return;
+		try {
+			// npm's download cache only makes the snapshot bigger.
+			await (await container.exec(["sh", "-c", "rm -rf /root/.npm; sync"])).output();
+			const snapshot = await container.snapshotContainer({ name: `${job.repo}@${job.sha.slice(0, 7)}` });
+			const saved: SavedSnapshot = { id: snapshot.id, image: container.images.tests, size: snapshot.size, sha: job.sha, at: Date.now() };
+			await this.env.SETTINGS.put(snapshotKey(job.repo), JSON.stringify(saved));
+		} finally {
+			await (await container.exec(["rm", "-f", `${OUT}/snapshot`])).output();
+		}
+	}
+
+	/** A run from a snapshot whose install failed forgets the snapshot: what it left in node_modules may be the cause. */
+	private async checkRestored(container: Container, job: BoxJob): Promise<void> {
+		if (!job.restored) return;
+		const steps = parseSteps((await readFile(container, "steps").catch(() => undefined)) ?? "");
+		if (steps.some((s) => s.name === "install" && s.exitCode !== 0)) await this.forgetSnapshot(job.repo, job.restored);
+	}
+
 	async alarm(): Promise<void> {
 		const job = await this.ctx.storage.get<BoxJob>("job");
+		const config = (await this.ctx.storage.get<ContainerConfig>("config")) ?? {};
 		const container = this.ctx.container;
 		if (!job || !container) return;
+		if (job.restored && !(await this.ctx.storage.get("seen"))) {
+			if (!container.running) {
+				// The snapshot didn't start (expired, say): forget it and start from the image.
+				await this.forgetSnapshot(job.repo, job.restored);
+				await this.ctx.storage.put("job", await this.start(container, job, config, true));
+				await this.ctx.storage.setAlarm(Date.now() + POLL_MS);
+				return;
+			}
+			await this.ctx.storage.put("seen", true);
+		}
+		if (config.snapshot && container.running) await this.takeSnapshot(container, job).catch(logError);
 		const live = livePublisher(this.env.LIVE);
 		const next = await pollBox(job, {
 			now: Date.now,
@@ -230,6 +303,7 @@ export class TestBox {
 			await this.ctx.storage.setAlarm(Date.now() + POLL_MS);
 			return;
 		}
+		if (container.running) await this.checkRestored(container, job).catch(logError);
 		await container.destroy().catch(() => {});
 		await this.ctx.storage.deleteAll();
 	}
@@ -348,6 +422,7 @@ export function boxEnv(
 		// A full run checks what the cache would vouch for: it builds everything, and still fills the cache.
 		...(turbo && config.turboCache ? { TURBO_API: turbo.api, TURBO_TEAM: "quality-flare", TURBO_TOKEN: turbo.token, ...(job.full ? { TURBO_FORCE: "true" } : {}) } : {}),
 		...(turbo && config.cache?.length ? { CACHE_PATHS: config.cache.join("\n"), CACHE_API: turbo.api, CACHE_TOKEN: turbo.token } : {}),
+		...(config.snapshot ? { SNAPSHOT: "1" } : {}),
 		...(config.install ? { INSTALL: config.install } : {}),
 		...(config.vitestArgs?.length ? { VITEST_ARGS: config.vitestArgs.join("\n") } : {}),
 		...(commands.length ? { COMMANDS: String(commands.length) } : {}),
