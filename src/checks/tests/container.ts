@@ -44,10 +44,14 @@ export const CONTAINER_PRICES = {
 export const POLL_MS = 10_000;
 
 /**
- * A run still going this long after it started is failed and its container destroyed, below the
- * cron sweep's hour. qf-run.sh's step limits stop a single step that hangs first.
+ * A run still going this long after it started is failed and its container destroyed: about twice the
+ * longest real run (a full run of macae, ~11 min), since a hung run is billed for every minute it stays up.
+ * qf-run.sh's step limits (STEP_MINUTES) stop a single step that hangs first.
  */
-export const BOX_DEADLINE_MS = 55 * 60_000;
+export const BOX_DEADLINE_MS = 20 * 60_000;
+
+/** qf-run.sh's limit on the tests and on each command. */
+const STEP_MINUTES = 15;
 
 /** Without a request or an alarm for this long, Cloudflare stops the container on its own. */
 const INACTIVITY_MS = 5 * 60_000;
@@ -290,7 +294,7 @@ export class TestBox {
 		return new Set((await this.ctx.storage.get<Shown>("shown"))?.finished);
 	}
 
-	/** One installation token per run, kept while the object is in memory: it lasts an hour, past BOX_DEADLINE_MS. */
+	/** One installation token per run, kept while the object is in memory: it lasts an hour, well past BOX_DEADLINE_MS. */
 	private token?: Promise<GitHubClient>;
 
 	private github(job: BoxJob): Promise<GitHubClient> {
@@ -550,7 +554,7 @@ export function boxResults(output: BoxOutput, commands: Pick<BoxCommand, "name">
 	const tests = step("tests");
 	const report = output.report ? parseVitestReport(output.report) : undefined;
 	if (!report || tests?.exitCode === TIMED_OUT) {
-		const why = tests?.exitCode === TIMED_OUT ? "Os testes passaram do limite de 25 minutos." : "O vitest terminou sem gerar o relatório.";
+		const why = tests?.exitCode === TIMED_OUT ? `Os testes passaram do limite de ${STEP_MINUTES} minutos.` : "O vitest terminou sem gerar o relatório.";
 		return { ...results, tests: logFailure(why, output.logs.tests) };
 	}
 	if (!report.files.length) return { ...results, tests: changed ? NOTHING_AFFECTED : NO_TESTS };
@@ -574,7 +578,7 @@ function failedStep(name: "clone" | "install", step: Step | undefined): string {
 function commandResult(name: string, step: Step | undefined, log: string | undefined): CheckResult | undefined {
 	if (!step) return undefined;
 	if (step.exitCode === 0) return { conclusion: "success", title: `${name} passou`, summary: `Sem erros, em ${(step.ms / 1000).toFixed(0)} s.` };
-	const why = step.exitCode === TIMED_OUT ? `${name} passou do limite de 20 minutos.` : `${name} falhou (código de saída ${step.exitCode}).`;
+	const why = step.exitCode === TIMED_OUT ? `${name} passou do limite de ${STEP_MINUTES} minutos.` : `${name} falhou (código de saída ${step.exitCode}).`;
 	return { ...logFailure(why, log), title: `${name} falhou` };
 }
 

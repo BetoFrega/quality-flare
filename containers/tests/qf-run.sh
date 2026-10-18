@@ -134,7 +134,7 @@ run_command() {
 # The commands, one after another.
 commands() {
 	local i
-	for ((i = 1; i <= ${COMMANDS:-0}; i++)); do step "command$i" 1200 "run_command $i"; done
+	for ((i = 1; i <= ${COMMANDS:-0}; i++)); do step "command$i" 900 "run_command $i"; done
 }
 
 export OUT
@@ -154,7 +154,7 @@ run() {
 	# lint or typecheck use about one. At the lowest priority, so the tests keep the CPU their timeouts
 	# expect; not all at once, so neither do the commands starve each other's timed tests.
 	echo tests >"$OUT/current"
-	step tests 1500 &
+	step tests 900 &
 	nice -n 19 bash -c commands &
 	wait
 }

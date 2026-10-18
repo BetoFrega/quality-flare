@@ -91,7 +91,7 @@ describe("Container tests", () => {
 		const report = JSON.stringify({ testResults: [{ name: "/work/repo/a.test.ts", status: "passed", assertionResults: [{ title: "ok", status: "passed" }] }] });
 		const results = boxResults(output("clone 0 1\ninstall 0 1\ntests 0 1\ncommand1 124 1200000\n", { report }), commands);
 		expect(results.tests).toMatchObject({ conclusion: "success", title: "1 teste passaram" });
-		expect(results.commands).toEqual([expect.objectContaining({ title: "Typecheck falhou", summary: "Typecheck passou do limite de 20 minutos." }), undefined]);
+		expect(results.commands).toEqual([expect.objectContaining({ title: "Typecheck falhou", summary: "Typecheck passou do limite de 15 minutos." }), undefined]);
 	});
 
 	it("says when only the PR's affected tests ran, and passes when none were affected", () => {
@@ -117,7 +117,7 @@ describe("Container tests", () => {
 
 	it("fails with the log when the tests time out", () => {
 		const results = boxResults(output("clone 0 1\ninstall 0 1\ntests 124 1500000\n", { logs: { tests: "····" } }));
-		expect(results.tests).toMatchObject({ conclusion: "failure", title: "Os testes passaram do limite de 25 minutos" });
+		expect(results.tests).toMatchObject({ conclusion: "failure", title: "Os testes passaram do limite de 15 minutos" });
 	});
 
 	describe("TestBox polling", () => {
