@@ -86,20 +86,21 @@ merge_base() {
 	return 1
 }
 
-# Skipped when the container came from a snapshot that installed the same lockfile (and command). /work/installed
-# says which; it goes first, so a failed install never claims one.
+# Skipped when the container came from a snapshot that installed the same dependency files (and command).
+# /work/installed says which; it goes first, so a failed install never claims one.
 install() {
-	local key
-	key=$({ cat package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb 2>/dev/null; echo "${INSTALL:-}"; } | sha256sum | cut -d' ' -f1)
+	# What the install depends on: the lockfile and every package.json (without a lockfile, npm installs from those).
+	local key files=(package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb ':(glob)**/package.json')
+	key=$({ git ls-files -z -- "${files[@]}" | sort -z | xargs -0 -r sha256sum; echo "${INSTALL:-}"; } | sha256sum | cut -d' ' -f1)
 	if [ -d node_modules ] && [ "$(cat /work/installed 2>/dev/null)" = "$key" ]; then
-		echo "Dependências já instaladas: o container veio de um snapshot com este lockfile."
+		echo "Dependências já instaladas: o container veio de um snapshot com o mesmo lockfile e os mesmos package.json."
 		return
 	fi
 	rm -f /work/installed
 	install_dependencies || return
 	echo "$key" >/work/installed
-	# A PR that changes the lockfile would leave a snapshot most PRs can't use.
-	if [ -n "${SNAPSHOT:-}" ] && git diff --quiet "origin/$BASE" HEAD -- package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb; then
+	# A PR that changes them would leave a snapshot most PRs can't use.
+	if [ -n "${SNAPSHOT:-}" ] && git diff --quiet "origin/$BASE" HEAD -- "${files[@]}"; then
 		wait_for_snapshot
 	fi
 }
