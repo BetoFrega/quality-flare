@@ -55,10 +55,14 @@ export function isReviewing(activity: ReviewActivity): boolean {
 /**
  * Statuses in the summary's hidden markers. `codex-security-review:v1` has its own `status`;
  * `codex-review-state:v1` nests one object per review: `{"code_review":{"status":"running"},…}`.
+ * When both are there, only the second counts: Codex can leave the first at "running" after the
+ * security review completed (quality-flare #56).
  */
 function markerStatuses(body: string): string[] {
 	const statuses: string[] = [];
-	for (const [, json] of body.matchAll(/<!-- codex-[\w-]+:v\d+ (\{.*?\}) -->/g)) {
+	const markers = [...body.matchAll(/<!-- (codex-[\w-]+):v\d+ (\{.*?\}) -->/g)];
+	const state = markers.filter(([, name]) => name === "codex-review-state");
+	for (const [, , json] of state.length ? state : markers) {
 		let state: unknown;
 		try {
 			state = JSON.parse(json);

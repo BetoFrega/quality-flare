@@ -70,6 +70,13 @@ describe("isReviewing", () => {
 		expect(reviewing(state("completed", "running"))).toBe(true);
 	});
 
+	it("trusts codex-review-state over a codex-security-review left running", () => {
+		// Copied from quality-flare #56: the security review completed, its own marker still said running.
+		const body =
+			'<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {"code_review":{"commit_sha":null,"has_any_findings":null,"has_unresolved_findings":null,"status":null},"security_review":{"commit_sha":null,"has_any_findings":null,"has_unresolved_findings":null,"status":"completed"}} -->\n<!-- codex-security-review:v1 {"blockingSeverityThreshold":"P0","headSha":"f22f81b","mergeGateEnabled":false,"pullRequestNumber":56,"repository":"BetoFrega/quality-flare","status":"running"} -->\n## Codex Review Summary\n\n| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n| 🔒 **Security Review** | ✅ **Completed** | — | Draft marked ready |';
+		expect(isReviewing(activity({ comments: [{ author: CODEX, body }] }))).toBe(false);
+	});
+
 	it("trusts the summary over a 👀 that was not removed yet", () => {
 		expect(isReviewing(activity({ comments: [{ author: CODEX, body: summary("completed") }], eyesFrom: [CODEX] }))).toBe(false);
 	});
