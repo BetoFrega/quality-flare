@@ -187,11 +187,12 @@ export class TestBox {
 		if (!container) return new Response("Este Durable Object não tem container.", { status: 500 });
 		const credentials = { appId: this.env.GITHUB_APP_ID, privateKey: this.env.GITHUB_PRIVATE_KEY };
 		const token = await GitHubClient.contentsReadToken(credentials, job.installationId, job.repo);
-		const turbo = config.turboCache ? { api: `${this.env.PUBLIC_URL}${TURBO_PATH}`, token: await turboToken(this.env.GITHUB_WEBHOOK_SECRET, job.repo) } : undefined;
+		// The config's Turborepo cache and its `cache` paths are both kept by src/turbo-cache.ts.
+		const turbo = config.turboCache || config.cache?.length ? { api: `${this.env.PUBLIC_URL}${TURBO_PATH}`, token: await turboToken(this.env.GITHUB_WEBHOOK_SECRET, job.repo) } : undefined;
 		container.start({
 			image: container.images.tests,
 			instance: INSTANCE.name,
-			// npm, GitHub and the Turborepo cache; the tokens reach this repository only.
+			// npm, GitHub and quality-flare's caches; the tokens reach this repository only.
 			enableInternet: true,
 			env: boxEnv(job, config, token, turbo),
 		});
@@ -345,7 +346,8 @@ export function boxEnv(
 		TOKEN: token,
 		...(job.full ? { FULL: "1" } : job.changed ? { CHANGED: "1", ...(config.alwaysRun?.length ? { ALWAYS_RUN: config.alwaysRun.join("\n") } : {}) } : {}),
 		// A full run checks what the cache would vouch for: it builds everything, and still fills the cache.
-		...(turbo ? { TURBO_API: turbo.api, TURBO_TEAM: "quality-flare", TURBO_TOKEN: turbo.token, ...(job.full ? { TURBO_FORCE: "true" } : {}) } : {}),
+		...(turbo && config.turboCache ? { TURBO_API: turbo.api, TURBO_TEAM: "quality-flare", TURBO_TOKEN: turbo.token, ...(job.full ? { TURBO_FORCE: "true" } : {}) } : {}),
+		...(turbo && config.cache?.length ? { CACHE_PATHS: config.cache.join("\n"), CACHE_API: turbo.api, CACHE_TOKEN: turbo.token } : {}),
 		...(config.install ? { INSTALL: config.install } : {}),
 		...(config.vitestArgs?.length ? { VITEST_ARGS: config.vitestArgs.join("\n") } : {}),
 		...(commands.length ? { COMMANDS: String(commands.length) } : {}),

@@ -1,9 +1,9 @@
 # Image of the "Container tests" check (src/checks/tests/container.ts): Node.js with git, Git LFS,
-# npm, pnpm and yarn. Each run starts a fresh container whose entrypoint is qf-run.
+# npm, pnpm, yarn and curl (for the config's `cache`). Each run starts a fresh container whose entrypoint is qf-run.
 FROM node:24-trixie-slim
 
 RUN apt-get update \
-	&& apt-get install -y --no-install-recommends git git-lfs ca-certificates \
+	&& apt-get install -y --no-install-recommends git git-lfs ca-certificates curl \
 	&& git lfs install --system \
 	&& rm -rf /var/lib/apt/lists/* \
 	&& npm install --global corepack@0.36.0 \

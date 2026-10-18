@@ -16,7 +16,8 @@
 # repository only), and optionally INSTALL (a shell command), VITEST_ARGS (one argument per line),
 # COMMANDS (how many) with COMMAND_1, COMMAND_2… (shell commands, run as steps command1…), CHANGED=1
 # (only the tests that depend on what the PR changed, plus ALWAYS_RUN) or FULL=1 (SHA on its own, everything;
-# Turborepo's --affected sees every package changed).
+# Turborepo's --affected sees every package changed), and CACHE_PATHS (one path per line) with CACHE_API and
+# CACHE_TOKEN.
 set -u
 
 OUT=/work/out
@@ -125,6 +126,35 @@ related_index() {
 		{ [ -z "$related" ] || GIT_INDEX_FILE=/work/related-index git --literal-pathspecs rm -q --cached --ignore-unmatch --pathspec-from-file=- <<<"$related"; }
 }
 
+# The config's `cache`: files the tools keep between runs (ESLint's cache, tsc's .tsbuildinfo…), kept in
+# quality-flare's Turborepo cache (src/turbo-cache.ts) under one key per lockfile, so new dependencies start
+# them over. Restored after the install, which may empty node_modules; saved at the end. Both are best effort:
+# without them the tools only take longer.
+cache_url() {
+	echo "$CACHE_API/v8/artifacts/qf-files-$(cat package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock 2>/dev/null | sha256sum | cut -c1-32)"
+}
+
+restore_cache() {
+	curl -fsS --max-time 60 -H "Authorization: Bearer $CACHE_TOKEN" -o /work/cache.tgz "$(cache_url)" &&
+		tar -xzf /work/cache.tgz && echo "Cache restaurado: $(du -h /work/cache.tgz | cut -f1)."
+	rm -f /work/cache.tgz
+}
+
+# Not after a step that hit its time limit: a tool stopped mid-write can leave its cache broken.
+save_cache() {
+	local paths=() path present=()
+	if grep -q ' 124 ' "$OUT/steps"; then echo "Cache não salvo: um passo passou do limite."; return; fi
+	mapfile -t paths <<<"$CACHE_PATHS"
+	for path in "${paths[@]}"; do [ -e "$path" ] && present+=("$path"); done
+	((${#present[@]})) || return 0
+	tar -czf /work/cache.tgz "${present[@]}" &&
+		if (($(stat -c %s /work/cache.tgz) > 90 * 1024 * 1024)); then echo "Cache não salvo: passa de 90 MB."
+		else curl -fsS --max-time 120 -X PUT -H "Authorization: Bearer $CACHE_TOKEN" -H "Content-Type: application/octet-stream" \
+			--data-binary @/work/cache.tgz "$(cache_url)" >/dev/null && echo "Cache salvo: $(du -h /work/cache.tgz | cut -f1)."
+		fi
+	rm -f /work/cache.tgz
+}
+
 # run_command <n>: the shell command COMMAND_<n>.
 run_command() {
 	local var=COMMAND_$1
@@ -150,6 +180,7 @@ run() {
 	[ -n "${FULL:-}" ] && export TURBO_SCM_BASE=refs/quality-flare/nothing TURBO_SCM_HEAD=HEAD
 	echo install >"$OUT/current"
 	step install 600 || return
+	[ -n "${CACHE_PATHS:-}" ] && restore_cache >>"$OUT/cache.log" 2>&1
 	# The commands run one after another alongside the tests: alone, the tests leave vCPUs idle and
 	# lint or typecheck use about one. At the lowest priority, so the tests keep the CPU their timeouts
 	# expect; not all at once, so neither do the commands starve each other's timed tests.
@@ -157,6 +188,8 @@ run() {
 	step tests 900 &
 	nice -n 19 bash -c commands &
 	wait
+	[ -n "${CACHE_PATHS:-}" ] && save_cache >>"$OUT/cache.log" 2>&1
+	return 0
 }
 
 

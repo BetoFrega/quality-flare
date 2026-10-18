@@ -262,6 +262,15 @@ describe("Container tests", () => {
 		expect(boxEnv(job, {}, "t")).not.toHaveProperty("TURBO_API");
 	});
 
+	it("gives the container the paths its runs keep, apart from Turborepo's cache", () => {
+		const job = { repo: "octo/app", sha: "abc", base: "main" };
+		const turbo = { api: "https://qf.example/turbo", token: "tt" };
+		const cache = [".cache/eslint", "tsconfig.tsbuildinfo"];
+		expect(boxEnv(job, { cache }, "t", turbo)).toMatchObject({ CACHE_PATHS: ".cache/eslint\ntsconfig.tsbuildinfo", CACHE_API: "https://qf.example/turbo", CACHE_TOKEN: "tt" });
+		expect(boxEnv(job, { cache }, "t", turbo)).not.toHaveProperty("TURBO_API");
+		expect(boxEnv(job, { turboCache: true }, "t", turbo)).not.toHaveProperty("CACHE_PATHS");
+	});
+
 	it("reads the container section of quality-flare.json apart from the tests section", () => {
 		const container = { vitestArgs: ["--project", "node"], typecheck: "tsc", commands: { Lint: "eslint .", "Web Workers": "turbo run test" } };
 		const json = JSON.stringify({ tests: { include: ["src/**/*.test.ts"] }, container });
@@ -273,6 +282,10 @@ describe("Container tests", () => {
 		expect(invalid({ changed: "yes" })).toThrow(/"container.changed" deve ser true ou false/);
 		expect(invalid({ alwaysRun: "bin/" })).toThrow(/"container.alwaysRun" deve ser uma lista/);
 		expect(invalid({ turboCache: 1 })).toThrow(/"container.turboCache" deve ser true ou false/);
+		expect(invalid({ cache: ".eslintcache" })).toThrow(/"container.cache" deve ser uma lista/);
+		expect(invalid({ cache: ["/etc"] })).toThrow(/dentro do repositório/);
+		expect(invalid({ cache: ["a/../../b"] })).toThrow(/dentro do repositório/);
+		expect(readContainerConfig(JSON.stringify({ container: { cache: ["node_modules/.cache/eslint"] } }))).toEqual({ cache: ["node_modules/.cache/eslint"] });
 		expect(readContainerConfig(JSON.stringify({ container: { changed: true, turboCache: true } }))).toEqual({ changed: true, turboCache: true });
 		expect(invalid({ commands: ["npm run lint"] })).toThrow(/"container.commands" deve ligar/);
 		expect(invalid({ commands: { Lint: 1 } })).toThrow(/"container.commands" deve ligar/);

@@ -88,6 +88,12 @@ export interface ContainerConfig {
 	alwaysRun?: string[];
 	/** Gives Turborepo, in the commands, a remote cache shared by the repository's runs (src/turbo-cache.ts). */
 	turboCache?: boolean;
+	/**
+	 * Paths, relative to the repository root, that the repository's runs keep from one to the next: the caches its
+	 * tools write (ESLint's `--cache-location`, tsc's .tsbuildinfo…). Kept per lockfile, so new dependencies start
+	 * them over; such a cache must only skip work whose inputs didn't change, as ESLint's `--cache-strategy content` does.
+	 */
+	cache?: string[];
 }
 
 /** A command of the container section, and the check run it reports as. */
@@ -115,11 +121,14 @@ export function readContainerConfig(source: string | undefined): ContainerConfig
 	for (const key of ["changed", "turboCache"] as const) {
 		if (container[key] !== undefined && typeof container[key] !== "boolean") throw new Error(`${CONFIG_FILE}: "container.${key}" deve ser true ou false.`);
 	}
-	for (const key of ["vitestArgs", "alwaysRun"] as const) {
+	for (const key of ["vitestArgs", "alwaysRun", "cache"] as const) {
 		const list = container[key];
 		if (list !== undefined && !(Array.isArray(list) && list.every((a) => typeof a === "string" && a.trim() !== "" && !a.includes("\n")))) {
 			throw new Error(`${CONFIG_FILE}: "container.${key}" deve ser uma lista de textos.`);
 		}
+	}
+	for (const path of container.cache ?? []) {
+		if (path.startsWith("/") || path.split("/").includes("..")) throw new Error(`${CONFIG_FILE}: "${path}" em "container.cache" deve ser um caminho dentro do repositório.`);
 	}
 	const commands = container.commands;
 	if (commands !== undefined) {
