@@ -6,7 +6,7 @@ import { runTestShards, sweepOverdueRuns } from "./checks/tests/index.ts";
 import type { TestShard } from "./checks/tests/jobs.ts";
 import type { Check, CheckResult } from "./checks/types.ts";
 import { verifySignature } from "./crypto.ts";
-import { codexReviewBlock, isRunCommand, type PullRequestComment, runsOnPush, updateStatus, WAITING_RESULT } from "./on-demand.ts";
+import { codexReviewBlock, inheritedRuns, isRunCommand, type PullRequestComment, runsOnPush, updateStatus, WAITING_RESULT } from "./on-demand.ts";
 import { GitHubClient, type PullRequest } from "./github.ts";
 import { getRepoSettings, type RepoSettings } from "./settings.ts";
 import { handleTurboCache, TURBO_PATH } from "./turbo-cache.ts";
@@ -112,6 +112,9 @@ export async function runPlan(plan: Plan, repo: string, installationId: number, 
 		const asksForTests = plan.command && checks.some((c) => c.onDemand && settings.enabledChecks.has(c.id));
 		const blocked = asksForTests && runsCodex ? await codexBlock() : undefined;
 		if (blocked) commanded = "confused";
+		// A push that only merges the base into a head that passed keeps its runs instead of waiting (see inheritedRuns).
+		let inherited: Promise<boolean> | undefined;
+		const inherit = () => (inherited ??= inheritRuns(github, repo, pr, settings, env.GITHUB_APP_ID));
 		for (const check of checks) {
 			// The Codex review comes first: a command while it blocks runs no tests.
 			if (blocked && check.onDemand) continue;
@@ -123,7 +126,9 @@ export async function runPlan(plan: Plan, repo: string, installationId: number, 
 				continue;
 			} else if (check.onDemand && !plan.command && !plan.rerun && !runsOnPush(settings.onDemand, pr)) {
 				// A commit keeps the run it has: leaving draft or reopening on the same head must not queue a passed run again.
-				result = (await runStatus(github, repo, pr.head.sha, check.name, env.GITHUB_APP_ID)) ? null : WAITING_RESULT;
+				const kept = Boolean(await runStatus(github, repo, pr.head.sha, check.name, env.GITHUB_APP_ID));
+				if (!kept && (await inherit())) continue;
+				result = kept ? null : WAITING_RESULT;
 				waiting.push(check.name);
 			} else {
 				if (check.onDemand && plan.command) commanded = "rocket";
@@ -152,6 +157,21 @@ export async function runPlan(plan: Plan, repo: string, installationId: number, 
 		await github.reactToComment(repo, plan.command.commentId, commanded).catch((error: unknown) => {
 			console.error("quality-flare: could not react to the run command", error);
 		});
+	}
+}
+
+/** Copies the runs a clean merge of the base inherits onto the PR's head; false when it inherits none, or GitHub can't say. */
+async function inheritRuns(github: GitHubClient, repo: string, pr: PullRequest, settings: RepoSettings, appId: string): Promise<boolean> {
+	const enabled = allChecks.filter((c) => c.onDemand && settings.enabledChecks.has(c.id)).map((c) => c.name);
+	const others = allChecks.map((c) => c.name).filter((name) => !enabled.includes(name));
+	try {
+		const runs = await inheritedRuns(github, repo, pr, enabled, others, appId);
+		if (!runs) return false;
+		for (const run of runs) await github.createCheckRun(repo, pr.head.sha, run.name, run.result);
+		return true;
+	} catch (error) {
+		console.error("quality-flare: could not check whether the push only merges the base", error);
+		return false;
 	}
 }
 
