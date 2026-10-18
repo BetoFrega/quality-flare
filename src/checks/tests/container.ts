@@ -20,7 +20,9 @@ import { toCheckResult, type TestReport, type TestResult } from "./report.ts";
  * The container reports only through files (see containers/tests/qf-run.sh). TestBox, one Durable
  * Object per run, starts it and reads those files on an alarm every POLL_MS until the run is done,
  * cancelled (a newer push or the cron sweep closed its job) or past BOX_DEADLINE_MS, then destroys
- * it. Alarms are short, so no single invocation outlives the run.
+ * it. Alarms are short, so no single invocation outlives the run. Each look also shows the run so far
+ * on its check runs (tests passed, failures, the end of each command's log) and in the admin, and
+ * completes a command's check run as soon as the command finishes.
  */
 
 const NAME = "Container tests";
@@ -53,6 +55,8 @@ const INACTIVITY_MS = 5 * 60_000;
 const OUT = "/work/out";
 /** GitHub caps a check run summary at 65535 characters. */
 const MAX_LOG = 50_000;
+/** How much of a running command's log its check run shows. */
+const TAIL_BYTES = 6000;
 
 /** What TestBox keeps about its run. */
 export interface BoxJob {
@@ -203,8 +207,12 @@ export class TestBox {
 			running: () => container.running,
 			// Reading fails while the container is still starting; the deadline covers one that never answers.
 			read: (path) => readFile(container, path).catch(() => undefined),
+			tail: (path) => readFile(container, path, TAIL_BYTES).catch(() => undefined),
 			jobs: d1JobStore(this.env.RUNS),
+			finished: new Set((await this.ctx.storage.get<Shown>("shown"))?.finished),
 			status: (text) => live.send({ type: "status", runId: job.runId, text }),
+			// Showing progress is a nicety: a GitHub error here never holds the run up.
+			progress: (progress) => this.show(job, progress, live).catch(logError),
 			publish: (results, report, usage) => this.publish(job, results, report, usage),
 			abandon: (usage) => this.abandon(job, usage),
 		}).catch((error: unknown) => {
@@ -229,8 +237,9 @@ export class TestBox {
 		if (!closed) return this.abandon(job, usage);
 		const github = await this.github(job);
 		await github.completeCheckRun(job.repo, job.checkRunId, results.tests);
+		const finished = await this.finished();
 		for (const [i, command] of job.commands.entries()) {
-			await github.completeCheckRun(job.repo, command.checkRunId, results.commands[i] ?? NOT_RUN).catch(logError);
+			if (!finished.has(i)) await github.completeCheckRun(job.repo, command.checkRunId, results.commands[i] ?? NOT_RUN).catch(logError);
 		}
 		await d1RunStore(this.env.RUNS).finish(job.runId, results.tests, report).catch(logError);
 		if (job.full) await alertFullRun(github, job, results, `${this.env.PUBLIC_URL}/admin/runs/${job.runId}`).catch(logError);
@@ -242,13 +251,57 @@ export class TestBox {
 	/** The run was cancelled or swept, which reported the Container tests check run; the commands' are still open. */
 	private async abandon(job: BoxJob, usage: BoxUsage): Promise<void> {
 		await recordUsage(this.env.RUNS, job.runId, usage);
-		if (!job.commands.length) return;
+		const finished = await this.finished();
+		const open = job.commands.filter((_, i) => !finished.has(i));
+		if (!open.length) return;
 		const github = await this.github(job);
-		for (const command of job.commands) await github.completeCheckRun(job.repo, command.checkRunId, COMMAND_CANCELLED).catch(logError);
+		for (const command of open) await github.completeCheckRun(job.repo, command.checkRunId, COMMAND_CANCELLED).catch(logError);
 	}
 
+	/**
+	 * Shows the run so far: on its check runs, each only when what it shows changed, and in the admin (the failures
+	 * it hasn't sent yet, and the totals). A command that finished gets its check run completed now.
+	 */
+	private async show(job: BoxJob, progress: BoxProgress, live: ReturnType<typeof livePublisher>): Promise<void> {
+		const shown: Shown = (await this.ctx.storage.get<Shown>("shown")) ?? { outputs: {}, finished: [], failures: 0 };
+		const show = async (checkRunId: number, output: BoxProgress["commands"][number]) => {
+			const text = output && hash(JSON.stringify(output));
+			if (!output || shown.outputs[checkRunId] === text) return false;
+			const github = await this.github(job);
+			const done = "conclusion" in output;
+			await (done ? github.completeCheckRun(job.repo, checkRunId, output) : github.updateCheckRun(job.repo, checkRunId, output));
+			shown.outputs[checkRunId] = text;
+			return done;
+		};
+		await show(job.checkRunId, progress.tests);
+		for (const [i, command] of job.commands.entries()) if (await show(command.checkRunId, progress.commands[i])) shown.finished.push(i);
+		const counts = progress.counts;
+		if (counts) {
+			for (const failure of counts.failures.slice(shown.failures)) {
+				live.send({ type: "test", runId: job.runId, file: failure.file, name: failure.name || "(fora dos testes)", state: "fail", errors: [failure.error] });
+			}
+			shown.failures = Math.max(shown.failures, counts.failures.length);
+			live.send({ type: "counts", runId: job.runId, pass: counts.passed, fail: counts.failed + counts.broken, other: counts.skipped, total: counts.tests || undefined });
+		}
+		await this.ctx.storage.put("shown", shown);
+	}
+
+	private async finished(): Promise<Set<number>> {
+		return new Set((await this.ctx.storage.get<Shown>("shown"))?.finished);
+	}
+
+	/** One installation token per run, kept while the object is in memory: it lasts an hour, past BOX_DEADLINE_MS. */
+	private token?: Promise<GitHubClient>;
+
 	private github(job: BoxJob): Promise<GitHubClient> {
-		return GitHubClient.forInstallation({ appId: this.env.GITHUB_APP_ID, privateKey: this.env.GITHUB_PRIVATE_KEY }, job.installationId);
+		this.token ??= GitHubClient.forInstallation({ appId: this.env.GITHUB_APP_ID, privateKey: this.env.GITHUB_PRIVATE_KEY }, job.installationId).catch(
+			(error: unknown) => {
+				// A failed exchange is asked again on the next alarm, not kept.
+				this.token = undefined;
+				throw error;
+			},
+		);
+		return this.token;
 	}
 }
 
@@ -296,9 +349,20 @@ export function boxEnv(
 	};
 }
 
-async function readFile(container: Container, path: string): Promise<string | undefined> {
-	const out = await (await container.exec(["cat", `${OUT}/${path}`], { stderr: "ignore" })).output();
-	return out.exitCode === 0 ? new TextDecoder().decode(out.stdout) : undefined;
+/** A file of the output folder, or only its last `bytes`, from the first line that starts in them. */
+async function readFile(container: Container, path: string, bytes?: number): Promise<string | undefined> {
+	const command = bytes ? ["tail", "-c", String(bytes), `${OUT}/${path}`] : ["cat", `${OUT}/${path}`];
+	const out = await (await container.exec(command, { stderr: "ignore" })).output();
+	if (out.exitCode !== 0) return undefined;
+	const text = new TextDecoder().decode(out.stdout);
+	return bytes && out.stdout.byteLength >= bytes ? text.slice(text.indexOf("\n") + 1) : text;
+}
+
+/** FNV-1a, enough to tell whether what a check run shows changed. */
+function hash(text: string): string {
+	let h = 0x811c9dc5;
+	for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
+	return `${text.length}:${(h >>> 0).toString(36)}`;
 }
 
 export interface BoxUsage {
@@ -318,8 +382,14 @@ export interface PollDeps {
 	running(): boolean;
 	/** A file of the container's output folder, or undefined when it doesn't exist. */
 	read(path: string): Promise<string | undefined>;
+	/** The end of such a file. */
+	tail(path: string): Promise<string | undefined>;
 	jobs: Pick<JobStore, "get">;
+	/** Indexes of the commands whose check runs were already completed. */
+	finished: ReadonlySet<number>;
 	status(text: string): void;
+	/** Shows the run so far on its check runs and in the admin. */
+	progress(progress: BoxProgress): Promise<void>;
 	publish(results: BoxResults, report: TestReport | undefined, usage: BoxUsage): Promise<void>;
 	abandon(usage: BoxUsage): Promise<void>;
 }
@@ -346,22 +416,103 @@ export async function pollBox(job: BoxJob, deps: PollDeps): Promise<"poll" | "do
 		return "done";
 	}
 	const current = (await deps.read("current"))?.trim() ?? "";
-	deps.status(current === "tests" ? await runningStatus(job, deps) : (STEP_STATUS[current] ?? "Iniciando o container"));
+	if (current !== "tests") {
+		const status = STEP_STATUS[current] ?? "Iniciando o container";
+		deps.status(`Container: ${status.toLowerCase()}`);
+		const waiting = { title: "Esperando a instalação", summary: `${status}; depois este comando roda no mesmo container, junto com os testes.` };
+		await deps.progress({ tests: { title: status, summary: `${status}.` }, commands: job.commands.map(() => waiting) });
+		return "poll";
+	}
+	const steps = parseSteps((await deps.read("steps")) ?? "");
+	const step = (name: string) => steps.find((s) => s.name === name);
+	const running = job.commands.findIndex((_, i) => !step(`command${i + 1}`));
+	const runningNames = [...(step("tests") ? [] : ["os testes"]), ...(running >= 0 ? [job.commands[running].name] : [])];
+	deps.status(`Container: rodando ${runningNames.join(" e ") || "os testes"}`);
+	const counts = parseProgress(await deps.read("progress.json"));
+	const commands = await Promise.all(
+		job.commands.map(async ({ name }, i): Promise<BoxProgress["commands"][number]> => {
+			const finished = step(`command${i + 1}`);
+			if (finished) return deps.finished.has(i) ? undefined : commandResult(name, finished, await deps.read(`command${i + 1}.log`));
+			if (i > running) return { title: `Esperando ${job.commands[i - 1].name}`, summary: "Os comandos rodam um depois do outro, no mesmo container, junto com os testes." };
+			return runningOutput(await deps.tail(`command${i + 1}.log`));
+		}),
+	);
+	await deps.progress({ tests: testsOutput(counts, step("tests"), running >= 0 ? job.commands[running].name : undefined), commands, counts });
 	return "poll";
 }
 
-/** The tests run alongside the commands, which run one after another: names the tests, if still running, and the command running. */
-async function runningStatus(job: BoxJob, deps: Pick<PollDeps, "read">): Promise<string> {
-	const finished = new Set(parseSteps((await deps.read("steps")) ?? "").map((s) => s.name));
-	const command = job.commands.find((_, i) => !finished.has(`command${i + 1}`));
-	const running = [...(finished.has("tests") ? [] : ["os testes"]), ...(command ? [command.name] : [])];
-	return `Container: rodando ${running.join(" e ") || "os testes"}`;
+const STEP_STATUS: Record<string, string> = {
+	clone: "Baixando o código",
+	install: "Instalando as dependências",
+};
+
+/** Kept between looks so each shows only what changed (see TestBox.show). */
+interface Shown {
+	/** A hash of what each check run shows, by id. */
+	outputs: Record<number, string | undefined>;
+	/** The commands whose check runs are completed. */
+	finished: number[];
+	/** Failures already sent to the admin. */
+	failures: number;
 }
 
-const STEP_STATUS: Record<string, string> = {
-	clone: "Container: baixando o código",
-	install: "Container: instalando as dependências",
-};
+/** The run so far, from one look at its container. */
+export interface BoxProgress {
+	/** What the Container tests check run shows while it runs. */
+	tests: Pick<CheckResult, "title" | "summary">;
+	/** Per command: what its check run shows, its result once it finished, or undefined when that was already reported. */
+	commands: (Pick<CheckResult, "title" | "summary"> | CheckResult | undefined)[];
+	counts?: TestProgress;
+}
+
+/** progress.json, which qf-progress.mjs keeps while the tests run. */
+export interface TestProgress {
+	files: number;
+	filesDone: number;
+	/** Tests found so far, in the files vitest already collected. */
+	tests: number;
+	passed: number;
+	failed: number;
+	skipped: number;
+	/** Files that failed outside their tests: failed to load, or a hook threw. */
+	broken: number;
+	/** The first ones; `name` is empty for a broken file. */
+	failures: { file: string; name: string; error: string }[];
+}
+
+export function parseProgress(text: string | undefined): TestProgress | undefined {
+	if (!text) return undefined;
+	try {
+		const progress = JSON.parse(text) as TestProgress;
+		return { ...progress, broken: progress.broken ?? 0, failures: progress.failures ?? [] };
+	} catch {
+		return undefined;
+	}
+}
+
+/** What the Container tests check run shows while the tests (or the commands after them) run. */
+export function testsOutput(counts: TestProgress | undefined, finished: Step | undefined, command: string | undefined): Pick<CheckResult, "title" | "summary"> {
+	const after = command ? `\n\nRodando agora, no mesmo container: ${command}.` : "";
+	if (!counts) return { title: "Rodando os testes", summary: `O vitest está carregando os testes.${after}` };
+	const failed = counts.failed + counts.broken;
+	const title = `${counts.passed} ${counts.passed === 1 ? "passou" : "passaram"}${failed ? `, ${failed} ${failed === 1 ? "falhou" : "falharam"}` : ""}${finished ? `; esperando ${command ?? "o fim"}` : ""}`;
+	const lines = [
+		finished ? "Os testes terminaram; o resultado sai quando os comandos do mesmo container terminarem." : `Arquivos: ${counts.filesDone} de ${counts.files}. Testes encontrados até agora: ${counts.tests}.`,
+		`Passaram ${counts.passed}, falharam ${counts.failed}, pulados ${counts.skipped}${counts.broken ? `, arquivos com erro fora dos testes ${counts.broken}` : ""}.`,
+	];
+	const failures = counts.failures.map((f) => `**${f.file}${f.name ? ` › ${f.name}` : ""}**\n\n\`\`\`\n${fence(f.error)}\n\`\`\``);
+	const more = failed > counts.failures.length ? [`… e mais ${failed - counts.failures.length} falha(s), no resultado final.`] : [];
+	return { title, summary: [...lines, ...(failures.length ? ["### Falhas até agora", ...failures, ...more] : [])].join("\n\n") + after };
+}
+
+/** What a running command's check run shows: the end of its log so far. */
+export function runningOutput(tail: string | undefined): Pick<CheckResult, "title" | "summary"> {
+	const log = (tail ?? "").trim();
+	return { title: "Rodando", summary: log ? `Final do log até agora:\n\n\`\`\`\n${fence(log)}\n\`\`\`` : "Rodando, ainda sem saída." };
+}
+
+/** Keeps a log from closing the code block it's shown in. */
+const fence = (text: string) => text.replaceAll("```", "ʼʼʼ");
 
 async function readCpu(deps: Pick<PollDeps, "read">): Promise<number | undefined> {
 	const cpu = Number((await deps.read("cpu").catch(() => undefined))?.trim());
@@ -428,7 +579,7 @@ function commandResult(name: string, step: Step | undefined, log: string | undef
 }
 
 function logFailure(why: string, log: string | undefined): CheckResult {
-	const tail = (log ?? "").slice(-MAX_LOG).replaceAll("```", "ʼʼʼ");
+	const tail = fence((log ?? "").slice(-MAX_LOG));
 	return {
 		conclusion: "failure",
 		title: why.replace(/[.:].*$/, ""),

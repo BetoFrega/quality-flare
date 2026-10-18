@@ -13,6 +13,7 @@ import {
 	type BoxJob,
 	type BoxOutput,
 	type PollDeps,
+	type TestProgress,
 } from "../../../src/checks/tests/container.ts";
 import { tests } from "../../../src/checks/tests/index.ts";
 import { d1JobStore } from "../../../src/checks/tests/jobs.ts";
@@ -121,13 +122,16 @@ describe("Container tests", () => {
 
 	describe("TestBox polling", () => {
 		const job: BoxJob = { runId: 1, repo: "octo/app", sha: "abc", base: "main", installationId: 9, checkRunId: 55, commands: [{ name: "Lint", checkRunId: 56 }], startedAt: 0 };
-		function deps(files: Record<string, string>, { now = 60_000, running = true, job: open = true } = {}) {
+		function deps(files: Record<string, string>, { now = 60_000, running = true, job: open = true, finished = [] as number[] } = {}) {
 			const d = {
 				now: () => now,
 				running: () => running,
 				read: async (path: string) => files[path],
+				tail: async (path: string) => files[path],
 				jobs: { get: async () => (open ? { checkRunId: 55, installationId: 9 } : null) },
+				finished: new Set(finished),
 				status: vi.fn<PollDeps["status"]>(),
+				progress: vi.fn<PollDeps["progress"]>(async () => {}),
 				publish: vi.fn<PollDeps["publish"]>(async () => {}),
 				abandon: vi.fn<PollDeps["abandon"]>(async () => {}),
 			};
@@ -150,6 +154,52 @@ describe("Container tests", () => {
 			const d = deps({ current: "tests\n", steps: "clone 0 1\ninstall 0 1\ntests 0 1\n" });
 			await pollBox(job, d);
 			expect(d.status).toHaveBeenCalledWith("Container: rodando Lint");
+		});
+
+		const progress = (p: Partial<TestProgress>) => JSON.stringify({ files: 3, filesDone: 1, tests: 10, passed: 4, failed: 0, skipped: 1, broken: 0, failures: [], ...p });
+		const twoCommands: BoxJob = { ...job, commands: [{ name: "Typecheck", checkRunId: 56 }, { name: "Lint", checkRunId: 57 }] };
+
+		it("shows the step running on every check run while it installs", async () => {
+			const d = deps({ current: "install\n" });
+			await pollBox(twoCommands, d);
+			const [shown] = d.progress.mock.calls[0];
+			expect(shown.tests.title).toBe("Instalando as dependências");
+			expect(shown.commands.map((c) => c?.title)).toEqual(["Esperando a instalação", "Esperando a instalação"]);
+		});
+
+		it("shows the tests so far with their failures, the running command's log and the next one waiting", async () => {
+			const failures = [{ file: "src/a.test.ts", name: "sum › carries", error: "AssertionError: expected 3 to be 4" }];
+			const d = deps({ current: "tests\n", "progress.json": progress({ failed: 1, failures }), "command1.log": "line 1\nchecking src/index.ts" });
+			await pollBox(twoCommands, d);
+			const [shown] = d.progress.mock.calls[0];
+			expect(shown.tests.title).toBe("4 passaram, 1 falhou");
+			expect(shown.tests.summary).toContain("Arquivos: 1 de 3");
+			expect(shown.tests.summary).toContain("**src/a.test.ts › sum › carries**");
+			expect(shown.tests.summary).toContain("AssertionError: expected 3 to be 4");
+			expect(shown.tests.summary).toContain("Rodando agora, no mesmo container: Typecheck.");
+			expect(shown.commands[0]).toMatchObject({ title: "Rodando" });
+			expect(shown.commands[0]?.summary).toContain("checking src/index.ts");
+			expect(shown.commands[1]).toMatchObject({ title: "Esperando Typecheck" });
+			expect(shown.counts).toMatchObject({ passed: 4, failed: 1 });
+		});
+
+		it("completes a command as soon as it finishes, only once", async () => {
+			const files = { current: "tests\n", steps: "clone 0 1\ninstall 0 1\ncommand1 2 3000\n", "command1.log": "src/a.ts: error TS2304" };
+			const d = deps(files);
+			await pollBox(twoCommands, d);
+			const [shown] = d.progress.mock.calls[0];
+			expect(shown.commands[0]).toMatchObject({ conclusion: "failure", title: "Typecheck falhou" });
+			expect(shown.commands[0]?.summary).toContain("error TS2304");
+			expect(shown.commands[1]).toMatchObject({ title: "Rodando" });
+			const again = deps(files, { finished: [0] });
+			await pollBox(twoCommands, again);
+			expect(again.progress.mock.calls[0][0].commands[0]).toBeUndefined();
+		});
+
+		it("says the tests finished and wait for the commands", async () => {
+			const d = deps({ current: "tests\n", steps: "clone 0 1\ninstall 0 1\ntests 0 1\n", "progress.json": progress({ filesDone: 3, passed: 9 }) });
+			await pollBox(twoCommands, d);
+			expect(d.progress.mock.calls[0][0].tests.title).toBe("9 passaram; esperando Typecheck");
 		});
 
 		it("publishes once the container is done, with its usage", async () => {

@@ -21,7 +21,10 @@ export const LIVE_SCRIPT = `(() => {
 		const c = progress(runId);
 		const done = c.pass + c.fail + c.other;
 		if (!done && c.status) return document.querySelectorAll('[data-progress="' + runId + '"]').forEach((el) => (el.textContent = c.status));
-		const text = (c.total ? done + " de " + c.total : done + " testes") + (c.fail ? " · " + c.fail + (c.fail === 1 ? " falhou" : " falharam") : "");
+		const text =
+			(c.total ? done + " de " + c.total : done + " testes") +
+			(c.fail ? " · " + c.fail + (c.fail === 1 ? " falhou" : " falharam") : "") +
+			(c.counted && c.status ? " · " + c.status : "");
 		document.querySelectorAll('[data-progress="' + runId + '"]').forEach((el) => (el.textContent = text));
 	}
 
@@ -46,16 +49,23 @@ export const LIVE_SCRIPT = `(() => {
 		}
 	}
 
+	// A container run lists only its failures and sends the totals.
+	function setCounts(event) {
+		Object.assign(progress(event.runId), { pass: event.pass, fail: event.fail, other: event.other, total: event.total, counted: true });
+	}
+
 	function handle(event) {
 		if (event.type === "started" || event.type === "finished") return location.reload();
 		if (event.type === "snapshot") {
 			progress(event.runId).total = event.total;
 			progress(event.runId).status = event.status;
 			for (const test of event.tests) addTest(test);
+			if (event.counts) setCounts(event.counts);
 		}
 		if (event.type === "collected") progress(event.runId).total = (progress(event.runId).total || 0) + event.total;
 		if (event.type === "test") addTest(event);
 		if (event.type === "status") progress(event.runId).status = event.text;
+		if (event.type === "counts") setCounts(event);
 		render(event.runId);
 	}
 

@@ -6,6 +6,7 @@
 #   steps            one line per finished step: "<name> <exit code> <milliseconds>"
 #   current          the step running now (clone, install, or tests while tests and commands run)
 #   <step>.log       the step's output
+#   progress.json    tests so far, while they run (qf-progress.mjs)
 #   report.json      vitest's JSON report
 #   cpu              CPU the container used, in microseconds (cgroup v2 usage_usec)
 #   done             written last
@@ -78,7 +79,7 @@ tests() {
 	local args=()
 	[ -n "${VITEST_ARGS:-}" ] && mapfile -t args <<<"$VITEST_ARGS"
 	[ -n "${CHANGED:-}" ] && affected
-	npx --no-install vitest run "${args[@]}" --reporter=dot --reporter=json --outputFile.json="$OUT/report.json"
+	npx --no-install vitest run "${args[@]}" --reporter=dot --reporter=/usr/local/lib/qf-progress.mjs --reporter=json --outputFile.json="$OUT/report.json"
 }
 
 # Narrows the tests (args) to the files whose imports reach what the PR changed (vitest lists all of them

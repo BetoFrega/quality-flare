@@ -5,6 +5,8 @@ import type { CheckResult } from "./checks/types.ts";
 export type LiveEvent =
 	| { type: "started"; runId: number; repo: string; pr: number; sha: string }
 	| ({ runId: number } & ProgressEvent)
+	/** A container run's totals so far, which replace the ones counted from its tests (it sends only the failures). */
+	| { type: "counts"; runId: number; pass: number; fail: number; other: number; total?: number }
 	| { type: "finished"; runId: number; conclusion: CheckResult["conclusion"]; title: string };
 
 /** Progress kept for a running run, so a page opened mid-run starts from where it is. */
@@ -15,6 +17,7 @@ interface RunProgress {
 	/** Latest status line, shown until tests start reporting. */
 	status?: string;
 	tests: Extract<LiveEvent, { type: "test" }>[];
+	counts?: Extract<LiveEvent, { type: "counts" }>;
 }
 
 const HUB = "runs";
@@ -63,6 +66,7 @@ export class RunsHub {
 				if (progress && event.type === "collected") progress.total = (progress.total ?? 0) + event.total;
 				if (progress && event.type === "test") progress.tests.push(event);
 				if (progress && event.type === "status") progress.status = event.text;
+				if (progress && event.type === "counts") progress.counts = event;
 			}
 			const message = JSON.stringify(event);
 			for (const tag of ["all", String(event.runId)]) {
