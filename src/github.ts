@@ -229,6 +229,32 @@ export class GitHubClient {
 		return latest && { status: latest.status, conclusion: latest.conclusion ?? null };
 	}
 
+	/** The App's latest run of each check on the commit. */
+	async listCheckRuns(repo: string, sha: string, appId: string): Promise<CheckRunSummary[]> {
+		const query = new URLSearchParams({ app_id: appId, filter: "latest", per_page: "100" });
+		const runs = await request<{ check_runs: CheckRunSummary[] }>(this.token, "GET", `/repos/${repo}/commits/${sha}/check-runs?${query}`);
+		return runs.check_runs.map(({ name, status, conclusion, html_url, output }) => ({
+			name,
+			status,
+			conclusion: conclusion ?? null,
+			html_url,
+			output: { title: output?.title ?? null },
+		}));
+	}
+
+	/** The commits a commit was made on: two for a merge, the first being the branch merged into. */
+	async commitParents(repo: string, sha: string): Promise<string[]> {
+		const commit = await request<{ parents: { sha: string }[] }>(this.token, "GET", `/repos/${repo}/git/commits/${sha}`);
+		return commit.parents.map((p) => p.sha);
+	}
+
+	/** How `head` compares with its merge base with `base`, and the files changed from that merge base to `head`. */
+	async compareCommits(repo: string, base: string, head: string): Promise<Comparison> {
+		const res = await request<Comparison>(this.token, "GET", `/repos/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`);
+		const files = (res.files ?? []).map(({ filename, status, sha, previous_filename }) => ({ filename, status, sha, previous_filename }));
+		return { status: res.status, files };
+	}
+
 	createCheckRun(repo: string, headSha: string, name: string, result: CheckResult): Promise<unknown> {
 		const open = result.conclusion === "pending";
 		return request(this.token, "POST", `/repos/${repo}/check-runs`, {
@@ -254,6 +280,19 @@ export interface CheckRunState {
 	status: "queued" | "in_progress" | "completed" | string;
 	/** Set once the run completes: "success", "failure", "neutral"… */
 	conclusion: string | null;
+}
+
+export interface CheckRunSummary extends CheckRunState {
+	name: string;
+	html_url: string;
+	output: { title: string | null };
+}
+
+export interface Comparison {
+	/** "ahead" when `head` has commits `base` lacks, "behind" for the reverse, "diverged" for both, "identical" for neither. */
+	status: string;
+	/** GitHub lists at most 300. */
+	files: { filename: string; status: string; sha: string; previous_filename?: string }[];
 }
 
 export interface PullRequest {

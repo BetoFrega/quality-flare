@@ -36,6 +36,7 @@ function mockGitHub({
 	existingRuns = {} as Record<string, string>,
 	existingComments = [] as { id?: number; body: string }[],
 	review = undefined as object | undefined,
+	merge = undefined as MergeFake | undefined,
 } = {}) {
 	const checkRuns: Record<string, unknown>[] = [];
 	const reactions: Record<string, unknown>[] = [];
@@ -63,10 +64,15 @@ function mockGitHub({
 			reactions.push(JSON.parse(init.body as string));
 			return Response.json({ id: 1 }, { status: 201 });
 		}
+		const parents = path.match(/^\/repos\/octo\/repo\/git\/commits\/(\w+)$/);
+		if (parents) return Response.json({ parents: (merge?.parents[parents[1]] ?? ["older1"]).map((sha) => ({ sha })) });
+		const compare = path.match(/^\/repos\/octo\/repo\/compare\/(.+)$/);
+		if (compare && merge?.compare[compare[1]]) return Response.json(merge.compare[compare[1]]);
 		const commit = path.match(/^\/repos\/octo\/repo\/commits\/(\w+)\/check-runs$/);
 		if (commit) {
 			const query = new URL(url).searchParams;
 			expect(query.get("app_id")).toBe(env.GITHUB_APP_ID);
+			if (!query.has("check_name")) return Response.json({ check_runs: merge?.runs[commit[1]] ?? [] });
 			// The latest run is the newest one created here, else the one the commit had ("status:conclusion"; only abc123 has any).
 			const name = query.get("check_name") ?? "";
 			const created = checkRuns.findLast((r) => r.name === name && r.head_sha === commit[1]) as { status: string; conclusion?: string } | undefined;
@@ -82,6 +88,13 @@ function mockGitHub({
 	});
 	vi.stubGlobal("fetch", fetchMock);
 	return { checkRuns, reactions, comments, edits, fetchMock };
+}
+
+/** A merge commit's parents, the App's runs on commits, and what comparing two commits ("base...head") returns. */
+interface MergeFake {
+	parents: Record<string, string[]>;
+	runs: Record<string, { name: string; status: string; conclusion: string | null; html_url: string; output: { title: string } }[]>;
+	compare: Record<string, { status: string; files?: { filename: string; status: string; sha: string }[] }>;
 }
 
 /** Runs a request and waits for the work it left in ctx.waitUntil. */
@@ -295,6 +308,47 @@ describe("tests on demand", () => {
 		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), env);
 		expect(checkRuns).toEqual([]);
 		expect(comments).toHaveLength(1);
+	});
+
+	it("keeps the passed runs when a push only merges the base into a head that passed", async () => {
+		const merged = { ...pr, head: { sha: "mrg999" } };
+		const fromBase = { status: "ahead", files: [{ filename: "src/a.ts", status: "modified", sha: "blob1" }] };
+		const passed = (name: string, conclusion = "success") => ({ name, status: "completed", conclusion, html_url: `https://github.test/${name}`, output: { title: "Passou" } });
+		const fake = (changes: Partial<MergeFake> = {}): MergeFake => ({
+			parents: { mrg999: ["abc123", "main01"] },
+			runs: { abc123: [passed("Tests"), passed("Typecheck"), passed("Closes an issue", "failure")] },
+			compare: { "main01...main": { status: "identical" }, "abc123...main01": fromBase, "abc123...mrg999": fromBase },
+			...changes,
+		});
+
+		const clean = mockGitHub({ merge: fake() });
+		await runPlan({ pullRequests: [merged], checks: [tests] }, "octo/repo", 99, settings(true), env);
+		expect(ran).toEqual([]);
+		// Every run the tests reported comes along, Typecheck included; checks that run on push don't.
+		expect(clean.checkRuns).toEqual([
+			expect.objectContaining({ name: "Tests", head_sha: "mrg999", conclusion: "success", output: expect.objectContaining({ title: "Reaproveitado de abc123: Passou" }) }),
+			expect.objectContaining({ name: "Typecheck", head_sha: "mrg999", conclusion: "success" }),
+		]);
+		expect(clean.checkRuns[0].output).toEqual(expect.objectContaining({ summary: expect.stringContaining("https://github.test/Tests") }));
+
+		const waits = async (merge: MergeFake) => {
+			const github = mockGitHub({ merge });
+			await runPlan({ pullRequests: [merged], checks: [tests] }, "octo/repo", 99, settings(true), env);
+			expect(github.checkRuns).toEqual([expect.objectContaining({ name: "Tests", conclusion: "action_required" })]);
+		};
+		// The PR changed a file the base changed too.
+		await waits(fake({ compare: { ...fake().compare, "abc123...mrg999": { status: "ahead", files: [{ ...fromBase.files[0], sha: "blob2" }] } } }));
+		// The merge changed a file of its own.
+		const own = { filename: "src/b.ts", status: "modified", sha: "blob3" };
+		await waits(fake({ compare: { ...fake().compare, "abc123...mrg999": { status: "ahead", files: [...fromBase.files, own] } } }));
+		// It merged a commit that isn't on the base.
+		await waits(fake({ compare: { ...fake().compare, "main01...main": { status: "diverged" } } }));
+		// The head it merged into didn't pass.
+		await waits(fake({ runs: { abc123: [passed("Tests", "failure")] } }));
+		await waits(fake({ runs: { abc123: [passed("Tests"), passed("Typecheck", "failure")] } }));
+		// A plain commit.
+		await waits(fake({ parents: { mrg999: ["abc123"] } }));
+		expect(ran).toEqual([]);
 	});
 
 	it("keeps the run a commit already has when the PR leaves draft or reopens", async () => {

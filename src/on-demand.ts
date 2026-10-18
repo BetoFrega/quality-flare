@@ -1,12 +1,13 @@
 import { evaluate as evaluateCodexReview } from "./checks/codex-review/evaluate.ts";
 import type { CheckResult } from "./checks/types.ts";
-import { type CheckRunState, type GitHubClient, type PullRequest, WAITING_CONCLUSION } from "./github.ts";
+import { type CheckRunState, type Comparison, type GitHubClient, type PullRequest, WAITING_CONCLUSION } from "./github.ts";
 
 /**
  * Tests on demand: with the repository's `onDemand` setting on, the checks marked `onDemand`
  * (Tests, Container tests) don't run on pushes. Each push leaves an "action_required" check run that
  * waits for someone to comment `/quality-flare run`, which runs the PR's current head once. Agents
- * test locally while they work and ask for a run only when the PR is ready to merge.
+ * test locally while they work and ask for a run only when the PR is ready to merge. A push that only
+ * merges the base into a head that passed keeps its runs (see inheritedRuns).
  */
 export const RUN_COMMAND = "/quality-flare run";
 
@@ -44,6 +45,68 @@ export const WAITING_RESULT: CheckResult = {
 			"cada push volta a esperar e cada execução custa dinheiro.",
 	].join("\n"),
 };
+
+/** A passed run a merge commit takes over from the commit it merged into. */
+export interface InheritedRun {
+	name: string;
+	result: CheckResult;
+}
+
+/** GitHub lists at most this many files per comparison; a longer list can't be checked whole. */
+const COMPARE_FILES_LIMIT = 300;
+
+/**
+ * The passed runs a push keeps when its only new commit merges the base branch into a head that
+ * passed, or undefined when the commit needs its own run. The merge must be clean: every file it
+ * changes comes from the base exactly as there, and none of them was also changed by the PR, so
+ * the PR's code is what passed. A conflict the base brings in another file (a renamed export the
+ * PR uses) still slips through; the daily full run on the base catches it.
+ * `checks` are the enabled on-demand checks and `runOnPush` every other check, whose runs stay
+ * behind; the rest of the App's runs come along, such as the commands Container tests reports.
+ */
+export async function inheritedRuns(
+	github: GitHubClient,
+	repo: string,
+	pr: PullRequest,
+	checks: string[],
+	runOnPush: string[],
+	appId: string,
+): Promise<InheritedRun[] | undefined> {
+	const parents = await github.commitParents(repo, pr.head.sha);
+	if (parents.length !== 2) return undefined;
+	const [tested, merged] = parents;
+	const runs = (await github.listCheckRuns(repo, tested, appId)).filter((r) => !runOnPush.includes(r.name));
+	const passed = checks.every((name) => runs.some((r) => r.name === name && r.status === "completed" && r.conclusion === "success"));
+	if (!passed || !runs.every((r) => r.status === "completed" && PASSING.has(r.conclusion ?? ""))) return undefined;
+	// The merged commit must be on the base branch: merging another PR's branch brings untested code.
+	const [onBase, fromBase, changed] = await Promise.all([
+		github.compareCommits(repo, merged, pr.base.ref),
+		github.compareCommits(repo, tested, merged),
+		github.compareCommits(repo, tested, pr.head.sha),
+	]);
+	if (onBase.status !== "ahead" && onBase.status !== "identical") return undefined;
+	if (!sameFiles(fromBase, changed)) return undefined;
+	const summary =
+		`O commit \`${short(pr.head.sha)}\` só junta \`${pr.base.ref}\` ao commit \`${short(tested)}\`, sem mexer em nenhum arquivo da PR, ` +
+		"então o resultado de lá vale aqui. A run diária na base pega o que a junção quebrar fora desses arquivos.";
+	return runs.map((r) => ({
+		name: r.name,
+		result: {
+			conclusion: r.conclusion as "success" | "neutral" | "skipped",
+			title: `Reaproveitado de ${short(tested)}${r.output.title ? `: ${r.output.title}` : ""}`,
+			summary: `${summary}\n\n[Execução original](${r.html_url})`,
+		},
+	}));
+}
+
+/** Whether the merge changed each file exactly as the base did, and only those: no file changed on both sides. */
+function sameFiles(fromBase: Comparison, changed: Comparison): boolean {
+	if (fromBase.files.length >= COMPARE_FILES_LIMIT || changed.files.length >= COMPARE_FILES_LIMIT) return false;
+	if (fromBase.files.length !== changed.files.length) return false;
+	const key = (f: Comparison["files"][number]) => `${f.status} ${f.previous_filename ?? ""} ${f.filename} ${f.sha}`;
+	const base = new Set(fromBase.files.map(key));
+	return changed.files.every((f) => base.has(key(f)));
+}
 
 /** Starts the one comment per PR that tells where its test checks stand; JSON after it records what the comment last said. */
 const STATUS_MARKER = "<!-- quality-flare:on-demand";
