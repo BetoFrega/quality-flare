@@ -2,6 +2,7 @@
 	"name": "quality-flare",
 	"private": true,
 	"type": "module",
+	"packageManager": "pnpm@10.28.0",
 	"scripts": {
 		"dev": "cf dev",
 		"build": "cf build",
