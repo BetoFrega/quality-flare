@@ -86,12 +86,17 @@ merge_base() {
 	return 1
 }
 
+# Runs a command with the files the install depends on appended: the lockfile and every package.json
+# (without a lockfile, npm installs from those).
+with_dependency_files() {
+	"$@" package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb ':(glob)**/package.json'
+}
+
 # Skipped when the container came from a snapshot that installed the same dependency files (and command).
 # /work/installed says which; it goes first, so a failed install never claims one.
 install() {
-	# What the install depends on: the lockfile and every package.json (without a lockfile, npm installs from those).
-	local key files=(package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb ':(glob)**/package.json')
-	key=$({ git ls-files -z -- "${files[@]}" | sort -z | xargs -0 -r sha256sum; echo "${INSTALL:-}"; } | sha256sum | cut -d' ' -f1)
+	local key
+	key=$({ with_dependency_files git ls-files -z -- | sort -z | xargs -0 -r sha256sum; echo "${INSTALL:-}"; } | sha256sum | cut -d' ' -f1)
 	if [ -d node_modules ] && [ "$(cat /work/installed 2>/dev/null)" = "$key" ]; then
 		echo "Dependências já instaladas: o container veio de um snapshot com o mesmo lockfile e os mesmos package.json."
 		return
@@ -100,7 +105,7 @@ install() {
 	install_dependencies || return
 	echo "$key" >/work/installed
 	# A PR that changes them would leave a snapshot most PRs can't use.
-	if [ -n "${SNAPSHOT:-}" ] && git diff --quiet "origin/$BASE" HEAD -- "${files[@]}"; then
+	if [ -n "${SNAPSHOT:-}" ] && with_dependency_files git diff --quiet "origin/$BASE" HEAD --; then
 		wait_for_snapshot
 	fi
 }
@@ -179,11 +184,11 @@ related_index() {
 }
 
 # The config's `cache`: files the tools keep between runs (ESLint's cache, tsc's .tsbuildinfo…), kept in
-# quality-flare's Turborepo cache (src/turbo-cache.ts) under one key per lockfile, so new dependencies start
-# them over. Restored after the install, which may empty node_modules; saved at the end. Both are best effort:
+# quality-flare's Turborepo cache (src/turbo-cache.ts) under one key per lockfile and package.json set, so new
+# dependencies start them over. Restored after the install, which may empty node_modules; saved at the end. Both are best effort:
 # without them the tools only take longer.
 cache_url() {
-	echo "$CACHE_API/v8/artifacts/qf-files-$(cat package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock 2>/dev/null | sha256sum | cut -c1-32)"
+	echo "$CACHE_API/v8/artifacts/qf-files-$(with_dependency_files git ls-files -z -- | sort -z | xargs -0 -r sha256sum | sha256sum | cut -c1-32)"
 }
 
 restore_cache() {
@@ -220,7 +225,7 @@ commands() {
 }
 
 export OUT
-export -f step clone clean_snapshot merge_base compare_with_nothing install install_dependencies wait_for_snapshot affected related_index tests run_command commands
+export -f step with_dependency_files clone clean_snapshot merge_base compare_with_nothing install install_dependencies wait_for_snapshot affected related_index tests run_command commands
 
 run() {
 	cd /work/repo || return
