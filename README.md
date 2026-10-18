@@ -60,6 +60,7 @@ Roda o vitest do próprio repositório, com a config dele, num [container](https
   ```
 
   `vitestArgs` vai para o `vitest run`; `install` troca o comando de instalação; cada entrada de `commands` (até 8) roda depois dos testes e aparece como um check run com aquele nome. Os comandos rodam com `CI=true`, `GITHUB_BASE_REF` e `GITHUB_SHA`, como no GitHub Actions. `"typecheck": "…"` é um atalho para um comando **Typecheck**, que roda primeiro.
+- **Enquanto roda:** a cada 10 s, o check run **Container tests** mostra quantos testes já passaram e as falhas assim que aparecem (vitest 3 ou mais novo), e o de cada comando mostra o final do log até ali. Cada comando completa o seu check run assim que termina, sem esperar os testes. A página da execução no admin mostra o mesmo, ao vivo.
 - **Limites:** clone 5 min, instalação 10 min, testes 25 min, cada comando 20 min; o container é destruído ao terminar, num push novo na PR ou após 55 min.
 - **Custo:** memória e disco pelo tempo ligado, CPU pelo que foi usado; uns US$ 0,02 por execução no Tudo Macaé (instalação + 3477 testes + typecheck em ~4 min). A página da execução no admin mostra o custo estimado.
 - ✅ Passa se todos os testes passam; ⚪ neutro se o vitest não encontra testes; ❌ falha com cada teste que falhou, ou com o log do passo que falhou.

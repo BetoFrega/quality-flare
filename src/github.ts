@@ -221,6 +221,11 @@ export class GitHubClient {
 		});
 	}
 
+	/** Shows how an in-progress check run is going, leaving it in progress. */
+	updateCheckRun(repo: string, checkRunId: number, output: Pick<CheckResult, "title" | "summary">): Promise<unknown> {
+		return request(this.token, "PATCH", `/repos/${repo}/check-runs/${checkRunId}`, { output });
+	}
+
 	/** The App's latest run of the check on the commit, or undefined without one. */
 	async latestCheckRun(repo: string, headSha: string, name: string, appId: string): Promise<CheckRunState | undefined> {
 		const query = new URLSearchParams({ check_name: name, app_id: appId, filter: "latest" });
