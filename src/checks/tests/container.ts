@@ -294,7 +294,13 @@ export class TestBox {
 	private token?: Promise<GitHubClient>;
 
 	private github(job: BoxJob): Promise<GitHubClient> {
-		this.token ??= GitHubClient.forInstallation({ appId: this.env.GITHUB_APP_ID, privateKey: this.env.GITHUB_PRIVATE_KEY }, job.installationId);
+		this.token ??= GitHubClient.forInstallation({ appId: this.env.GITHUB_APP_ID, privateKey: this.env.GITHUB_PRIVATE_KEY }, job.installationId).catch(
+			(error: unknown) => {
+				// A failed exchange is asked again on the next alarm, not kept.
+				this.token = undefined;
+				throw error;
+			},
+		);
 		return this.token;
 	}
 }
