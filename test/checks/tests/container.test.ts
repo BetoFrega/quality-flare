@@ -276,6 +276,7 @@ describe("Container tests", () => {
 		expect(boxEnv(daily, { snapshot: true }, "t")).toMatchObject({ SNAPSHOT: "1" });
 		expect(boxEnv(daily, {}, "t")).not.toHaveProperty("SNAPSHOT");
 		expect(boxEnv({ repo: "octo/app", sha: "abc", base: "main" }, { snapshot: true }, "t")).not.toHaveProperty("SNAPSHOT");
+		expect(boxEnv(daily, { snapshot: true, install: "./scripts/install.sh" }, "t")).not.toHaveProperty("SNAPSHOT");
 	});
 
 	it("reads the container section of quality-flare.json apart from the tests section", () => {
@@ -293,6 +294,7 @@ describe("Container tests", () => {
 		expect(invalid({ cache: ".eslintcache" })).toThrow(/"container.cache" deve ser uma lista/);
 		expect(invalid({ cache: ["/etc"] })).toThrow(/dentro do repositório/);
 		expect(invalid({ cache: ["a/../../b"] })).toThrow(/dentro do repositório/);
+		for (const root of [".", "./", ".git", "./.git/objects"]) expect(invalid({ cache: [root] })).toThrow(/fora da .git e abaixo da raiz/);
 		expect(readContainerConfig(JSON.stringify({ container: { cache: ["node_modules/.cache/eslint"] } }))).toEqual({ cache: ["node_modules/.cache/eslint"] });
 		expect(readContainerConfig(JSON.stringify({ container: { changed: true, turboCache: true } }))).toEqual({ changed: true, turboCache: true });
 		expect(invalid({ commands: ["npm run lint"] })).toThrow(/"container.commands" deve ligar/);

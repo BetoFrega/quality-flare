@@ -97,6 +97,12 @@ export interface SavedSnapshot {
 
 export const snapshotKey = (repo: string) => `snapshot:${repo.toLowerCase()}`;
 
+/**
+ * A custom `install` turns snapshots off: the skipped install is told apart only by the dependency files, and a
+ * wrapper script can change what it installs without touching them.
+ */
+export const usesSnapshot = (config: Pick<ContainerConfig, "snapshot" | "install">) => Boolean(config.snapshot && !config.install);
+
 export interface BoxCommand {
 	name: string;
 	checkRunId: number;
@@ -220,7 +226,7 @@ export class TestBox {
 		// npm, GitHub and quality-flare's caches; the tokens reach this repository only.
 		const options = { instance: INSTANCE.name, enableInternet: true, env: boxEnv(job, config, token, turbo) };
 		const { restored: _, ...rest } = job;
-		const saved = config.snapshot && !fresh ? await this.env.SETTINGS.get<SavedSnapshot>(snapshotKey(job.repo), "json") : null;
+		const saved = usesSnapshot(config) && !fresh ? await this.env.SETTINGS.get<SavedSnapshot>(snapshotKey(job.repo), "json") : null;
 		if (saved && saved.image === container.images.tests) {
 			try {
 				container.start({ ...options, containerSnapshot: { id: saved.id } });
@@ -278,7 +284,7 @@ export class TestBox {
 			}
 			await this.ctx.storage.put("seen", true);
 		}
-		if (config.snapshot && container.running) await this.takeSnapshot(container, job).catch(logError);
+		if (usesSnapshot(config) && container.running) await this.takeSnapshot(container, job).catch(logError);
 		const live = livePublisher(this.env.LIVE);
 		const next = await pollBox(job, {
 			now: Date.now,
@@ -425,7 +431,7 @@ export function boxEnv(
 		// The install runs as root and the snapshot keeps the whole filesystem, so only the default branch's own code
 		// (the daily full run) may produce one: a PR's lockfile, package manager config or install command could leave
 		// anything in it for the runs after. PR runs only start from it.
-		...(job.full && config.snapshot ? { SNAPSHOT: "1" } : {}),
+		...(job.full && usesSnapshot(config) ? { SNAPSHOT: "1" } : {}),
 		...(config.install ? { INSTALL: config.install } : {}),
 		...(config.vitestArgs?.length ? { VITEST_ARGS: config.vitestArgs.join("\n") } : {}),
 		...(commands.length ? { COMMANDS: String(commands.length) } : {}),

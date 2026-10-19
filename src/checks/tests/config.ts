@@ -133,7 +133,11 @@ export function readContainerConfig(source: string | undefined): ContainerConfig
 		}
 	}
 	for (const path of container.cache ?? []) {
-		if (path.startsWith("/") || path.split("/").includes("..")) throw new Error(`${CONFIG_FILE}: "${path}" em "container.cache" deve ser um caminho dentro do repositório.`);
+		// The cache is restored over a fresh checkout: the root or .git would bring back an earlier commit.
+		const parts = path.split("/").filter((part) => part !== "" && part !== ".");
+		if (path.startsWith("/") || parts.includes("..") || !parts.length || parts[0] === ".git") {
+			throw new Error(`${CONFIG_FILE}: "${path}" em "container.cache" deve ser um caminho dentro do repositório, fora da .git e abaixo da raiz.`);
+		}
 	}
 	const commands = container.commands;
 	if (commands !== undefined) {

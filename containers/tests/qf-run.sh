@@ -198,7 +198,8 @@ cache_url() {
 }
 
 # Any run of the repository can upload under this key, PR code included, so the archive is untrusted: only plain
-# files and directories, and only the configured paths come out of it, so it can't touch the checkout.
+# files and directories up to 2 GB in all, and only the configured paths that hold no tracked file come out of
+# it, so it can't touch the checkout or fill the disk.
 restore_cache() {
 	local paths=() path members=() listing
 	mapfile -t paths <<<"$CACHE_PATHS"
@@ -206,9 +207,14 @@ restore_cache() {
 		listing=$(tar -tvzf /work/cache.tgz); then
 		if cut -c1 <<<"$listing" | grep -qv '[-d]'; then
 			echo "Cache ignorado: tem links ou arquivos especiais."
+		elif (($(awk '{ total += $3 } END { printf "%d", total }' <<<"$listing") > 2 * 1024 * 1024 * 1024)); then
+			echo "Cache ignorado: passa de 2 GB descompactado."
 		else
 			listing=$(tar -tzf /work/cache.tgz)
-			for path in "${paths[@]}"; do grep -qxF -e "$path" -e "$path/" <<<"$listing" && members+=("$path"); done
+			for path in "${paths[@]}"; do
+				[ -n "$(git ls-files -- "$path" | head -1)" ] && continue
+				grep -qxF -e "$path" -e "$path/" <<<"$listing" && members+=("$path")
+			done
 			((${#members[@]})) && tar -xzf /work/cache.tgz -- "${members[@]}" &&
 				echo "Cache restaurado: $(du -h /work/cache.tgz | cut -f1)."
 		fi
