@@ -42,6 +42,8 @@ export const CONTAINER_PRICES = {
 
 /** How often TestBox reads the container's progress. */
 export const POLL_MS = 10_000;
+/** How long a container may take to come up from a snapshot before the run gives up on it and starts from the image. */
+export const RESTORE_WAIT_MS = 2 * 60_000;
 
 /**
  * A run still going this long after it started is failed and its container destroyed: about twice the
@@ -276,7 +278,12 @@ export class TestBox {
 		if (!job || !container) return;
 		if (job.restored && !(await this.ctx.storage.get("seen"))) {
 			if (!container.running) {
-				// The snapshot didn't start (expired, say): forget it and start from the image.
+				// A big snapshot takes a while to restore; one that never comes up (expired, say) is forgotten, and
+				// the run starts over from the image.
+				if (Date.now() - job.startedAt < RESTORE_WAIT_MS) {
+					await this.ctx.storage.setAlarm(Date.now() + POLL_MS);
+					return;
+				}
 				await this.forgetSnapshot(job.repo, job.restored);
 				await this.ctx.storage.put("job", await this.start(container, job, config, true));
 				await this.ctx.storage.setAlarm(Date.now() + POLL_MS);

@@ -265,7 +265,9 @@ run() {
 	[ -n "${FULL:-}" ] && export TURBO_SCM_BASE=refs/quality-flare/nothing TURBO_SCM_HEAD=HEAD
 	echo install >"$OUT/current"
 	step install 600 || return
-	[ -n "${CACHE_PATHS:-}" ] && restore_cache >>"$OUT/cache.log" 2>&1
+	# Not on the full run: PR runs write this cache too, and the full run checks everything afresh (as with
+	# TURBO_FORCE). It still saves its own.
+	[ -n "${CACHE_PATHS:-}" ] && [ -z "${FULL:-}" ] && restore_cache >>"$OUT/cache.log" 2>&1
 	# The commands run one after another alongside the tests: alone, the tests leave vCPUs idle and
 	# lint or typecheck use about one. At the lowest priority, so the tests keep the CPU their timeouts
 	# expect; not all at once, so neither do the commands starve each other's timed tests.
