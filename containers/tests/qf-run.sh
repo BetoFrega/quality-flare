@@ -92,11 +92,11 @@ merge_base() {
 
 # Runs a command with the files the install depends on appended: the lockfile, every package.json (without a
 # lockfile, npm installs from those) and the package managers' own config, which can run code (.pnpmfile.cjs,
-# everything in .yarn but its package cache: plugins, releases run by yarnPath, patches) or change where packages
-# come from.
+# all of .yarn but its package cache, whatever yarnPath runs) or change where packages come from.
 with_dependency_files() {
 	"$@" package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb ':(glob)**/package.json' \
-		.npmrc .pnpmfile.cjs pnpm-workspace.yaml .yarnrc .yarnrc.yml .yarn ':(exclude).yarn/cache' bunfig.toml
+		.npmrc .pnpmfile.cjs pnpm-workspace.yaml .yarnrc .yarnrc.yml .yarn ':(exclude).yarn/cache' bunfig.toml \
+		$(sed -n 's/^yarnPath: *["'"'"']\{0,1\}\([^"'"'"']*\).*/\1/p' .yarnrc.yml 2>/dev/null)
 }
 
 # The lockfile pins local tarballs (file:vendor/dep.tgz) by hash too; without one, npm installs whatever they hold
@@ -229,6 +229,8 @@ restore_cache() {
 			echo "Cache ignorado: tem links ou arquivos especiais."
 		elif (($(awk '{ total += $3 } END { printf "%d", total }' <<<"$listing") > 2 * 1024 * 1024 * 1024)); then
 			echo "Cache ignorado: passa de 2 GB descompactado."
+		elif (($(wc -l <<<"$listing") > 200000)); then
+			echo "Cache ignorado: passa de 200 mil arquivos."
 		else
 			listing=$(tar -tzf /work/cache.tgz)
 			for path in "${paths[@]}"; do
