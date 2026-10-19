@@ -61,6 +61,20 @@ describe("Turborepo remote cache", () => {
 		expect((await call("octo/other", "GET", "/v8/artifacts/abc123")).status).toBe(404);
 	});
 
+	it("lets a read-only token read its repository's artifacts but not write them", async () => {
+		const bucket = fakeR2();
+		const request = (token: string, method: string, body?: string) =>
+			handleTurboCache(new Request("https://qf.example/turbo/v8/artifacts/abc123", { method, body, headers: { Authorization: `Bearer ${token}` } }), bucket, SECRET);
+		const reader = await turboToken(SECRET, "octo/app", true);
+		expect(await tokenRepo(SECRET, reader)).toBe("octo/app");
+		expect((await request(reader, "PUT", "forged")).status).toBe(403);
+		expect((await request(await turboToken(SECRET, "octo/app"), "PUT", "tarball")).status).toBe(202);
+		expect(await (await request(reader, "GET")).text()).toBe("tarball");
+		// Dropping the "r" doesn't make it a writer: the two are signed apart.
+		const [name, , mac] = reader.split(".");
+		expect(await tokenRepo(SECRET, `${name}.${mac}`)).toBeUndefined();
+	});
+
 	it("refuses requests without a valid token, and keys that aren't hashes", async () => {
 		const bucket = fakeR2();
 		const res = await handleTurboCache(new Request("https://qf.example/turbo/v8/artifacts/abc", { headers: { Authorization: "Bearer nope" } }), bucket, SECRET);

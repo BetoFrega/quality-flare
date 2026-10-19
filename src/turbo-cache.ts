@@ -6,7 +6,9 @@
  * cache instead of running again. The bucket's lifecycle rule expires artifacts nobody wrote lately.
  *
  * The token is the repository plus an HMAC of it under the webhook secret, so it needs no storage
- * and a token one repository's code can read never opens another's artifacts.
+ * and a token one repository's code can read never opens another's artifacts. A read-only token
+ * (an "r" between the two, signed apart) can't write: for runs whose code mustn't fill a cache
+ * later runs trust.
  */
 
 export const TURBO_PATH = "/turbo";
@@ -17,25 +19,34 @@ const HASH = /^[A-Za-z0-9_-]{1,128}$/;
 const encoder = new TextEncoder();
 
 /** The token a repository's container runs get. */
-export async function turboToken(secret: string, repo: string): Promise<string> {
-	return `${b64(encoder.encode(repo))}.${b64(await sign(secret, repo))}`;
+export async function turboToken(secret: string, repo: string, readOnly = false): Promise<string> {
+	const mac = b64(await sign(secret, scope(repo, readOnly)));
+	return readOnly ? `${b64(encoder.encode(repo))}.r.${mac}` : `${b64(encoder.encode(repo))}.${mac}`;
+}
+
+/** The repository a token was made for and whether it may write, or undefined when it isn't one of ours. */
+export async function tokenAccess(secret: string, token: string): Promise<{ repo: string; write: boolean } | undefined> {
+	const parts = token.split(".");
+	const readOnly = parts.length === 3 && parts[1] === "r";
+	const [name, mac] = readOnly ? [parts[0], parts[2]] : parts.length === 2 ? parts : [];
+	if (!name || !mac) return undefined;
+	const repo = new TextDecoder().decode(unb64(name));
+	const valid = await crypto.subtle.verify("HMAC", await hmacKey(secret), unb64(mac), encoder.encode(scope(repo, readOnly)));
+	return valid ? { repo, write: !readOnly } : undefined;
 }
 
 /** The repository a token was made for, or undefined when it isn't one of ours. */
 export async function tokenRepo(secret: string, token: string): Promise<string | undefined> {
-	const [name, mac] = token.split(".");
-	if (!name || !mac) return undefined;
-	const repo = new TextDecoder().decode(unb64(name));
-	const key = await hmacKey(secret);
-	return (await crypto.subtle.verify("HMAC", key, unb64(mac), encoder.encode(`turbo-cache:${repo}`))) ? repo : undefined;
+	return (await tokenAccess(secret, token))?.repo;
 }
 
 /** Answers Turborepo's remote cache API under TURBO_PATH: artifacts by hash, scoped to the token's repository. */
 export async function handleTurboCache(request: Request, bucket: R2Bucket, secret: string): Promise<Response> {
 	const path = new URL(request.url).pathname.slice(TURBO_PATH.length);
 	const auth = request.headers.get("Authorization") ?? "";
-	const repo = auth.startsWith("Bearer ") ? await tokenRepo(secret, auth.slice("Bearer ".length)).catch(() => undefined) : undefined;
-	if (!repo) return Response.json({ error: { code: "forbidden", message: "Token inválido" } }, { status: 403 });
+	const access = auth.startsWith("Bearer ") ? await tokenAccess(secret, auth.slice("Bearer ".length)).catch(() => undefined) : undefined;
+	if (!access) return Response.json({ error: { code: "forbidden", message: "Token inválido" } }, { status: 403 });
+	const { repo } = access;
 
 	if (path === "/v8/artifacts/status") return Response.json({ status: "enabled" });
 	// Usage events: nothing to keep.
@@ -50,6 +61,7 @@ export async function handleTurboCache(request: Request, bucket: R2Bucket, secre
 	if (!hash || !HASH.test(hash)) return new Response("Not found", { status: 404 });
 	switch (request.method) {
 		case "PUT": {
+			if (!access.write) return Response.json({ error: { code: "forbidden", message: "Token só de leitura" } }, { status: 403 });
 			if (!request.body) return new Response("Missing body", { status: 400 });
 			const customMetadata: Record<string, string> = { duration: request.headers.get("x-artifact-duration") ?? "0" };
 			const tag = request.headers.get("x-artifact-tag");
@@ -74,8 +86,12 @@ function key(repo: string, hash: string): string {
 	return `${repo.toLowerCase()}/${hash}`;
 }
 
-async function sign(secret: string, repo: string): Promise<Uint8Array> {
-	return new Uint8Array(await crypto.subtle.sign("HMAC", await hmacKey(secret), encoder.encode(`turbo-cache:${repo}`)));
+function scope(repo: string, readOnly: boolean): string {
+	return `${readOnly ? "turbo-cache-read" : "turbo-cache"}:${repo}`;
+}
+
+async function sign(secret: string, message: string): Promise<Uint8Array> {
+	return new Uint8Array(await crypto.subtle.sign("HMAC", await hmacKey(secret), encoder.encode(message)));
 }
 
 function hmacKey(secret: string): Promise<CryptoKey> {

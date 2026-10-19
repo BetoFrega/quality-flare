@@ -229,7 +229,10 @@ export class TestBox {
 		const credentials = { appId: this.env.GITHUB_APP_ID, privateKey: this.env.GITHUB_PRIVATE_KEY };
 		const token = await GitHubClient.contentsReadToken(credentials, job.installationId, job.repo);
 		// The config's Turborepo cache and its `cache` paths are both kept by src/turbo-cache.ts.
-		const turbo = config.turboCache || config.cache?.length ? { api: `${this.env.PUBLIC_URL}${TURBO_PATH}`, token: await turboToken(this.env.GITHUB_WEBHOOK_SECRET, job.repo) } : undefined;
+		const secret = this.env.GITHUB_WEBHOOK_SECRET;
+		const turbo = config.turboCache || config.cache?.length
+			? { api: `${this.env.PUBLIC_URL}${TURBO_PATH}`, token: await turboToken(secret, job.repo), readToken: await turboToken(secret, job.repo, true) }
+			: undefined;
 		// npm, GitHub and quality-flare's caches; the tokens reach this repository only.
 		const options = { instance: INSTANCE.name, enableInternet: true, env: boxEnv(job, config, token, turbo) };
 		const { restored: _, ...rest } = job;
@@ -434,7 +437,7 @@ export function boxEnv(
 	job: Pick<BoxJob, "repo" | "sha" | "base" | "changed" | "full" | "startedAt">,
 	config: ContainerConfig,
 	token: string,
-	turbo?: { api: string; token: string },
+	turbo?: { api: string; token: string; readToken: string },
 ): Record<string, string> {
 	const commands = containerCommands(config);
 	return {
@@ -445,8 +448,9 @@ export function boxEnv(
 		...(job.full ? { FULL: "1" } : job.changed ? { CHANGED: "1", ...(config.alwaysRun?.length ? { ALWAYS_RUN: config.alwaysRun.join("\n") } : {}) } : {}),
 		// A full run checks what the cache would vouch for: it builds everything, and still fills the cache.
 		...(turbo && config.turboCache ? { TURBO_API: turbo.api, TURBO_TEAM: "quality-flare", TURBO_TOKEN: turbo.token, ...(job.full ? { TURBO_FORCE: "true" } : {}) } : {}),
-		// Like snapshots, off with a custom `install`: what it installs isn't in the cache key.
-		...(turbo && config.cache?.length && !config.install ? { CACHE_PATHS: config.cache.join("\n"), CACHE_API: turbo.api, CACHE_TOKEN: turbo.token, DEADLINE: String(job.startedAt + BOX_DEADLINE_MS) } : {}),
+		// Like snapshots, off with a custom `install`: what it installs isn't in the cache key. Only the full run's
+		// token writes, so a PR's code can't leave a cache that vouches for files nobody checked.
+		...(turbo && config.cache?.length && !config.install ? { CACHE_PATHS: config.cache.join("\n"), CACHE_API: turbo.api, CACHE_TOKEN: job.full ? turbo.token : turbo.readToken, DEADLINE: String(job.startedAt + BOX_DEADLINE_MS) } : {}),
 		// The install runs as root and the snapshot keeps the whole filesystem, so only the default branch's own code
 		// (the daily full run) may produce one: a PR's lockfile, package manager config or install command could leave
 		// anything in it for the runs after. PR runs only start from it.

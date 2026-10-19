@@ -255,7 +255,7 @@ describe("Container tests", () => {
 
 	it("points Turborepo at the repository's remote cache, which a full run doesn't trust", () => {
 		const job = { repo: "octo/app", sha: "abc", base: "main" };
-		const turbo = { api: "https://qf.example/turbo", token: "tt" };
+		const turbo = { api: "https://qf.example/turbo", token: "tt", readToken: "rt" };
 		expect(boxEnv(job, { turboCache: true }, "t", turbo)).toMatchObject({ TURBO_API: "https://qf.example/turbo", TURBO_TEAM: "quality-flare", TURBO_TOKEN: "tt" });
 		expect(boxEnv(job, { turboCache: true }, "t", turbo)).not.toHaveProperty("TURBO_FORCE");
 		expect(boxEnv({ ...job, full: true }, { turboCache: true }, "t", turbo)).toMatchObject({ TURBO_FORCE: "true" });
@@ -264,9 +264,11 @@ describe("Container tests", () => {
 
 	it("gives the container the paths its runs keep, apart from Turborepo's cache", () => {
 		const job = { repo: "octo/app", sha: "abc", base: "main", startedAt: 1_000 };
-		const turbo = { api: "https://qf.example/turbo", token: "tt" };
+		const turbo = { api: "https://qf.example/turbo", token: "tt", readToken: "rt" };
 		const cache = [".cache/eslint", "tsconfig.tsbuildinfo"];
-		expect(boxEnv(job, { cache }, "t", turbo)).toMatchObject({ CACHE_PATHS: ".cache/eslint\ntsconfig.tsbuildinfo", CACHE_API: "https://qf.example/turbo", CACHE_TOKEN: "tt", DEADLINE: String(1_000 + BOX_DEADLINE_MS) });
+		expect(boxEnv(job, { cache }, "t", turbo)).toMatchObject({ CACHE_PATHS: ".cache/eslint\ntsconfig.tsbuildinfo", CACHE_API: "https://qf.example/turbo", CACHE_TOKEN: "rt", DEADLINE: String(1_000 + BOX_DEADLINE_MS) });
+		// Only the daily full run, the default branch's own code, may write what later runs restore.
+		expect(boxEnv({ ...job, full: true }, { cache }, "t", turbo)).toMatchObject({ CACHE_TOKEN: "tt" });
 		expect(boxEnv(job, { cache }, "t", turbo)).not.toHaveProperty("TURBO_API");
 		expect(boxEnv(job, { turboCache: true }, "t", turbo)).not.toHaveProperty("CACHE_PATHS");
 		expect(boxEnv(job, { cache, install: "./scripts/install.sh" }, "t", turbo)).not.toHaveProperty("CACHE_PATHS");

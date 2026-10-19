@@ -201,9 +201,9 @@ cache_url() {
 	echo "$CACHE_API/v8/artifacts/qf-files-$({ with_dependency_files git ls-files -z -- | sort -z | xargs -0 -r sha256sum --; echo "${INSTALL:-}"; echo "$CACHE_PATHS"; } | sha256sum | cut -c1-32)"
 }
 
-# Any run of the repository can upload under this key, PR code included, so the archive is untrusted: only plain
-# files and directories up to 2 GB in all, and only the configured paths that hold no tracked file come out of
-# it, so it can't touch the checkout or fill the disk.
+# Only the daily full run (the default branch's own code) gets a token that writes; PR runs only read. The archive
+# is still untrusted: only plain files and directories up to 2 GB in all, and only the configured paths that hold no
+# tracked file come out of it, so it can't touch the checkout or fill the disk.
 # touches_symlink <path>: whether the path, a parent directory or anything below it is a symlink.
 touches_symlink() {
 	local prefix="" part parts=()
@@ -290,8 +290,7 @@ run() {
 	[ -n "${FULL:-}" ] && export TURBO_SCM_BASE=refs/quality-flare/nothing TURBO_SCM_HEAD=HEAD
 	echo install >"$OUT/current"
 	step install 600 || return
-	# Not on the full run: PR runs write this cache too, and the full run checks everything afresh (as with
-	# TURBO_FORCE). It still saves its own.
+	# Not on the full run, which checks everything afresh (as with TURBO_FORCE) and saves the cache PR runs restore.
 	reusable_install || CACHE_PATHS=
 	[ -n "${CACHE_PATHS:-}" ] && [ -z "${FULL:-}" ] && restore_cache >>"$OUT/cache.log" 2>&1
 	# The commands run one after another alongside the tests: alone, the tests leave vCPUs idle and
@@ -301,7 +300,8 @@ run() {
 	step tests 900 &
 	nice -n 19 bash -c commands &
 	wait
-	[ -n "${CACHE_PATHS:-}" ] && save_cache >>"$OUT/cache.log" 2>&1
+	# PR runs only read it: their code could otherwise leave a cache that vouches for files nobody checked.
+	[ -n "${CACHE_PATHS:-}" ] && [ -n "${FULL:-}" ] && save_cache >>"$OUT/cache.log" 2>&1
 	return 0
 }
 
