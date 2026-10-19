@@ -88,6 +88,17 @@ export interface ContainerConfig {
 	alwaysRun?: string[];
 	/** Gives Turborepo, in the commands, a remote cache shared by the repository's runs (src/turbo-cache.ts). */
 	turboCache?: boolean;
+	/**
+	 * Paths, relative to the repository root, that the repository's runs keep from one to the next: the caches its
+	 * tools write (ESLint's `--cache-location`, tsc's .tsbuildinfo…). Kept per lockfile, so new dependencies start
+	 * them over; such a cache must only skip work whose inputs didn't change, as ESLint's `--cache-strategy content` does.
+	 */
+	cache?: string[];
+	/**
+	 * Starts each run from a snapshot of the last container that installed the base branch's lockfile, with the
+	 * clone and node_modules already there, so a run on that lockfile skips the install (src/checks/tests/container.ts).
+	 */
+	snapshot?: boolean;
 }
 
 /** A command of the container section, and the check run it reports as. */
@@ -112,13 +123,20 @@ export function readContainerConfig(source: string | undefined): ContainerConfig
 	for (const key of ["install", "typecheck"] as const) {
 		if (container[key] !== undefined && typeof container[key] !== "string") throw new Error(`${CONFIG_FILE}: "container.${key}" deve ser um texto.`);
 	}
-	for (const key of ["changed", "turboCache"] as const) {
+	for (const key of ["changed", "turboCache", "snapshot"] as const) {
 		if (container[key] !== undefined && typeof container[key] !== "boolean") throw new Error(`${CONFIG_FILE}: "container.${key}" deve ser true ou false.`);
 	}
-	for (const key of ["vitestArgs", "alwaysRun"] as const) {
+	for (const key of ["vitestArgs", "alwaysRun", "cache"] as const) {
 		const list = container[key];
 		if (list !== undefined && !(Array.isArray(list) && list.every((a) => typeof a === "string" && a.trim() !== "" && !a.includes("\n")))) {
 			throw new Error(`${CONFIG_FILE}: "container.${key}" deve ser uma lista de textos.`);
+		}
+	}
+	for (const path of container.cache ?? []) {
+		// The cache is restored over a fresh checkout: the root or .git would bring back an earlier commit.
+		const parts = path.split("/").filter((part) => part !== "" && part !== ".");
+		if (path.startsWith("/") || parts.includes("..") || !parts.length || parts[0] === ".git") {
+			throw new Error(`${CONFIG_FILE}: "${path}" em "container.cache" deve ser um caminho dentro do repositório, fora da .git e abaixo da raiz.`);
 		}
 	}
 	const commands = container.commands;

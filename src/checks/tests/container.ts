@@ -42,12 +42,21 @@ export const CONTAINER_PRICES = {
 
 /** How often TestBox reads the container's progress. */
 export const POLL_MS = 10_000;
+/**
+ * How long a container may take to come up from a snapshot before the run gives up on it and starts from the image,
+ * and then how long that image gets.
+ */
+export const RESTORE_WAIT_MS = 2 * 60_000;
 
 /**
- * A run still going this long after it started is failed and its container destroyed, below the
- * cron sweep's hour. qf-run.sh's step limits stop a single step that hangs first.
+ * A run still going this long after it started is failed and its container destroyed: about twice the
+ * longest real run (a full run of macae, ~11 min), since a hung run is billed for every minute it stays up.
+ * qf-run.sh's step limits (STEP_MINUTES) stop a single step that hangs first.
  */
-export const BOX_DEADLINE_MS = 55 * 60_000;
+export const BOX_DEADLINE_MS = 20 * 60_000;
+
+/** qf-run.sh's limit on the tests and on each command. */
+const STEP_MINUTES = 15;
 
 /** Without a request or an alarm for this long, Cloudflare stops the container on its own. */
 const INACTIVITY_MS = 5 * 60_000;
@@ -75,7 +84,31 @@ export interface BoxJob {
 	changed?: true;
 	/** The daily run on the default branch: every test, with nothing to compare against (see qf-run.sh). */
 	full?: true;
+	/** The snapshot its container started from (see TestBox.start). */
+	restored?: string;
+	/** When the image was started instead of a snapshot that never came up (epoch milliseconds). */
+	fallbackAt?: number;
 }
+
+/** The last snapshot kept for a repository (the config's `snapshot`), in SETTINGS under snapshotKey. */
+export interface SavedSnapshot {
+	id: string;
+	/** The image it was taken on; a snapshot doesn't start on another. */
+	image: string;
+	size: number;
+	/** The commit whose run took it. */
+	sha: string;
+	/** Epoch milliseconds. */
+	at: number;
+}
+
+export const snapshotKey = (repo: string) => `snapshot:${repo.toLowerCase()}`;
+
+/**
+ * A custom `install` turns snapshots off: the skipped install is told apart only by the dependency files, and a
+ * wrapper script can change what it installs without touching them.
+ */
+export const usesSnapshot = (config: Pick<ContainerConfig, "snapshot" | "install">) => Boolean(config.snapshot && !config.install);
 
 export interface BoxCommand {
 	name: string;
@@ -181,26 +214,98 @@ export class TestBox {
 		const { job, config } = (await request.json()) as { job: BoxJob; config: ContainerConfig };
 		const container = this.ctx.container;
 		if (!container) return new Response("Este Durable Object não tem container.", { status: 500 });
-		const credentials = { appId: this.env.GITHUB_APP_ID, privateKey: this.env.GITHUB_PRIVATE_KEY };
-		const token = await GitHubClient.contentsReadToken(credentials, job.installationId, job.repo);
-		const turbo = config.turboCache ? { api: `${this.env.PUBLIC_URL}${TURBO_PATH}`, token: await turboToken(this.env.GITHUB_WEBHOOK_SECRET, job.repo) } : undefined;
-		container.start({
-			image: container.images.tests,
-			instance: INSTANCE.name,
-			// npm, GitHub and the Turborepo cache; the tokens reach this repository only.
-			enableInternet: true,
-			env: boxEnv(job, config, token, turbo),
-		});
+		const started = await this.start(container, job, config);
 		await container.setInactivityTimeout(INACTIVITY_MS);
-		await this.ctx.storage.put("job", job);
+		await this.ctx.storage.put({ job: started, config });
 		await this.ctx.storage.setAlarm(Date.now() + POLL_MS);
 		return new Response(null, { status: 204 });
 	}
 
+	/**
+	 * Starts the run's container. With the config's `snapshot`, from the repository's last snapshot when it was
+	 * taken on this image: its clone and installed dependencies save the run the install (qf-run.sh).
+	 */
+	private async start(container: Container, job: BoxJob, config: ContainerConfig, fresh = false): Promise<BoxJob> {
+		const credentials = { appId: this.env.GITHUB_APP_ID, privateKey: this.env.GITHUB_PRIVATE_KEY };
+		const token = await GitHubClient.contentsReadToken(credentials, job.installationId, job.repo);
+		// The config's Turborepo cache and its `cache` paths are both kept by src/turbo-cache.ts.
+		const secret = this.env.GITHUB_WEBHOOK_SECRET;
+		const turbo = config.turboCache || config.cache?.length
+			? { api: `${this.env.PUBLIC_URL}${TURBO_PATH}`, token: await turboToken(secret, job.repo), cacheToken: await turboToken(secret, job.repo, job.full ? "files" : "read") }
+			: undefined;
+		// npm, GitHub and quality-flare's caches; the tokens reach this repository only.
+		const options = { instance: INSTANCE.name, enableInternet: true, env: boxEnv(job, config, token, turbo) };
+		const { restored: _, ...rest } = job;
+		const saved = usesSnapshot(config) && !fresh ? await this.env.SETTINGS.get<SavedSnapshot>(snapshotKey(job.repo), "json") : null;
+		if (saved && saved.image === container.images.tests) {
+			try {
+				container.start({ ...options, containerSnapshot: { id: saved.id } });
+				return { ...rest, restored: saved.id };
+			} catch (error) {
+				logError(error);
+			}
+		}
+		container.start({ ...options, image: container.images.tests });
+		return rest;
+	}
+
+	/** Forgets the repository's snapshot, unless a newer one already replaced it. */
+	private async forgetSnapshot(repo: string, id: string): Promise<void> {
+		const saved = await this.env.SETTINGS.get<SavedSnapshot>(snapshotKey(repo), "json");
+		if (saved?.id === id) await this.env.SETTINGS.delete(snapshotKey(repo));
+	}
+
+	/**
+	 * A container that just installed the base's lockfile waits, before running anything else, with qf-run.sh's
+	 * `snapshot` file: it becomes the repository's snapshot, and the run goes on once the file is gone.
+	 */
+	private async takeSnapshot(container: Container, job: BoxJob): Promise<void> {
+		if ((await readFile(container, "snapshot").catch(() => undefined)) === undefined) return;
+		try {
+			// npm's download cache only makes the snapshot bigger.
+			await (await container.exec(["sh", "-c", "rm -rf /root/.npm; sync"])).output();
+			const snapshot = await container.snapshotContainer({ name: `${job.repo}@${job.sha.slice(0, 7)}` });
+			const saved: SavedSnapshot = { id: snapshot.id, image: container.images.tests, size: snapshot.size, sha: job.sha, at: Date.now() };
+			await this.env.SETTINGS.put(snapshotKey(job.repo), JSON.stringify(saved));
+		} finally {
+			await (await container.exec(["rm", "-f", `${OUT}/snapshot`])).output();
+		}
+	}
+
+	/** A run from a snapshot whose install failed forgets the snapshot: what it left in node_modules may be the cause. */
+	private async checkRestored(container: Container, job: BoxJob): Promise<void> {
+		if (!job.restored) return;
+		const steps = parseSteps((await readFile(container, "steps").catch(() => undefined)) ?? "");
+		if (steps.some((s) => s.name === "install" && s.exitCode !== 0)) await this.forgetSnapshot(job.repo, job.restored);
+	}
+
 	async alarm(): Promise<void> {
 		const job = await this.ctx.storage.get<BoxJob>("job");
+		const config = (await this.ctx.storage.get<ContainerConfig>("config")) ?? {};
 		const container = this.ctx.container;
 		if (!job || !container) return;
+		// A cancelled run (its job gone) skips the wait: pollBox below abandons it at once.
+		if ((job.restored || job.fallbackAt) && !(await this.ctx.storage.get("seen")) && (await d1JobStore(this.env.RUNS).get(job.runId))) {
+			if (!container.running) {
+				// A big snapshot takes a while to restore; one that never comes up (expired, say) is forgotten, and
+				// the run starts over from the image, which gets the same time to come up.
+				if (Date.now() - (job.fallbackAt ?? job.startedAt) < RESTORE_WAIT_MS) {
+					await this.ctx.storage.setAlarm(Date.now() + POLL_MS);
+					return;
+				}
+				if (job.restored) {
+					await this.forgetSnapshot(job.repo, job.restored);
+					// A restore still starting would hold the instance the image needs.
+					await container.destroy().catch(() => {});
+					await this.ctx.storage.put("job", { ...(await this.start(container, job, config, true)), fallbackAt: Date.now() });
+					await this.ctx.storage.setAlarm(Date.now() + POLL_MS);
+					return;
+				}
+			} else await this.ctx.storage.put("seen", true);
+		}
+		// Only the daily full run, which runs the default branch's own code, may offer its container: a PR's tests
+		// and commands can write the `snapshot` file too.
+		if (job.full && usesSnapshot(config) && container.running) await this.takeSnapshot(container, job).catch(logError);
 		const live = livePublisher(this.env.LIVE);
 		const next = await pollBox(job, {
 			now: Date.now,
@@ -225,6 +330,7 @@ export class TestBox {
 			await this.ctx.storage.setAlarm(Date.now() + POLL_MS);
 			return;
 		}
+		if (container.running) await this.checkRestored(container, job).catch(logError);
 		await container.destroy().catch(() => {});
 		await this.ctx.storage.deleteAll();
 	}
@@ -290,7 +396,7 @@ export class TestBox {
 		return new Set((await this.ctx.storage.get<Shown>("shown"))?.finished);
 	}
 
-	/** One installation token per run, kept while the object is in memory: it lasts an hour, past BOX_DEADLINE_MS. */
+	/** One installation token per run, kept while the object is in memory: it lasts an hour, well past BOX_DEADLINE_MS. */
 	private token?: Promise<GitHubClient>;
 
 	private github(job: BoxJob): Promise<GitHubClient> {
@@ -328,10 +434,10 @@ export async function alertFullRun(github: Pick<GitHubClient, "createIssue">, jo
 
 /** The container's environment (see qf-run.sh). */
 export function boxEnv(
-	job: Pick<BoxJob, "repo" | "sha" | "base" | "changed" | "full">,
+	job: Pick<BoxJob, "repo" | "sha" | "base" | "changed" | "full" | "startedAt">,
 	config: ContainerConfig,
 	token: string,
-	turbo?: { api: string; token: string },
+	turbo?: { api: string; token: string; cacheToken: string },
 ): Record<string, string> {
 	const commands = containerCommands(config);
 	return {
@@ -341,7 +447,15 @@ export function boxEnv(
 		TOKEN: token,
 		...(job.full ? { FULL: "1" } : job.changed ? { CHANGED: "1", ...(config.alwaysRun?.length ? { ALWAYS_RUN: config.alwaysRun.join("\n") } : {}) } : {}),
 		// A full run checks what the cache would vouch for: it builds everything, and still fills the cache.
-		...(turbo ? { TURBO_API: turbo.api, TURBO_TEAM: "quality-flare", TURBO_TOKEN: turbo.token, ...(job.full ? { TURBO_FORCE: "true" } : {}) } : {}),
+		...(turbo && config.turboCache ? { TURBO_API: turbo.api, TURBO_TEAM: "quality-flare", TURBO_TOKEN: turbo.token, ...(job.full ? { TURBO_FORCE: "true" } : {}) } : {}),
+		// Like snapshots, off with a custom `install`: what it installs isn't in the cache key. Only the full run gets a
+		// token that writes it (src/turbo-cache.ts), so a PR's code can't leave a cache that vouches for files nobody
+		// checked, not even with its TURBO_TOKEN.
+		...(turbo && config.cache?.length && !config.install ? { CACHE_PATHS: config.cache.join("\n"), CACHE_API: turbo.api, CACHE_TOKEN: turbo.cacheToken, DEADLINE: String(job.startedAt + BOX_DEADLINE_MS) } : {}),
+		// The install runs as root and the snapshot keeps the whole filesystem, so only the default branch's own code
+		// (the daily full run) may produce one: a PR's lockfile, package manager config or install command could leave
+		// anything in it for the runs after. PR runs only start from it.
+		...(job.full && usesSnapshot(config) ? { SNAPSHOT: "1" } : {}),
 		...(config.install ? { INSTALL: config.install } : {}),
 		...(config.vitestArgs?.length ? { VITEST_ARGS: config.vitestArgs.join("\n") } : {}),
 		...(commands.length ? { COMMANDS: String(commands.length) } : {}),
@@ -550,7 +664,7 @@ export function boxResults(output: BoxOutput, commands: Pick<BoxCommand, "name">
 	const tests = step("tests");
 	const report = output.report ? parseVitestReport(output.report) : undefined;
 	if (!report || tests?.exitCode === TIMED_OUT) {
-		const why = tests?.exitCode === TIMED_OUT ? "Os testes passaram do limite de 25 minutos." : "O vitest terminou sem gerar o relatório.";
+		const why = tests?.exitCode === TIMED_OUT ? `Os testes passaram do limite de ${STEP_MINUTES} minutos.` : "O vitest terminou sem gerar o relatório.";
 		return { ...results, tests: logFailure(why, output.logs.tests) };
 	}
 	if (!report.files.length) return { ...results, tests: changed ? NOTHING_AFFECTED : NO_TESTS };
@@ -574,7 +688,7 @@ function failedStep(name: "clone" | "install", step: Step | undefined): string {
 function commandResult(name: string, step: Step | undefined, log: string | undefined): CheckResult | undefined {
 	if (!step) return undefined;
 	if (step.exitCode === 0) return { conclusion: "success", title: `${name} passou`, summary: `Sem erros, em ${(step.ms / 1000).toFixed(0)} s.` };
-	const why = step.exitCode === TIMED_OUT ? `${name} passou do limite de 20 minutos.` : `${name} falhou (código de saída ${step.exitCode}).`;
+	const why = step.exitCode === TIMED_OUT ? `${name} passou do limite de ${STEP_MINUTES} minutos.` : `${name} falhou (código de saída ${step.exitCode}).`;
 	return { ...logFailure(why, log), title: `${name} falhou` };
 }
 

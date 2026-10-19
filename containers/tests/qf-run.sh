@@ -9,6 +9,8 @@
 #   progress.json    tests so far, while they run (qf-progress.mjs)
 #   report.json      vitest's JSON report
 #   cpu              CPU the container used, in microseconds (cgroup v2 usage_usec)
+#   snapshot         with SNAPSHOT=1, while the run waits for TestBox to snapshot the container: the install ran on
+#                    the base's lockfile. TestBox removes it once the snapshot is taken.
 #   done             written last
 # Then it waits for the Durable Object to read them and destroy the container.
 #
@@ -16,10 +18,21 @@
 # repository only), and optionally INSTALL (a shell command), VITEST_ARGS (one argument per line),
 # COMMANDS (how many) with COMMAND_1, COMMAND_2… (shell commands, run as steps command1…), CHANGED=1
 # (only the tests that depend on what the PR changed, plus ALWAYS_RUN) or FULL=1 (SHA on its own, everything;
-# Turborepo's --affected sees every package changed).
+# Turborepo's --affected sees every package changed), CACHE_PATHS (one path per line) with CACHE_API and
+# CACHE_TOKEN and DEADLINE (when TestBox gives up on the run, epoch ms), and SNAPSHOT=1 (only on the daily full run, which runs the default branch's own code: offer this
+# install to TestBox as the repository's snapshot).
+#
+# With the config's `snapshot`, the container may start from the snapshot of a daily run (TestBox decides): /work/repo
+# then already has a clone and its node_modules. The clone is brought to SHA and cleaned of everything else,
+# and the install is skipped when the lockfile is the one installed there.
 set -u
 
 OUT=/work/out
+# Kept out of the steps' environment: the repository's code has no use for the cache token.
+CACHE_AUTH=${CACHE_TOKEN:-}
+unset CACHE_TOKEN
+# A container from a snapshot still has the earlier run's output.
+rm -rf "$OUT"
 mkdir -p "$OUT" /work/repo
 : >"$OUT/steps"
 
@@ -38,12 +51,23 @@ step() {
 # (turbo --affected, diffs). Blobs are fetched as needed, so the token stays in the repository's git
 # config for the whole run; it reads only this repository, which the code under test already has.
 clone() {
-	git init -q . &&
-		git remote add origin "https://github.com/$REPO" &&
+	if [ -d .git ]; then git remote set-url origin "https://github.com/$REPO"
+	else git init -q . && git remote add origin "https://github.com/$REPO"
+	fi &&
 		git config http.extraHeader "Authorization: Basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)" &&
 		git fetch -q --filter=blob:none origin "$SHA" "+refs/heads/$BASE:refs/remotes/origin/$BASE" &&
-		git checkout -q "$SHA" &&
+		git checkout -q -f "$SHA" &&
+		clean_snapshot &&
 		if [ -n "${FULL:-}" ]; then compare_with_nothing; else merge_base; fi
+}
+
+# What an earlier run left in a clone from a snapshot goes, but for the installed dependencies (every
+# node_modules) and the config's cache paths: no build output of another commit reaches the tests.
+clean_snapshot() {
+	local keep=(-e node_modules) path
+	[ -f /work/installed ] || return 0
+	[ -n "${CACHE_PATHS:-}" ] && while IFS= read -r path; do keep+=(-e "/$path"); done <<<"$CACHE_PATHS"
+	git clean -q -ffdx "${keep[@]}"
 }
 
 # A full run tests a branch's commit on its own, so origin/$BASE stays the branch itself: commands
@@ -66,7 +90,51 @@ merge_base() {
 	return 1
 }
 
+# Runs a command with the files the install depends on appended: the lockfile, every package.json (without a
+# lockfile, npm installs from those) and the package managers' own config, which can change where packages come from.
+with_dependency_files() {
+	"$@" package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb ':(glob)**/package.json' \
+		.npmrc .pnpmfile.cjs .pnpmfile.mjs pnpm-workspace.yaml .yarnrc .yarnrc.yml .yarn ':(exclude).yarn/cache' bunfig.toml
+}
+
+# Whether a later run may reuse this install (snapshot, skipped install, file cache): see qf-reusable.mjs.
+reusable_install() {
+	node /usr/local/lib/qf-reusable.mjs
+}
+
+# Skipped when the container came from a snapshot that installed the same dependency files (and command).
+# /work/installed says which; it goes first, so a failed install never claims one.
 install() {
+	local key
+	key=$({ with_dependency_files git ls-files -z -- | sort -z | xargs -0 -r sha256sum --; echo "${INSTALL:-}"; } | sha256sum | cut -d' ' -f1)
+	if reusable_install && [ -d node_modules ] && [ "$(cat /work/installed 2>/dev/null)" = "$key" ]; then
+		echo "Dependências já instaladas: o container veio de um snapshot com o mesmo lockfile e os mesmos package.json."
+		return
+	fi
+	rm -f /work/installed
+	install_dependencies || return
+	echo "$key" >/work/installed
+	# A PR that changes them would leave a snapshot most PRs can't use.
+	if [ -n "${SNAPSHOT:-}" ] && reusable_install && with_dependency_files git diff --quiet "origin/$BASE" HEAD --; then
+		wait_for_snapshot
+	fi
+}
+
+# The snapshot is taken now, before any of the repository's code runs, so no run can leave anything in the
+# node_modules of the next. Without the token in the git config, though the clone still needs it for the
+# blobs it fetches as needed.
+wait_for_snapshot() {
+	local header i=0
+	header=$(git config http.extraHeader)
+	git config --unset-all http.extraHeader
+	touch "$OUT/snapshot"
+	while [ -e "$OUT/snapshot" ] && ((i++ < 300)); do sleep 1; done
+	[ -e "$OUT/snapshot" ] && echo "O snapshot não foi tirado a tempo; a run segue sem ele."
+	rm -f "$OUT/snapshot"
+	git config http.extraHeader "$header"
+}
+
+install_dependencies() {
 	if [ -n "${INSTALL:-}" ]; then bash -c "$INSTALL"
 	elif [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile --ignore-scripts
 	elif [ -f yarn.lock ]; then yarn install --frozen-lockfile --ignore-scripts
@@ -125,6 +193,78 @@ related_index() {
 		{ [ -z "$related" ] || GIT_INDEX_FILE=/work/related-index git --literal-pathspecs rm -q --cached --ignore-unmatch --pathspec-from-file=- <<<"$related"; }
 }
 
+# The config's `cache`: files the tools keep between runs (ESLint's cache, tsc's .tsbuildinfo…), kept in
+# quality-flare's Turborepo cache (src/turbo-cache.ts) under one key per set of dependency files, install command
+# and cached paths, so a change to any of them starts the cache over. Restored after the install, which may empty
+# node_modules; saved at the end. Both are best effort: without them the tools only take longer.
+cache_url() {
+	echo "$CACHE_API/v8/artifacts/qf-files-$({ with_dependency_files git ls-files -z -- | sort -z | xargs -0 -r sha256sum --; echo "${INSTALL:-}"; echo "$CACHE_PATHS"; } | sha256sum | cut -c1-32)"
+}
+
+# Only the daily full run (the default branch's own code) gets a token that writes; PR runs only read. The archive
+# is still untrusted: only plain files and directories up to 2 GB in all, and only the configured paths that hold no
+# tracked file come out of it, so it can't touch the checkout or fill the disk.
+# touches_symlink <path>: whether the path, a parent directory or anything below it is a symlink.
+touches_symlink() {
+	local prefix="" part parts=()
+	IFS=/ read -ra parts <<<"$1"
+	for part in "${parts[@]}"; do
+		[ -z "$part" ] || [ "$part" = . ] && continue
+		prefix+=${prefix:+/}$part
+		[ -L "$prefix" ] && return 0
+	done
+	[ -n "$(find "./${1#./}" -type l -print -quit 2>/dev/null)" ]
+}
+
+restore_cache() {
+	local paths=() path members=() listing
+	mapfile -t paths <<<"$CACHE_PATHS"
+	if curl -fsS --max-time 60 -H "Authorization: Bearer $CACHE_AUTH" -o /work/cache.tgz "$(cache_url)" &&
+		# A small archive can list endlessly, or with huge names: one entry or byte past the limits below, or a
+		# minute, and tar is cut off, which drops the cache.
+		listing=$(set -o pipefail; timeout 60 tar --numeric-owner -tvzf /work/cache.tgz | head -c 64M | head -n 200001); then
+		if cut -c1 <<<"$listing" | grep -qv '[-d]'; then
+			echo "Cache ignorado: tem links ou arquivos especiais."
+		elif (($(awk '{ total += $3 } END { printf "%d", total }' <<<"$listing") > 2 * 1024 * 1024 * 1024)); then
+			echo "Cache ignorado: passa de 2 GB descompactado."
+		elif (($(wc -l <<<"$listing") > 200000)); then
+			echo "Cache ignorado: passa de 200 mil arquivos."
+		elif ! listing=$(set -o pipefail; timeout 60 tar -tzf /work/cache.tgz | head -c 64M); then
+			echo "Cache ignorado: a lista de arquivos passa de 64 MB."
+		else
+			for path in "${paths[@]}"; do
+				# Literal: a path such as ":(glob)x" would otherwise be pathspec magic and match no tracked file.
+				[ -n "$(git --literal-pathspecs ls-files -- "$path" | head -1)" ] && continue
+				# git doesn't look through symlinks but tar does: under `link -> .`, link/x would land on tracked x.
+				touches_symlink "$path" && continue
+				grep -qxF -e "$path" -e "$path/" <<<"$listing" && members+=("$path")
+			done
+			((${#members[@]})) && tar -xzf /work/cache.tgz -- "${members[@]}" &&
+				echo "Cache restaurado: $(du -h /work/cache.tgz | cut -f1)."
+		fi
+	fi
+	rm -f /work/cache.tgz
+}
+
+# Not after a step that hit its time limit (124) or was killed (137: timeout's SIGKILL, or out of memory): a tool
+# stopped mid-write can leave its cache broken. Nor late in the run: `done` waits for the save, and past
+# DEADLINE (TestBox's BOX_DEADLINE_MS, counted from before the container started) the whole run fails.
+save_cache() {
+	local paths=() path present=()
+	if grep -Eq ' (124|137) ' "$OUT/steps"; then echo "Cache não salvo: um passo passou do limite ou foi morto."; return; fi
+	if (($(date +%s%3N) > ${DEADLINE:-0} - 4 * 60000)); then echo "Cache não salvo: a execução está perto do limite de 20 minutos."; return; fi
+	mapfile -t paths <<<"$CACHE_PATHS"
+	for path in "${paths[@]}"; do [ -e "$path" ] && present+=("$path"); done
+	((${#present[@]})) || return 0
+	# Up to 60 s to compress and 60 s to upload, then TestBox's next poll: within the 4 minutes left.
+	timeout 60 tar -czf /work/cache.tgz -- "${present[@]}" &&
+		if (($(stat -c %s /work/cache.tgz) > 90 * 1024 * 1024)); then echo "Cache não salvo: passa de 90 MB."
+		else curl -fsS --max-time 60 -X PUT -H "Authorization: Bearer $CACHE_AUTH" -H "Content-Type: application/octet-stream" \
+			--data-binary @/work/cache.tgz "$(cache_url)" >/dev/null && echo "Cache salvo: $(du -h /work/cache.tgz | cut -f1)."
+		fi
+	rm -f /work/cache.tgz
+}
+
 # run_command <n>: the shell command COMMAND_<n>.
 run_command() {
 	local var=COMMAND_$1
@@ -134,11 +274,11 @@ run_command() {
 # The commands, one after another.
 commands() {
 	local i
-	for ((i = 1; i <= ${COMMANDS:-0}; i++)); do step "command$i" 1200 "run_command $i"; done
+	for ((i = 1; i <= ${COMMANDS:-0}; i++)); do step "command$i" 900 "run_command $i"; done
 }
 
 export OUT
-export -f step clone merge_base compare_with_nothing install affected related_index tests run_command commands
+export -f step with_dependency_files reusable_install clone clean_snapshot merge_base compare_with_nothing install install_dependencies wait_for_snapshot affected related_index tests run_command commands
 
 run() {
 	cd /work/repo || return
@@ -150,13 +290,19 @@ run() {
 	[ -n "${FULL:-}" ] && export TURBO_SCM_BASE=refs/quality-flare/nothing TURBO_SCM_HEAD=HEAD
 	echo install >"$OUT/current"
 	step install 600 || return
+	# Not on the full run, which checks everything afresh (as with TURBO_FORCE) and saves the cache PR runs restore.
+	reusable_install || CACHE_PATHS=
+	[ -n "${CACHE_PATHS:-}" ] && [ -z "${FULL:-}" ] && restore_cache >>"$OUT/cache.log" 2>&1
 	# The commands run one after another alongside the tests: alone, the tests leave vCPUs idle and
 	# lint or typecheck use about one. At the lowest priority, so the tests keep the CPU their timeouts
 	# expect; not all at once, so neither do the commands starve each other's timed tests.
 	echo tests >"$OUT/current"
-	step tests 1500 &
+	step tests 900 &
 	nice -n 19 bash -c commands &
 	wait
+	# PR runs only read it: their code could otherwise leave a cache that vouches for files nobody checked.
+	[ -n "${CACHE_PATHS:-}" ] && [ -n "${FULL:-}" ] && save_cache >>"$OUT/cache.log" 2>&1
+	return 0
 }
 
 

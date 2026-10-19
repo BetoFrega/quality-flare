@@ -91,7 +91,7 @@ describe("Container tests", () => {
 		const report = JSON.stringify({ testResults: [{ name: "/work/repo/a.test.ts", status: "passed", assertionResults: [{ title: "ok", status: "passed" }] }] });
 		const results = boxResults(output("clone 0 1\ninstall 0 1\ntests 0 1\ncommand1 124 1200000\n", { report }), commands);
 		expect(results.tests).toMatchObject({ conclusion: "success", title: "1 teste passaram" });
-		expect(results.commands).toEqual([expect.objectContaining({ title: "Typecheck falhou", summary: "Typecheck passou do limite de 20 minutos." }), undefined]);
+		expect(results.commands).toEqual([expect.objectContaining({ title: "Typecheck falhou", summary: "Typecheck passou do limite de 15 minutos." }), undefined]);
 	});
 
 	it("says when only the PR's affected tests ran, and passes when none were affected", () => {
@@ -117,7 +117,7 @@ describe("Container tests", () => {
 
 	it("fails with the log when the tests time out", () => {
 		const results = boxResults(output("clone 0 1\ninstall 0 1\ntests 124 1500000\n", { logs: { tests: "····" } }));
-		expect(results.tests).toMatchObject({ conclusion: "failure", title: "Os testes passaram do limite de 25 minutos" });
+		expect(results.tests).toMatchObject({ conclusion: "failure", title: "Os testes passaram do limite de 15 minutos" });
 	});
 
 	describe("TestBox polling", () => {
@@ -255,11 +255,29 @@ describe("Container tests", () => {
 
 	it("points Turborepo at the repository's remote cache, which a full run doesn't trust", () => {
 		const job = { repo: "octo/app", sha: "abc", base: "main" };
-		const turbo = { api: "https://qf.example/turbo", token: "tt" };
+		const turbo = { api: "https://qf.example/turbo", token: "tt", cacheToken: "ct" };
 		expect(boxEnv(job, { turboCache: true }, "t", turbo)).toMatchObject({ TURBO_API: "https://qf.example/turbo", TURBO_TEAM: "quality-flare", TURBO_TOKEN: "tt" });
 		expect(boxEnv(job, { turboCache: true }, "t", turbo)).not.toHaveProperty("TURBO_FORCE");
 		expect(boxEnv({ ...job, full: true }, { turboCache: true }, "t", turbo)).toMatchObject({ TURBO_FORCE: "true" });
 		expect(boxEnv(job, {}, "t")).not.toHaveProperty("TURBO_API");
+	});
+
+	it("gives the container the paths its runs keep, apart from Turborepo's cache", () => {
+		const job = { repo: "octo/app", sha: "abc", base: "main", startedAt: 1_000 };
+		const turbo = { api: "https://qf.example/turbo", token: "tt", cacheToken: "ct" };
+		const cache = [".cache/eslint", "tsconfig.tsbuildinfo"];
+		expect(boxEnv(job, { cache }, "t", turbo)).toMatchObject({ CACHE_PATHS: ".cache/eslint\ntsconfig.tsbuildinfo", CACHE_API: "https://qf.example/turbo", CACHE_TOKEN: "ct", DEADLINE: String(1_000 + BOX_DEADLINE_MS) });
+		expect(boxEnv(job, { cache }, "t", turbo)).not.toHaveProperty("TURBO_API");
+		expect(boxEnv(job, { turboCache: true }, "t", turbo)).not.toHaveProperty("CACHE_PATHS");
+		expect(boxEnv(job, { cache, install: "./scripts/install.sh" }, "t", turbo)).not.toHaveProperty("CACHE_PATHS");
+	});
+
+	it("lets only the daily full run's install become the repository's snapshot", () => {
+		const daily = { repo: "octo/app", sha: "abc", base: "main", full: true as const };
+		expect(boxEnv(daily, { snapshot: true }, "t")).toMatchObject({ SNAPSHOT: "1" });
+		expect(boxEnv(daily, {}, "t")).not.toHaveProperty("SNAPSHOT");
+		expect(boxEnv({ repo: "octo/app", sha: "abc", base: "main" }, { snapshot: true }, "t")).not.toHaveProperty("SNAPSHOT");
+		expect(boxEnv(daily, { snapshot: true, install: "./scripts/install.sh" }, "t")).not.toHaveProperty("SNAPSHOT");
 	});
 
 	it("reads the container section of quality-flare.json apart from the tests section", () => {
@@ -273,6 +291,12 @@ describe("Container tests", () => {
 		expect(invalid({ changed: "yes" })).toThrow(/"container.changed" deve ser true ou false/);
 		expect(invalid({ alwaysRun: "bin/" })).toThrow(/"container.alwaysRun" deve ser uma lista/);
 		expect(invalid({ turboCache: 1 })).toThrow(/"container.turboCache" deve ser true ou false/);
+		expect(invalid({ snapshot: "yes" })).toThrow(/"container.snapshot" deve ser true ou false/);
+		expect(invalid({ cache: ".eslintcache" })).toThrow(/"container.cache" deve ser uma lista/);
+		expect(invalid({ cache: ["/etc"] })).toThrow(/dentro do repositório/);
+		expect(invalid({ cache: ["a/../../b"] })).toThrow(/dentro do repositório/);
+		for (const root of [".", "./", ".git", "./.git/objects"]) expect(invalid({ cache: [root] })).toThrow(/fora da .git e abaixo da raiz/);
+		expect(readContainerConfig(JSON.stringify({ container: { cache: ["node_modules/.cache/eslint"] } }))).toEqual({ cache: ["node_modules/.cache/eslint"] });
 		expect(readContainerConfig(JSON.stringify({ container: { changed: true, turboCache: true } }))).toEqual({ changed: true, turboCache: true });
 		expect(invalid({ commands: ["npm run lint"] })).toThrow(/"container.commands" deve ligar/);
 		expect(invalid({ commands: { Lint: 1 } })).toThrow(/"container.commands" deve ligar/);
