@@ -275,6 +275,7 @@ describe("Container tests", () => {
 		const job = { repo: "octo/app", sha: "abc", base: "main" };
 		expect(boxEnv(job, { snapshot: true }, "t")).toMatchObject({ SNAPSHOT: "1" });
 		expect(boxEnv(job, {}, "t")).not.toHaveProperty("SNAPSHOT");
+		expect(boxEnv(job, { snapshot: true, install: "make deps" }, "t")).not.toHaveProperty("SNAPSHOT");
 	});
 
 	it("reads the container section of quality-flare.json apart from the tests section", () => {

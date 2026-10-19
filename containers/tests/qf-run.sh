@@ -86,10 +86,12 @@ merge_base() {
 	return 1
 }
 
-# Runs a command with the files the install depends on appended: the lockfile and every package.json
-# (without a lockfile, npm installs from those).
+# Runs a command with the files the install depends on appended: the lockfile, every package.json (without a
+# lockfile, npm installs from those) and the package managers' own config, which can run code (.pnpmfile.cjs,
+# Yarn plugins) or change where packages come from.
 with_dependency_files() {
-	"$@" package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb ':(glob)**/package.json'
+	"$@" package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb ':(glob)**/package.json' \
+		.npmrc .pnpmfile.cjs pnpm-workspace.yaml .yarnrc .yarnrc.yml .yarn/plugins bunfig.toml
 }
 
 # Skipped when the container came from a snapshot that installed the same dependency files (and command).

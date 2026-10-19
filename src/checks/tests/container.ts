@@ -422,7 +422,8 @@ export function boxEnv(
 		// A full run checks what the cache would vouch for: it builds everything, and still fills the cache.
 		...(turbo && config.turboCache ? { TURBO_API: turbo.api, TURBO_TEAM: "quality-flare", TURBO_TOKEN: turbo.token, ...(job.full ? { TURBO_FORCE: "true" } : {}) } : {}),
 		...(turbo && config.cache?.length ? { CACHE_PATHS: config.cache.join("\n"), CACHE_API: turbo.api, CACHE_TOKEN: turbo.token } : {}),
-		...(config.snapshot ? { SNAPSHOT: "1" } : {}),
+		// A custom install runs as root before the snapshot, so it could leave anything in it for later runs.
+		...(config.snapshot && !config.install ? { SNAPSHOT: "1" } : {}),
 		...(config.install ? { INSTALL: config.install } : {}),
 		...(config.vitestArgs?.length ? { VITEST_ARGS: config.vitestArgs.join("\n") } : {}),
 		...(commands.length ? { COMMANDS: String(commands.length) } : {}),
