@@ -27,6 +27,9 @@
 set -u
 
 OUT=/work/out
+# Kept out of the steps' environment: the repository's code has no use for the cache token.
+CACHE_AUTH=${CACHE_TOKEN:-}
+unset CACHE_TOKEN
 # A container from a snapshot still has the earlier run's output.
 rm -rf "$OUT"
 mkdir -p "$OUT" /work/repo
@@ -193,23 +196,38 @@ cache_url() {
 	echo "$CACHE_API/v8/artifacts/qf-files-$({ with_dependency_files git ls-files -z -- | sort -z | xargs -0 -r sha256sum; echo "${INSTALL:-}"; echo "$CACHE_PATHS"; } | sha256sum | cut -c1-32)"
 }
 
+# Any run of the repository can upload under this key, PR code included, so the archive is untrusted: only plain
+# files and directories, and only the configured paths come out of it, so it can't touch the checkout.
 restore_cache() {
-	curl -fsS --max-time 60 -H "Authorization: Bearer $CACHE_TOKEN" -o /work/cache.tgz "$(cache_url)" &&
-		tar -xzf /work/cache.tgz && echo "Cache restaurado: $(du -h /work/cache.tgz | cut -f1)."
+	local paths=() path members=() listing
+	mapfile -t paths <<<"$CACHE_PATHS"
+	if curl -fsS --max-time 60 -H "Authorization: Bearer $CACHE_AUTH" -o /work/cache.tgz "$(cache_url)" &&
+		listing=$(tar -tvzf /work/cache.tgz); then
+		if cut -c1 <<<"$listing" | grep -qv '[-d]'; then
+			echo "Cache ignorado: tem links ou arquivos especiais."
+		else
+			listing=$(tar -tzf /work/cache.tgz)
+			for path in "${paths[@]}"; do grep -qxF -e "$path" -e "$path/" <<<"$listing" && members+=("$path"); done
+			((${#members[@]})) && tar -xzf /work/cache.tgz -- "${members[@]}" &&
+				echo "Cache restaurado: $(du -h /work/cache.tgz | cut -f1)."
+		fi
+	fi
 	rm -f /work/cache.tgz
 }
 
 # Not after a step that hit its time limit (124) or was killed (137: timeout's SIGKILL, or out of memory): a tool
-# stopped mid-write can leave its cache broken.
+# stopped mid-write can leave its cache broken. Nor late in the run: `done` waits for the save, and past
+# TestBox's 20-minute deadline (BOX_DEADLINE_MS) the whole run fails.
 save_cache() {
 	local paths=() path present=()
 	if grep -Eq ' (124|137) ' "$OUT/steps"; then echo "Cache não salvo: um passo passou do limite ou foi morto."; return; fi
+	if ((SECONDS > 16 * 60)); then echo "Cache não salvo: a execução está perto do limite de 20 minutos."; return; fi
 	mapfile -t paths <<<"$CACHE_PATHS"
 	for path in "${paths[@]}"; do [ -e "$path" ] && present+=("$path"); done
 	((${#present[@]})) || return 0
 	tar -czf /work/cache.tgz "${present[@]}" &&
 		if (($(stat -c %s /work/cache.tgz) > 90 * 1024 * 1024)); then echo "Cache não salvo: passa de 90 MB."
-		else curl -fsS --max-time 120 -X PUT -H "Authorization: Bearer $CACHE_TOKEN" -H "Content-Type: application/octet-stream" \
+		else curl -fsS --max-time 60 -X PUT -H "Authorization: Bearer $CACHE_AUTH" -H "Content-Type: application/octet-stream" \
 			--data-binary @/work/cache.tgz "$(cache_url)" >/dev/null && echo "Cache salvo: $(du -h /work/cache.tgz | cut -f1)."
 		fi
 	rm -f /work/cache.tgz
