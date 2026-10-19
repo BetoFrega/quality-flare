@@ -269,6 +269,7 @@ describe("Container tests", () => {
 		expect(boxEnv(job, { cache }, "t", turbo)).toMatchObject({ CACHE_PATHS: ".cache/eslint\ntsconfig.tsbuildinfo", CACHE_API: "https://qf.example/turbo", CACHE_TOKEN: "tt" });
 		expect(boxEnv(job, { cache }, "t", turbo)).not.toHaveProperty("TURBO_API");
 		expect(boxEnv(job, { turboCache: true }, "t", turbo)).not.toHaveProperty("CACHE_PATHS");
+		expect(boxEnv(job, { cache, install: "./scripts/install.sh" }, "t", turbo)).not.toHaveProperty("CACHE_PATHS");
 	});
 
 	it("lets only the daily full run's install become the repository's snapshot", () => {

@@ -434,7 +434,8 @@ export function boxEnv(
 		...(job.full ? { FULL: "1" } : job.changed ? { CHANGED: "1", ...(config.alwaysRun?.length ? { ALWAYS_RUN: config.alwaysRun.join("\n") } : {}) } : {}),
 		// A full run checks what the cache would vouch for: it builds everything, and still fills the cache.
 		...(turbo && config.turboCache ? { TURBO_API: turbo.api, TURBO_TEAM: "quality-flare", TURBO_TOKEN: turbo.token, ...(job.full ? { TURBO_FORCE: "true" } : {}) } : {}),
-		...(turbo && config.cache?.length ? { CACHE_PATHS: config.cache.join("\n"), CACHE_API: turbo.api, CACHE_TOKEN: turbo.token } : {}),
+		// Like snapshots, off with a custom `install`: what it installs isn't in the cache key.
+		...(turbo && config.cache?.length && !config.install ? { CACHE_PATHS: config.cache.join("\n"), CACHE_API: turbo.api, CACHE_TOKEN: turbo.token } : {}),
 		// The install runs as root and the snapshot keeps the whole filesystem, so only the default branch's own code
 		// (the daily full run) may produce one: a PR's lockfile, package manager config or install command could leave
 		// anything in it for the runs after. PR runs only start from it.

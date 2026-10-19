@@ -232,7 +232,8 @@ save_cache() {
 	mapfile -t paths <<<"$CACHE_PATHS"
 	for path in "${paths[@]}"; do [ -e "$path" ] && present+=("$path"); done
 	((${#present[@]})) || return 0
-	tar -czf /work/cache.tgz "${present[@]}" &&
+	# 16 minutes, then up to 60 s to compress and 60 s to upload: still within the 20.
+	timeout 60 tar -czf /work/cache.tgz "${present[@]}" &&
 		if (($(stat -c %s /work/cache.tgz) > 90 * 1024 * 1024)); then echo "Cache não salvo: passa de 90 MB."
 		else curl -fsS --max-time 60 -X PUT -H "Authorization: Bearer $CACHE_AUTH" -H "Content-Type: application/octet-stream" \
 			--data-binary @/work/cache.tgz "$(cache_url)" >/dev/null && echo "Cache salvo: $(du -h /work/cache.tgz | cut -f1)."
