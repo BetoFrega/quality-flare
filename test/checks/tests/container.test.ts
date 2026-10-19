@@ -263,10 +263,10 @@ describe("Container tests", () => {
 	});
 
 	it("gives the container the paths its runs keep, apart from Turborepo's cache", () => {
-		const job = { repo: "octo/app", sha: "abc", base: "main" };
+		const job = { repo: "octo/app", sha: "abc", base: "main", startedAt: 1_000 };
 		const turbo = { api: "https://qf.example/turbo", token: "tt" };
 		const cache = [".cache/eslint", "tsconfig.tsbuildinfo"];
-		expect(boxEnv(job, { cache }, "t", turbo)).toMatchObject({ CACHE_PATHS: ".cache/eslint\ntsconfig.tsbuildinfo", CACHE_API: "https://qf.example/turbo", CACHE_TOKEN: "tt" });
+		expect(boxEnv(job, { cache }, "t", turbo)).toMatchObject({ CACHE_PATHS: ".cache/eslint\ntsconfig.tsbuildinfo", CACHE_API: "https://qf.example/turbo", CACHE_TOKEN: "tt", DEADLINE: String(1_000 + BOX_DEADLINE_MS) });
 		expect(boxEnv(job, { cache }, "t", turbo)).not.toHaveProperty("TURBO_API");
 		expect(boxEnv(job, { turboCache: true }, "t", turbo)).not.toHaveProperty("CACHE_PATHS");
 		expect(boxEnv(job, { cache, install: "./scripts/install.sh" }, "t", turbo)).not.toHaveProperty("CACHE_PATHS");

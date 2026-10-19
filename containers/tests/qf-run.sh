@@ -19,7 +19,7 @@
 # COMMANDS (how many) with COMMAND_1, COMMAND_2… (shell commands, run as steps command1…), CHANGED=1
 # (only the tests that depend on what the PR changed, plus ALWAYS_RUN) or FULL=1 (SHA on its own, everything;
 # Turborepo's --affected sees every package changed), CACHE_PATHS (one path per line) with CACHE_API and
-# CACHE_TOKEN, and SNAPSHOT=1 (only on the daily full run, which runs the default branch's own code: offer this
+# CACHE_TOKEN and DEADLINE (when TestBox gives up on the run, epoch ms), and SNAPSHOT=1 (only on the daily full run, which runs the default branch's own code: offer this
 # install to TestBox as the repository's snapshot).
 #
 # With the config's `snapshot`, the container may start from the snapshot of a daily run (TestBox decides): /work/repo
@@ -121,10 +121,13 @@ with_dependency_files() {
 # Whether a later run may reuse this install (snapshot, skipped install, file cache): only when the files hashed
 # above say all it depends on. That needs a lockfile, which pins local tarballs (file:vendor/dep.tgz) by hash too,
 # and npm or pnpm: Yarn (.yarnrc's yarn-path, .yarnrc.yml's yarnPath, plugins and linkers) can run code from
-# anywhere its config points, and a Bun lock alone still gets `npm install`.
+# anywhere its config points, and a Bun lock alone still gets `npm install`. Nor with pnpm's injected workspace
+# packages: node_modules holds copies of their sources, which no hash above covers.
 reusable_install() {
 	[ -n "$(git ls-files -- package-lock.json npm-shrinkwrap.json pnpm-lock.yaml | head -1)" ] &&
-		[ -z "$(git ls-files -- yarn.lock .yarnrc .yarnrc.yml | head -1)" ]
+		[ -z "$(git ls-files -- yarn.lock .yarnrc .yarnrc.yml | head -1)" ] &&
+		! git grep -qiE 'inject-?workspace-?packages|"?injected"?[[:space:]]*:[[:space:]]*true' -- \
+			pnpm-workspace.yaml .npmrc pnpm-lock.yaml ':(glob)**/package.json'
 }
 
 # Skipped when the container came from a snapshot that installed the same dependency files (and command).
@@ -271,15 +274,15 @@ restore_cache() {
 
 # Not after a step that hit its time limit (124) or was killed (137: timeout's SIGKILL, or out of memory): a tool
 # stopped mid-write can leave its cache broken. Nor late in the run: `done` waits for the save, and past
-# TestBox's 20-minute deadline (BOX_DEADLINE_MS) the whole run fails.
+# DEADLINE (TestBox's BOX_DEADLINE_MS, counted from before the container started) the whole run fails.
 save_cache() {
 	local paths=() path present=()
 	if grep -Eq ' (124|137) ' "$OUT/steps"; then echo "Cache não salvo: um passo passou do limite ou foi morto."; return; fi
-	if ((SECONDS > 16 * 60)); then echo "Cache não salvo: a execução está perto do limite de 20 minutos."; return; fi
+	if (($(date +%s%3N) > ${DEADLINE:-0} - 4 * 60000)); then echo "Cache não salvo: a execução está perto do limite de 20 minutos."; return; fi
 	mapfile -t paths <<<"$CACHE_PATHS"
 	for path in "${paths[@]}"; do [ -e "$path" ] && present+=("$path"); done
 	((${#present[@]})) || return 0
-	# 16 minutes, then up to 60 s to compress and 60 s to upload: still within the 20.
+	# Up to 60 s to compress and 60 s to upload, then TestBox's next poll: within the 4 minutes left.
 	timeout 60 tar -czf /work/cache.tgz -- "${present[@]}" &&
 		if (($(stat -c %s /work/cache.tgz) > 90 * 1024 * 1024)); then echo "Cache não salvo: passa de 90 MB."
 		else curl -fsS --max-time 60 -X PUT -H "Authorization: Bearer $CACHE_AUTH" -H "Content-Type: application/octet-stream" \

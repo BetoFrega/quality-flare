@@ -426,7 +426,7 @@ export async function alertFullRun(github: Pick<GitHubClient, "createIssue">, jo
 
 /** The container's environment (see qf-run.sh). */
 export function boxEnv(
-	job: Pick<BoxJob, "repo" | "sha" | "base" | "changed" | "full">,
+	job: Pick<BoxJob, "repo" | "sha" | "base" | "changed" | "full" | "startedAt">,
 	config: ContainerConfig,
 	token: string,
 	turbo?: { api: string; token: string },
@@ -441,7 +441,7 @@ export function boxEnv(
 		// A full run checks what the cache would vouch for: it builds everything, and still fills the cache.
 		...(turbo && config.turboCache ? { TURBO_API: turbo.api, TURBO_TEAM: "quality-flare", TURBO_TOKEN: turbo.token, ...(job.full ? { TURBO_FORCE: "true" } : {}) } : {}),
 		// Like snapshots, off with a custom `install`: what it installs isn't in the cache key.
-		...(turbo && config.cache?.length && !config.install ? { CACHE_PATHS: config.cache.join("\n"), CACHE_API: turbo.api, CACHE_TOKEN: turbo.token } : {}),
+		...(turbo && config.cache?.length && !config.install ? { CACHE_PATHS: config.cache.join("\n"), CACHE_API: turbo.api, CACHE_TOKEN: turbo.token, DEADLINE: String(job.startedAt + BOX_DEADLINE_MS) } : {}),
 		// The install runs as root and the snapshot keeps the whole filesystem, so only the default branch's own code
 		// (the daily full run) may produce one: a PR's lockfile, package manager config or install command could leave
 		// anything in it for the runs after. PR runs only start from it.
