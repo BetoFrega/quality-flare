@@ -118,11 +118,14 @@ with_dependency_files() {
 		bunfig.toml "${configured[@]}"
 }
 
-# The lockfile pins local tarballs (file:vendor/dep.tgz) by hash too; without one, npm installs whatever they hold
-# now, which no key here sees. So no reuse then: no snapshot, no skipped install, no file cache. Only the locks
-# install_dependencies installs from count: a Bun lock alone still gets `npm install`.
-has_lockfile() {
-	[ -n "$(git ls-files -- package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock | head -1)" ]
+# Whether a later run may reuse this install (snapshot, skipped install, file cache): only when the files hashed
+# above say all it depends on. The lockfile pins local tarballs (file:vendor/dep.tgz) by hash too; without one, npm
+# installs whatever they hold now. Only the locks install_dependencies installs from count: a Bun lock alone still
+# gets `npm install`. Not Yarn 2+ (.yarnrc.yml), whose plugins and linkers can load code from anywhere and whose
+# default PnP install leaves no node_modules to reuse.
+reusable_install() {
+	[ -n "$(git ls-files -- package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock | head -1)" ] &&
+		[ -z "$(git ls-files -- .yarnrc.yml | head -1)" ]
 }
 
 # Skipped when the container came from a snapshot that installed the same dependency files (and command).
@@ -130,7 +133,7 @@ has_lockfile() {
 install() {
 	local key
 	key=$({ with_dependency_files git ls-files -z -- | sort -z | xargs -0 -r sha256sum --; echo "${INSTALL:-}"; } | sha256sum | cut -d' ' -f1)
-	if has_lockfile && [ -d node_modules ] && [ "$(cat /work/installed 2>/dev/null)" = "$key" ]; then
+	if reusable_install && [ -d node_modules ] && [ "$(cat /work/installed 2>/dev/null)" = "$key" ]; then
 		echo "Dependências já instaladas: o container veio de um snapshot com o mesmo lockfile e os mesmos package.json."
 		return
 	fi
@@ -138,7 +141,7 @@ install() {
 	install_dependencies || return
 	echo "$key" >/work/installed
 	# A PR that changes them would leave a snapshot most PRs can't use.
-	if [ -n "${SNAPSHOT:-}" ] && has_lockfile && with_dependency_files git diff --quiet "origin/$BASE" HEAD --; then
+	if [ -n "${SNAPSHOT:-}" ] && reusable_install && with_dependency_files git diff --quiet "origin/$BASE" HEAD --; then
 		wait_for_snapshot
 	fi
 }
@@ -245,7 +248,7 @@ restore_cache() {
 	if curl -fsS --max-time 60 -H "Authorization: Bearer $CACHE_AUTH" -o /work/cache.tgz "$(cache_url)" &&
 		# A small archive can list endlessly: one entry past the limit below, or a minute, and tar is cut off, which
 		# drops the cache.
-		listing=$(set -o pipefail; timeout 60 tar -tvzf /work/cache.tgz | head -n 200001); then
+		listing=$(set -o pipefail; timeout 60 tar --numeric-owner -tvzf /work/cache.tgz | head -n 200001); then
 		if cut -c1 <<<"$listing" | grep -qv '[-d]'; then
 			echo "Cache ignorado: tem links ou arquivos especiais."
 		elif (($(awk '{ total += $3 } END { printf "%d", total }' <<<"$listing") > 2 * 1024 * 1024 * 1024)); then
@@ -299,7 +302,7 @@ commands() {
 }
 
 export OUT
-export -f step config_path with_dependency_files has_lockfile clone clean_snapshot merge_base compare_with_nothing install install_dependencies wait_for_snapshot affected related_index tests run_command commands
+export -f step config_path with_dependency_files reusable_install clone clean_snapshot merge_base compare_with_nothing install install_dependencies wait_for_snapshot affected related_index tests run_command commands
 
 run() {
 	cd /work/repo || return
@@ -313,7 +316,7 @@ run() {
 	step install 600 || return
 	# Not on the full run: PR runs write this cache too, and the full run checks everything afresh (as with
 	# TURBO_FORCE). It still saves its own.
-	has_lockfile || CACHE_PATHS=
+	reusable_install || CACHE_PATHS=
 	[ -n "${CACHE_PATHS:-}" ] && [ -z "${FULL:-}" ] && restore_cache >>"$OUT/cache.log" 2>&1
 	# The commands run one after another alongside the tests: alone, the tests leave vCPUs idle and
 	# lint or typecheck use about one. At the lowest priority, so the tests keep the CPU their timeouts
