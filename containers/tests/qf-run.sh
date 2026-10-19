@@ -94,9 +94,11 @@ merge_base() {
 # lockfile, npm installs from those) and the package managers' own config, which can run code (.pnpmfile.cjs,
 # all of .yarn but its package cache, whatever yarnPath runs) or change where packages come from.
 with_dependency_files() {
+	local yarn_path
+	yarn_path=$(sed -n 's/^yarnPath: *["'"'"']\{0,1\}\([^"'"'"']*\).*/\1/p' .yarnrc.yml 2>/dev/null)
 	"$@" package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb ':(glob)**/package.json' \
 		.npmrc .pnpmfile.cjs pnpm-workspace.yaml .yarnrc .yarnrc.yml .yarn ':(exclude).yarn/cache' bunfig.toml \
-		$(sed -n 's/^yarnPath: *["'"'"']\{0,1\}\([^"'"'"']*\).*/\1/p' .yarnrc.yml 2>/dev/null)
+		${yarn_path:+"$yarn_path"}
 }
 
 # The lockfile pins local tarballs (file:vendor/dep.tgz) by hash too; without one, npm installs whatever they hold
@@ -110,7 +112,7 @@ has_lockfile() {
 # /work/installed says which; it goes first, so a failed install never claims one.
 install() {
 	local key
-	key=$({ with_dependency_files git ls-files -z -- | sort -z | xargs -0 -r sha256sum; echo "${INSTALL:-}"; } | sha256sum | cut -d' ' -f1)
+	key=$({ with_dependency_files git ls-files -z -- | sort -z | xargs -0 -r sha256sum --; echo "${INSTALL:-}"; } | sha256sum | cut -d' ' -f1)
 	if has_lockfile && [ -d node_modules ] && [ "$(cat /work/installed 2>/dev/null)" = "$key" ]; then
 		echo "Dependências já instaladas: o container veio de um snapshot com o mesmo lockfile e os mesmos package.json."
 		return
@@ -202,7 +204,7 @@ related_index() {
 # and cached paths, so a change to any of them starts the cache over. Restored after the install, which may empty
 # node_modules; saved at the end. Both are best effort: without them the tools only take longer.
 cache_url() {
-	echo "$CACHE_API/v8/artifacts/qf-files-$({ with_dependency_files git ls-files -z -- | sort -z | xargs -0 -r sha256sum; echo "${INSTALL:-}"; echo "$CACHE_PATHS"; } | sha256sum | cut -c1-32)"
+	echo "$CACHE_API/v8/artifacts/qf-files-$({ with_dependency_files git ls-files -z -- | sort -z | xargs -0 -r sha256sum --; echo "${INSTALL:-}"; echo "$CACHE_PATHS"; } | sha256sum | cut -c1-32)"
 }
 
 # Any run of the repository can upload under this key, PR code included, so the archive is untrusted: only plain
@@ -224,7 +226,9 @@ restore_cache() {
 	local paths=() path members=() listing
 	mapfile -t paths <<<"$CACHE_PATHS"
 	if curl -fsS --max-time 60 -H "Authorization: Bearer $CACHE_AUTH" -o /work/cache.tgz "$(cache_url)" &&
-		listing=$(tar -tvzf /work/cache.tgz); then
+		# A small archive can list endlessly: one entry past the limit below, or a minute, and tar is cut off, which
+		# drops the cache.
+		listing=$(set -o pipefail; timeout 60 tar -tvzf /work/cache.tgz | head -n 200001); then
 		if cut -c1 <<<"$listing" | grep -qv '[-d]'; then
 			echo "Cache ignorado: tem links ou arquivos especiais."
 		elif (($(awk '{ total += $3 } END { printf "%d", total }' <<<"$listing") > 2 * 1024 * 1024 * 1024)); then
