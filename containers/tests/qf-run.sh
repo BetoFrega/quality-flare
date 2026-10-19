@@ -92,10 +92,11 @@ merge_base() {
 
 # Runs a command with the files the install depends on appended: the lockfile, every package.json (without a
 # lockfile, npm installs from those) and the package managers' own config, which can run code (.pnpmfile.cjs,
-# Yarn plugins) or change where packages come from.
+# everything in .yarn but its package cache: plugins, releases run by yarnPath, patches) or change where packages
+# come from.
 with_dependency_files() {
 	"$@" package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb ':(glob)**/package.json' \
-		.npmrc .pnpmfile.cjs pnpm-workspace.yaml .yarnrc .yarnrc.yml .yarn/plugins bunfig.toml
+		.npmrc .pnpmfile.cjs pnpm-workspace.yaml .yarnrc .yarnrc.yml .yarn ':(exclude).yarn/cache' bunfig.toml
 }
 
 # Skipped when the container came from a snapshot that installed the same dependency files (and command).
@@ -200,8 +201,8 @@ cache_url() {
 # Any run of the repository can upload under this key, PR code included, so the archive is untrusted: only plain
 # files and directories up to 2 GB in all, and only the configured paths that hold no tracked file come out of
 # it, so it can't touch the checkout or fill the disk.
-# under_symlink <path>: whether the path or one of its parent directories is a symlink.
-under_symlink() {
+# touches_symlink <path>: whether the path, a parent directory or anything below it is a symlink.
+touches_symlink() {
 	local prefix="" part parts=()
 	IFS=/ read -ra parts <<<"$1"
 	for part in "${parts[@]}"; do
@@ -209,7 +210,7 @@ under_symlink() {
 		prefix+=${prefix:+/}$part
 		[ -L "$prefix" ] && return 0
 	done
-	return 1
+	[ -n "$(find "$1" -type l -print -quit 2>/dev/null)" ]
 }
 
 restore_cache() {
@@ -226,7 +227,7 @@ restore_cache() {
 			for path in "${paths[@]}"; do
 				[ -n "$(git ls-files -- "$path" | head -1)" ] && continue
 				# git doesn't look through symlinks but tar does: under `link -> .`, link/x would land on tracked x.
-				under_symlink "$path" && continue
+				touches_symlink "$path" && continue
 				grep -qxF -e "$path" -e "$path/" <<<"$listing" && members+=("$path")
 			done
 			((${#members[@]})) && tar -xzf /work/cache.tgz -- "${members[@]}" &&
