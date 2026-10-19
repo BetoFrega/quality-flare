@@ -291,6 +291,8 @@ export class TestBox {
 				}
 				if (job.restored) {
 					await this.forgetSnapshot(job.repo, job.restored);
+					// A restore still starting would hold the instance the image needs.
+					await container.destroy().catch(() => {});
 					await this.ctx.storage.put("job", { ...(await this.start(container, job, config, true)), fallbackAt: Date.now() });
 					await this.ctx.storage.setAlarm(Date.now() + POLL_MS);
 					return;
