@@ -281,7 +281,8 @@ export class TestBox {
 		const config = (await this.ctx.storage.get<ContainerConfig>("config")) ?? {};
 		const container = this.ctx.container;
 		if (!job || !container) return;
-		if ((job.restored || job.fallbackAt) && !(await this.ctx.storage.get("seen"))) {
+		// A cancelled run (its job gone) skips the wait: pollBox below abandons it at once.
+		if ((job.restored || job.fallbackAt) && !(await this.ctx.storage.get("seen")) && (await d1JobStore(this.env.RUNS).get(job.runId))) {
 			if (!container.running) {
 				// A big snapshot takes a while to restore; one that never comes up (expired, say) is forgotten, and
 				// the run starts over from the image, which gets the same time to come up.
