@@ -42,7 +42,10 @@ export const CONTAINER_PRICES = {
 
 /** How often TestBox reads the container's progress. */
 export const POLL_MS = 10_000;
-/** How long a container may take to come up from a snapshot before the run gives up on it and starts from the image. */
+/**
+ * How long a container may take to come up from a snapshot before the run gives up on it and starts from the image,
+ * and then how long that image gets.
+ */
 export const RESTORE_WAIT_MS = 2 * 60_000;
 
 /**
@@ -83,6 +86,8 @@ export interface BoxJob {
 	full?: true;
 	/** The snapshot its container started from (see TestBox.start). */
 	restored?: string;
+	/** When the image was started instead of a snapshot that never came up (epoch milliseconds). */
+	fallbackAt?: number;
 }
 
 /** The last snapshot kept for a repository (the config's `snapshot`), in SETTINGS under snapshotKey. */
@@ -276,20 +281,21 @@ export class TestBox {
 		const config = (await this.ctx.storage.get<ContainerConfig>("config")) ?? {};
 		const container = this.ctx.container;
 		if (!job || !container) return;
-		if (job.restored && !(await this.ctx.storage.get("seen"))) {
+		if ((job.restored || job.fallbackAt) && !(await this.ctx.storage.get("seen"))) {
 			if (!container.running) {
 				// A big snapshot takes a while to restore; one that never comes up (expired, say) is forgotten, and
-				// the run starts over from the image.
-				if (Date.now() - job.startedAt < RESTORE_WAIT_MS) {
+				// the run starts over from the image, which gets the same time to come up.
+				if (Date.now() - (job.fallbackAt ?? job.startedAt) < RESTORE_WAIT_MS) {
 					await this.ctx.storage.setAlarm(Date.now() + POLL_MS);
 					return;
 				}
-				await this.forgetSnapshot(job.repo, job.restored);
-				await this.ctx.storage.put("job", await this.start(container, job, config, true));
-				await this.ctx.storage.setAlarm(Date.now() + POLL_MS);
-				return;
-			}
-			await this.ctx.storage.put("seen", true);
+				if (job.restored) {
+					await this.forgetSnapshot(job.repo, job.restored);
+					await this.ctx.storage.put("job", { ...(await this.start(container, job, config, true)), fallbackAt: Date.now() });
+					await this.ctx.storage.setAlarm(Date.now() + POLL_MS);
+					return;
+				}
+			} else await this.ctx.storage.put("seen", true);
 		}
 		if (usesSnapshot(config) && container.running) await this.takeSnapshot(container, job).catch(logError);
 		const live = livePublisher(this.env.LIVE);

@@ -99,12 +99,18 @@ with_dependency_files() {
 		.npmrc .pnpmfile.cjs pnpm-workspace.yaml .yarnrc .yarnrc.yml .yarn ':(exclude).yarn/cache' bunfig.toml
 }
 
+# The lockfile pins local tarballs (file:vendor/dep.tgz) by hash too; without one, npm installs whatever they hold
+# now, which no key here sees. So no reuse then: no snapshot, no skipped install, no file cache.
+has_lockfile() {
+	[ -n "$(git ls-files -- package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb | head -1)" ]
+}
+
 # Skipped when the container came from a snapshot that installed the same dependency files (and command).
 # /work/installed says which; it goes first, so a failed install never claims one.
 install() {
 	local key
 	key=$({ with_dependency_files git ls-files -z -- | sort -z | xargs -0 -r sha256sum; echo "${INSTALL:-}"; } | sha256sum | cut -d' ' -f1)
-	if [ -d node_modules ] && [ "$(cat /work/installed 2>/dev/null)" = "$key" ]; then
+	if has_lockfile && [ -d node_modules ] && [ "$(cat /work/installed 2>/dev/null)" = "$key" ]; then
 		echo "Dependências já instaladas: o container veio de um snapshot com o mesmo lockfile e os mesmos package.json."
 		return
 	fi
@@ -112,7 +118,7 @@ install() {
 	install_dependencies || return
 	echo "$key" >/work/installed
 	# A PR that changes them would leave a snapshot most PRs can't use.
-	if [ -n "${SNAPSHOT:-}" ] && with_dependency_files git diff --quiet "origin/$BASE" HEAD --; then
+	if [ -n "${SNAPSHOT:-}" ] && has_lockfile && with_dependency_files git diff --quiet "origin/$BASE" HEAD --; then
 		wait_for_snapshot
 	fi
 }
@@ -210,7 +216,7 @@ touches_symlink() {
 		prefix+=${prefix:+/}$part
 		[ -L "$prefix" ] && return 0
 	done
-	[ -n "$(find "$1" -type l -print -quit 2>/dev/null)" ]
+	[ -n "$(find "./${1#./}" -type l -print -quit 2>/dev/null)" ]
 }
 
 restore_cache() {
@@ -248,7 +254,7 @@ save_cache() {
 	for path in "${paths[@]}"; do [ -e "$path" ] && present+=("$path"); done
 	((${#present[@]})) || return 0
 	# 16 minutes, then up to 60 s to compress and 60 s to upload: still within the 20.
-	timeout 60 tar -czf /work/cache.tgz "${present[@]}" &&
+	timeout 60 tar -czf /work/cache.tgz -- "${present[@]}" &&
 		if (($(stat -c %s /work/cache.tgz) > 90 * 1024 * 1024)); then echo "Cache não salvo: passa de 90 MB."
 		else curl -fsS --max-time 60 -X PUT -H "Authorization: Bearer $CACHE_AUTH" -H "Content-Type: application/octet-stream" \
 			--data-binary @/work/cache.tgz "$(cache_url)" >/dev/null && echo "Cache salvo: $(du -h /work/cache.tgz | cut -f1)."
@@ -269,7 +275,7 @@ commands() {
 }
 
 export OUT
-export -f step with_dependency_files clone clean_snapshot merge_base compare_with_nothing install install_dependencies wait_for_snapshot affected related_index tests run_command commands
+export -f step with_dependency_files has_lockfile clone clean_snapshot merge_base compare_with_nothing install install_dependencies wait_for_snapshot affected related_index tests run_command commands
 
 run() {
 	cd /work/repo || return
@@ -283,6 +289,7 @@ run() {
 	step install 600 || return
 	# Not on the full run: PR runs write this cache too, and the full run checks everything afresh (as with
 	# TURBO_FORCE). It still saves its own.
+	has_lockfile || CACHE_PATHS=
 	[ -n "${CACHE_PATHS:-}" ] && [ -z "${FULL:-}" ] && restore_cache >>"$OUT/cache.log" 2>&1
 	# The commands run one after another alongside the tests: alone, the tests leave vCPUs idle and
 	# lint or typecheck use about one. At the lowest priority, so the tests keep the CPU their timeouts
