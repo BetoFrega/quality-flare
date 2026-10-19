@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { handleTurboCache, tokenRepo, turboToken } from "../src/turbo-cache.ts";
+import { FILES_PREFIX, handleTurboCache, tokenRepo, turboToken } from "../src/turbo-cache.ts";
 
 /** The parts of R2Bucket the cache uses, in memory. */
 function fakeR2(): R2Bucket {
@@ -61,18 +61,25 @@ describe("Turborepo remote cache", () => {
 		expect((await call("octo/other", "GET", "/v8/artifacts/abc123")).status).toBe(404);
 	});
 
-	it("lets a read-only token read its repository's artifacts but not write them", async () => {
+	it("lets a read-only token read its repository's artifacts but not write them, and only a files token write the file cache", async () => {
 		const bucket = fakeR2();
-		const request = (token: string, method: string, body?: string) =>
-			handleTurboCache(new Request("https://qf.example/turbo/v8/artifacts/abc123", { method, body, headers: { Authorization: `Bearer ${token}` } }), bucket, SECRET);
-		const reader = await turboToken(SECRET, "octo/app", true);
+		const request = (token: string, method: string, hash: string, body?: string) =>
+			handleTurboCache(new Request(`https://qf.example/turbo/v8/artifacts/${hash}`, { method, body, headers: { Authorization: `Bearer ${token}` } }), bucket, SECRET);
+		const reader = await turboToken(SECRET, "octo/app", "read");
+		const writer = await turboToken(SECRET, "octo/app");
+		const files = await turboToken(SECRET, "octo/app", "files");
 		expect(await tokenRepo(SECRET, reader)).toBe("octo/app");
-		expect((await request(reader, "PUT", "forged")).status).toBe(403);
-		expect((await request(await turboToken(SECRET, "octo/app"), "PUT", "tarball")).status).toBe(202);
-		expect(await (await request(reader, "GET")).text()).toBe("tarball");
-		// Dropping the "r" doesn't make it a writer: the two are signed apart.
+		expect((await request(reader, "PUT", "abc123", "forged")).status).toBe(403);
+		expect((await request(writer, "PUT", "abc123", "tarball")).status).toBe(202);
+		expect(await (await request(reader, "GET", "abc123")).text()).toBe("tarball");
+		// The file cache: PR runs hold the default kind as TURBO_TOKEN, and it doesn't write there.
+		expect((await request(writer, "PUT", `${FILES_PREFIX}k`, "forged")).status).toBe(403);
+		expect((await request(files, "PUT", `${FILES_PREFIX}k`, "files")).status).toBe(202);
+		expect(await (await request(reader, "GET", `${FILES_PREFIX}k`)).text()).toBe("files");
+		// Dropping or swapping the letter doesn't change the kind: each is signed apart.
 		const [name, , mac] = reader.split(".");
 		expect(await tokenRepo(SECRET, `${name}.${mac}`)).toBeUndefined();
+		expect(await tokenRepo(SECRET, `${name}.f.${mac}`)).toBeUndefined();
 	});
 
 	it("refuses requests without a valid token, and keys that aren't hashes", async () => {

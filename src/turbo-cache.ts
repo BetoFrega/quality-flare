@@ -6,12 +6,19 @@
  * cache instead of running again. The bucket's lifecycle rule expires artifacts nobody wrote lately.
  *
  * The token is the repository plus an HMAC of it under the webhook secret, so it needs no storage
- * and a token one repository's code can read never opens another's artifacts. A read-only token
- * (an "r" between the two, signed apart) can't write: for runs whose code mustn't fill a cache
- * later runs trust.
+ * and a token one repository's code can read never opens another's artifacts. Two more kinds, a
+ * letter between the two and each signed apart: "r" only reads, for runs whose code mustn't fill a
+ * cache later runs trust; "f" also writes the Container tests file cache (FILES_PREFIX keys), which
+ * the default kind, the one PR runs get as TURBO_TOKEN, can't.
  */
 
 export const TURBO_PATH = "/turbo";
+
+/** The Container tests file cache's keys (qf-run.sh), which only "f" tokens write. */
+export const FILES_PREFIX = "qf-files-";
+
+export type TokenKind = "write" | "read" | "files";
+const LETTER = { read: "r", files: "f" } as const;
 
 /** Turborepo's hashes are hex; anything else is not a key of ours. */
 const HASH = /^[A-Za-z0-9_-]{1,128}$/;
@@ -19,20 +26,20 @@ const HASH = /^[A-Za-z0-9_-]{1,128}$/;
 const encoder = new TextEncoder();
 
 /** The token a repository's container runs get. */
-export async function turboToken(secret: string, repo: string, readOnly = false): Promise<string> {
-	const mac = b64(await sign(secret, scope(repo, readOnly)));
-	return readOnly ? `${b64(encoder.encode(repo))}.r.${mac}` : `${b64(encoder.encode(repo))}.${mac}`;
+export async function turboToken(secret: string, repo: string, kind: TokenKind = "write"): Promise<string> {
+	const mac = b64(await sign(secret, scope(repo, kind)));
+	return kind === "write" ? `${b64(encoder.encode(repo))}.${mac}` : `${b64(encoder.encode(repo))}.${LETTER[kind]}.${mac}`;
 }
 
-/** The repository a token was made for and whether it may write, or undefined when it isn't one of ours. */
-export async function tokenAccess(secret: string, token: string): Promise<{ repo: string; write: boolean } | undefined> {
+/** The repository a token was made for and its kind, or undefined when it isn't one of ours. */
+export async function tokenAccess(secret: string, token: string): Promise<{ repo: string; kind: TokenKind } | undefined> {
 	const parts = token.split(".");
-	const readOnly = parts.length === 3 && parts[1] === "r";
-	const [name, mac] = readOnly ? [parts[0], parts[2]] : parts.length === 2 ? parts : [];
-	if (!name || !mac) return undefined;
+	const kind = parts.length === 2 ? "write" : parts[1] === "r" ? "read" : parts[1] === "f" ? "files" : undefined;
+	const [name, mac] = parts.length === 2 ? parts : [parts[0], parts[2]];
+	if (!kind || parts.length > 3 || !name || !mac) return undefined;
 	const repo = new TextDecoder().decode(unb64(name));
-	const valid = await crypto.subtle.verify("HMAC", await hmacKey(secret), unb64(mac), encoder.encode(scope(repo, readOnly)));
-	return valid ? { repo, write: !readOnly } : undefined;
+	const valid = await crypto.subtle.verify("HMAC", await hmacKey(secret), unb64(mac), encoder.encode(scope(repo, kind)));
+	return valid ? { repo, kind } : undefined;
 }
 
 /** The repository a token was made for, or undefined when it isn't one of ours. */
@@ -61,7 +68,9 @@ export async function handleTurboCache(request: Request, bucket: R2Bucket, secre
 	if (!hash || !HASH.test(hash)) return new Response("Not found", { status: 404 });
 	switch (request.method) {
 		case "PUT": {
-			if (!access.write) return Response.json({ error: { code: "forbidden", message: "Token só de leitura" } }, { status: 403 });
+			if (access.kind === "read" || (hash.startsWith(FILES_PREFIX) && access.kind !== "files")) {
+				return Response.json({ error: { code: "forbidden", message: "Token sem escrita nesta chave" } }, { status: 403 });
+			}
 			if (!request.body) return new Response("Missing body", { status: 400 });
 			const customMetadata: Record<string, string> = { duration: request.headers.get("x-artifact-duration") ?? "0" };
 			const tag = request.headers.get("x-artifact-tag");
@@ -86,8 +95,8 @@ function key(repo: string, hash: string): string {
 	return `${repo.toLowerCase()}/${hash}`;
 }
 
-function scope(repo: string, readOnly: boolean): string {
-	return `${readOnly ? "turbo-cache-read" : "turbo-cache"}:${repo}`;
+function scope(repo: string, kind: TokenKind): string {
+	return `${kind === "write" ? "turbo-cache" : `turbo-cache-${kind}`}:${repo}`;
 }
 
 async function sign(secret: string, message: string): Promise<Uint8Array> {
