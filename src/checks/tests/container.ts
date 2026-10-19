@@ -297,7 +297,9 @@ export class TestBox {
 				}
 			} else await this.ctx.storage.put("seen", true);
 		}
-		if (usesSnapshot(config) && container.running) await this.takeSnapshot(container, job).catch(logError);
+		// Only the daily full run, which runs the default branch's own code, may offer its container: a PR's tests
+		// and commands can write the `snapshot` file too.
+		if (job.full && usesSnapshot(config) && container.running) await this.takeSnapshot(container, job).catch(logError);
 		const live = livePublisher(this.env.LIVE);
 		const next = await pollBox(job, {
 			now: Date.now,
