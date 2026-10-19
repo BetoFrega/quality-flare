@@ -220,19 +220,21 @@ restore_cache() {
 	local paths=() path members=() listing
 	mapfile -t paths <<<"$CACHE_PATHS"
 	if curl -fsS --max-time 60 -H "Authorization: Bearer $CACHE_AUTH" -o /work/cache.tgz "$(cache_url)" &&
-		# A small archive can list endlessly: one entry past the limit below, or a minute, and tar is cut off, which
-		# drops the cache.
-		listing=$(set -o pipefail; timeout 60 tar --numeric-owner -tvzf /work/cache.tgz | head -n 200001); then
+		# A small archive can list endlessly, or with huge names: one entry or byte past the limits below, or a
+		# minute, and tar is cut off, which drops the cache.
+		listing=$(set -o pipefail; timeout 60 tar --numeric-owner -tvzf /work/cache.tgz | head -c 64M | head -n 200001); then
 		if cut -c1 <<<"$listing" | grep -qv '[-d]'; then
 			echo "Cache ignorado: tem links ou arquivos especiais."
 		elif (($(awk '{ total += $3 } END { printf "%d", total }' <<<"$listing") > 2 * 1024 * 1024 * 1024)); then
 			echo "Cache ignorado: passa de 2 GB descompactado."
 		elif (($(wc -l <<<"$listing") > 200000)); then
 			echo "Cache ignorado: passa de 200 mil arquivos."
+		elif ! listing=$(set -o pipefail; timeout 60 tar -tzf /work/cache.tgz | head -c 64M); then
+			echo "Cache ignorado: a lista de arquivos passa de 64 MB."
 		else
-			listing=$(tar -tzf /work/cache.tgz)
 			for path in "${paths[@]}"; do
-				[ -n "$(git ls-files -- "$path" | head -1)" ] && continue
+				# Literal: a path such as ":(glob)x" would otherwise be pathspec magic and match no tracked file.
+				[ -n "$(git --literal-pathspecs ls-files -- "$path" | head -1)" ] && continue
 				# git doesn't look through symlinks but tar does: under `link -> .`, link/x would land on tracked x.
 				touches_symlink "$path" && continue
 				grep -qxF -e "$path" -e "$path/" <<<"$listing" && members+=("$path")
