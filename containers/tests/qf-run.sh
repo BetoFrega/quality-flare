@@ -200,6 +200,18 @@ cache_url() {
 # Any run of the repository can upload under this key, PR code included, so the archive is untrusted: only plain
 # files and directories up to 2 GB in all, and only the configured paths that hold no tracked file come out of
 # it, so it can't touch the checkout or fill the disk.
+# under_symlink <path>: whether the path or one of its parent directories is a symlink.
+under_symlink() {
+	local prefix="" part parts=()
+	IFS=/ read -ra parts <<<"$1"
+	for part in "${parts[@]}"; do
+		[ -z "$part" ] || [ "$part" = . ] && continue
+		prefix+=${prefix:+/}$part
+		[ -L "$prefix" ] && return 0
+	done
+	return 1
+}
+
 restore_cache() {
 	local paths=() path members=() listing
 	mapfile -t paths <<<"$CACHE_PATHS"
@@ -213,6 +225,8 @@ restore_cache() {
 			listing=$(tar -tzf /work/cache.tgz)
 			for path in "${paths[@]}"; do
 				[ -n "$(git ls-files -- "$path" | head -1)" ] && continue
+				# git doesn't look through symlinks but tar does: under `link -> .`, link/x would land on tracked x.
+				under_symlink "$path" && continue
 				grep -qxF -e "$path" -e "$path/" <<<"$listing" && members+=("$path")
 			done
 			((${#members[@]})) && tar -xzf /work/cache.tgz -- "${members[@]}" &&
