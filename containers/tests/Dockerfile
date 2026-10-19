@@ -10,7 +10,7 @@ RUN apt-get update \
 	&& corepack enable pnpm yarn
 
 COPY qf-run.sh /usr/local/bin/qf-run
-COPY qf-related.mjs qf-progress.mjs /usr/local/lib/
+COPY qf-related.mjs qf-progress.mjs qf-reusable.mjs /usr/local/lib/
 RUN chmod +x /usr/local/bin/qf-run
 
 WORKDIR /work

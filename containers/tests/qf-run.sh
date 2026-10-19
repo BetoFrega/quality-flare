@@ -97,18 +97,9 @@ with_dependency_files() {
 		.npmrc .pnpmfile.cjs .pnpmfile.mjs pnpm-workspace.yaml .yarnrc .yarnrc.yml .yarn ':(exclude).yarn/cache' bunfig.toml
 }
 
-# Whether a later run may reuse this install (snapshot, skipped install, file cache): only when the files hashed
-# above say all it depends on. That needs a lockfile, which pins local tarballs (file:vendor/dep.tgz) by hash too,
-# and npm or pnpm: Yarn (.yarnrc's yarn-path, .yarnrc.yml's yarnPath, plugins and linkers) can run code from
-# anywhere its config points, and a Bun lock alone still gets `npm install`. Nor with code that runs despite
-# --ignore-scripts, which can import any file: a pnpmfile (its own, one the config names, or a config
-# dependency's). Nor with pnpm's injected workspace packages: node_modules holds copies of their sources.
+# Whether a later run may reuse this install (snapshot, skipped install, file cache): see qf-reusable.mjs.
 reusable_install() {
-	[ -n "$(git ls-files -- package-lock.json npm-shrinkwrap.json pnpm-lock.yaml | head -1)" ] &&
-		[ -z "$(git ls-files -- yarn.lock .yarnrc .yarnrc.yml .pnpmfile.cjs .pnpmfile.mjs | head -1)" ] &&
-		! git grep -qiE 'pnpmfile|config-?dependencies' -- .npmrc pnpm-workspace.yaml pnpm-lock.yaml &&
-		! git grep -qiE 'inject-?workspace-?packages|"?injected"?[[:space:]]*:[[:space:]]*true' -- \
-			pnpm-workspace.yaml .npmrc pnpm-lock.yaml ':(glob)**/package.json'
+	node /usr/local/lib/qf-reusable.mjs
 }
 
 # Skipped when the container came from a snapshot that installed the same dependency files (and command).
