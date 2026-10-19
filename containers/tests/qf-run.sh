@@ -100,9 +100,10 @@ with_dependency_files() {
 }
 
 # The lockfile pins local tarballs (file:vendor/dep.tgz) by hash too; without one, npm installs whatever they hold
-# now, which no key here sees. So no reuse then: no snapshot, no skipped install, no file cache.
+# now, which no key here sees. So no reuse then: no snapshot, no skipped install, no file cache. Only the locks
+# install_dependencies installs from count: a Bun lock alone still gets `npm install`.
 has_lockfile() {
-	[ -n "$(git ls-files -- package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb | head -1)" ]
+	[ -n "$(git ls-files -- package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock | head -1)" ]
 }
 
 # Skipped when the container came from a snapshot that installed the same dependency files (and command).
