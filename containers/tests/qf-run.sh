@@ -90,15 +90,32 @@ merge_base() {
 	return 1
 }
 
+# config_path <file> <key>: the path a package manager's config sets for key (`key: value` or `key=value`), quoted or
+# not, without a trailing comment.
+config_path() {
+	awk -v key="$2" '
+		match($0, "^[[:space:]]*" key "[[:space:]]*[:=][[:space:]]*") {
+			v = substr($0, RLENGTH + 1)
+			q = substr(v, 1, 1)
+			if (q == "\"" || q == "\047") { v = substr(v, 2); sub(q ".*", "", v) }
+			else { sub(/[[:space:]]+#.*/, "", v); sub(/[[:space:]]+$/, "", v) }
+			if (v != "") print v
+		}' "$1" 2>/dev/null
+}
+
 # Runs a command with the files the install depends on appended: the lockfile, every package.json (without a
-# lockfile, npm installs from those) and the package managers' own config, which can run code (.pnpmfile.cjs,
-# all of .yarn but its package cache, whatever yarnPath runs) or change where packages come from.
+# lockfile, npm installs from those) and the package managers' own config, which can run code (pnpmfiles, all of
+# .yarn but its package cache, whatever yarnPath runs) or change where packages come from.
 with_dependency_files() {
-	local yarn_path
-	yarn_path=$(sed -n 's/^yarnPath: *["'"'"']\{0,1\}\([^"'"'"']*\).*/\1/p' .yarnrc.yml 2>/dev/null)
+	local configured=() path
+	while IFS= read -r path; do configured+=("$path"); done < <(
+		config_path .yarnrc.yml yarnPath
+		config_path .npmrc pnpmfile
+		config_path pnpm-workspace.yaml pnpmfile
+	)
 	"$@" package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb ':(glob)**/package.json' \
-		.npmrc .pnpmfile.cjs pnpm-workspace.yaml .yarnrc .yarnrc.yml .yarn ':(exclude).yarn/cache' bunfig.toml \
-		${yarn_path:+"$yarn_path"}
+		.npmrc .pnpmfile.cjs .pnpmfile.mjs pnpm-workspace.yaml .yarnrc .yarnrc.yml .yarn ':(exclude).yarn/cache' \
+		bunfig.toml "${configured[@]}"
 }
 
 # The lockfile pins local tarballs (file:vendor/dep.tgz) by hash too; without one, npm installs whatever they hold
@@ -282,7 +299,7 @@ commands() {
 }
 
 export OUT
-export -f step with_dependency_files has_lockfile clone clean_snapshot merge_base compare_with_nothing install install_dependencies wait_for_snapshot affected related_index tests run_command commands
+export -f step config_path with_dependency_files has_lockfile clone clean_snapshot merge_base compare_with_nothing install install_dependencies wait_for_snapshot affected related_index tests run_command commands
 
 run() {
 	cd /work/repo || return
