@@ -186,11 +186,11 @@ related_index() {
 }
 
 # The config's `cache`: files the tools keep between runs (ESLint's cache, tsc's .tsbuildinfo…), kept in
-# quality-flare's Turborepo cache (src/turbo-cache.ts) under one key per lockfile and package.json set, so new
-# dependencies start them over. Restored after the install, which may empty node_modules; saved at the end. Both are best effort:
-# without them the tools only take longer.
+# quality-flare's Turborepo cache (src/turbo-cache.ts) under one key per set of dependency files, install command
+# and cached paths, so a change to any of them starts the cache over. Restored after the install, which may empty
+# node_modules; saved at the end. Both are best effort: without them the tools only take longer.
 cache_url() {
-	echo "$CACHE_API/v8/artifacts/qf-files-$(with_dependency_files git ls-files -z -- | sort -z | xargs -0 -r sha256sum | sha256sum | cut -c1-32)"
+	echo "$CACHE_API/v8/artifacts/qf-files-$({ with_dependency_files git ls-files -z -- | sort -z | xargs -0 -r sha256sum; echo "${INSTALL:-}"; echo "$CACHE_PATHS"; } | sha256sum | cut -c1-32)"
 }
 
 restore_cache() {
