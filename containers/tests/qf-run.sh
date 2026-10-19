@@ -199,10 +199,11 @@ restore_cache() {
 	rm -f /work/cache.tgz
 }
 
-# Not after a step that hit its time limit: a tool stopped mid-write can leave its cache broken.
+# Not after a step that hit its time limit (124) or was killed (137: timeout's SIGKILL, or out of memory): a tool
+# stopped mid-write can leave its cache broken.
 save_cache() {
 	local paths=() path present=()
-	if grep -q ' 124 ' "$OUT/steps"; then echo "Cache não salvo: um passo passou do limite."; return; fi
+	if grep -Eq ' (124|137) ' "$OUT/steps"; then echo "Cache não salvo: um passo passou do limite ou foi morto."; return; fi
 	mapfile -t paths <<<"$CACHE_PATHS"
 	for path in "${paths[@]}"; do [ -e "$path" ] && present+=("$path"); done
 	((${#present[@]})) || return 0
