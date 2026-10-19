@@ -271,11 +271,11 @@ describe("Container tests", () => {
 		expect(boxEnv(job, { turboCache: true }, "t", turbo)).not.toHaveProperty("CACHE_PATHS");
 	});
 
-	it("tells the container when its install may become the repository's snapshot", () => {
-		const job = { repo: "octo/app", sha: "abc", base: "main" };
-		expect(boxEnv(job, { snapshot: true }, "t")).toMatchObject({ SNAPSHOT: "1" });
-		expect(boxEnv(job, {}, "t")).not.toHaveProperty("SNAPSHOT");
-		expect(boxEnv(job, { snapshot: true, install: "make deps" }, "t")).not.toHaveProperty("SNAPSHOT");
+	it("lets only the daily full run's install become the repository's snapshot", () => {
+		const daily = { repo: "octo/app", sha: "abc", base: "main", full: true as const };
+		expect(boxEnv(daily, { snapshot: true }, "t")).toMatchObject({ SNAPSHOT: "1" });
+		expect(boxEnv(daily, {}, "t")).not.toHaveProperty("SNAPSHOT");
+		expect(boxEnv({ repo: "octo/app", sha: "abc", base: "main" }, { snapshot: true }, "t")).not.toHaveProperty("SNAPSHOT");
 	});
 
 	it("reads the container section of quality-flare.json apart from the tests section", () => {

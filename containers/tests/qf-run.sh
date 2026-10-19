@@ -19,9 +19,10 @@
 # COMMANDS (how many) with COMMAND_1, COMMAND_2… (shell commands, run as steps command1…), CHANGED=1
 # (only the tests that depend on what the PR changed, plus ALWAYS_RUN) or FULL=1 (SHA on its own, everything;
 # Turborepo's --affected sees every package changed), CACHE_PATHS (one path per line) with CACHE_API and
-# CACHE_TOKEN, and SNAPSHOT=1.
+# CACHE_TOKEN, and SNAPSHOT=1 (only on the daily full run, which runs the default branch's own code: offer this
+# install to TestBox as the repository's snapshot).
 #
-# With SNAPSHOT=1 the container may start from a snapshot of an earlier run's (TestBox decides): /work/repo
+# With the config's `snapshot`, the container may start from the snapshot of a daily run (TestBox decides): /work/repo
 # then already has a clone and its node_modules. The clone is brought to SHA and cleaned of everything else,
 # and the install is skipped when the lockfile is the one installed there.
 set -u
