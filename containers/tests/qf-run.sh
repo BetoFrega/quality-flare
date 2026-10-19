@@ -119,13 +119,12 @@ with_dependency_files() {
 }
 
 # Whether a later run may reuse this install (snapshot, skipped install, file cache): only when the files hashed
-# above say all it depends on. The lockfile pins local tarballs (file:vendor/dep.tgz) by hash too; without one, npm
-# installs whatever they hold now. Only the locks install_dependencies installs from count: a Bun lock alone still
-# gets `npm install`. Not Yarn 2+ (.yarnrc.yml), whose plugins and linkers can load code from anywhere and whose
-# default PnP install leaves no node_modules to reuse.
+# above say all it depends on. That needs a lockfile, which pins local tarballs (file:vendor/dep.tgz) by hash too,
+# and npm or pnpm: Yarn (.yarnrc's yarn-path, .yarnrc.yml's yarnPath, plugins and linkers) can run code from
+# anywhere its config points, and a Bun lock alone still gets `npm install`.
 reusable_install() {
-	[ -n "$(git ls-files -- package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock | head -1)" ] &&
-		[ -z "$(git ls-files -- .yarnrc.yml | head -1)" ]
+	[ -n "$(git ls-files -- package-lock.json npm-shrinkwrap.json pnpm-lock.yaml | head -1)" ] &&
+		[ -z "$(git ls-files -- yarn.lock .yarnrc .yarnrc.yml | head -1)" ]
 }
 
 # Skipped when the container came from a snapshot that installed the same dependency files (and command).
