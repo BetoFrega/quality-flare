@@ -1,5 +1,0 @@
-# Copy to .dev.vars and fill in. Used by `cf dev` and by `cf deploy --secrets-file .dev.vars`.
-GITHUB_APP_ID=123456
-# Paste the PEM on one line with \n between lines (the Worker turns them back into newlines).
-GITHUB_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----"
-GITHUB_WEBHOOK_SECRET=change-me

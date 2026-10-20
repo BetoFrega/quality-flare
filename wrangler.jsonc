@@ -1,0 +1,9 @@
+// Only for the "Deploy to Cloudflare" button (README, "Instale o seu"), which reads a Wrangler config to name
+// the new Worker. Nothing else reads this file: the Worker's real config is cloudflare.config.ts, and the
+// button's build deploys with `pnpm run deploy` (scripts/deploy.mjs), which creates the resources itself.
+// Keep the name equal to cloudflare.config.ts's.
+{
+	"name": "quality-flare",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-10-06"
+}

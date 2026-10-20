@@ -133,13 +133,14 @@ Qualquer pessoa pode rodar o próprio quality-flare, na própria conta Cloudflar
 
 **Precisa de:** uma conta Cloudflare no plano **Workers Paid** (US$ 5/mês; Containers e Dynamic Workers não existem no plano grátis) e uma conta GitHub.
 
-1. **Faça um fork** deste repositório.
-2. **Conecte o fork à Cloudflare:** em [Workers & Pages → Create → Import a repository](https://dash.cloudflare.com/?to=/:account/workers-and-pages/create), escolha o fork e use:
-   - **Nome do Worker** (Project name): `quality-flare`, o mesmo do `cloudflare.config.ts`
-   - **Build command:** `pnpm typecheck && pnpm test`
-   - **Deploy command:** `pnpm run deploy`
+1. **Clique no botão:**
 
-   O primeiro deploy cria sozinho o KV, o D1, o bucket R2 e a Queue. O Worker sobe ainda sem GitHub App: até ela existir, ele recusa webhooks e manda quem abre o endereço para `/setup`.
+   [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/BetoFrega/quality-flare)
+
+   Ele copia este repositório para a sua conta do GitHub e liga a cópia ao Workers Builds. Mantenha o nome do Worker `quality-flare` (é o do `cloudflare.config.ts`) e o deploy command `pnpm run deploy`. O [`wrangler.jsonc`](wrangler.jsonc) existe só para o botão.
+
+   Sem o botão: faça um fork e, em [Workers & Pages → Create → Import a repository](https://dash.cloudflare.com/?to=/:account/workers-and-pages/create), escolha o fork com o nome `quality-flare`, o build command `pnpm typecheck && pnpm test` e o deploy command `pnpm run deploy`.
+2. **Espere o primeiro deploy.** Ele cria sozinho o KV, o D1, o bucket R2 e a Queue. O Worker sobe ainda sem GitHub App: até ela existir, ele recusa webhooks e manda quem abre o endereço para `/setup`.
 3. **Abra `https://quality-flare.<seu-subdomínio>.workers.dev/setup`.** A página mostra o que falta e faz o resto com você:
    - **Criar a GitHub App:** um clique cria a App no GitHub (na sua conta ou numa organização) com as permissões, os eventos e o webhook certos. Na volta, a página mostra o `GITHUB_APP_ID`, o `GITHUB_WEBHOOK_SECRET` e o `GITHUB_PRIVATE_KEY` uma única vez; adicione os três como **Secret** em Settings → Build → Variables and secrets do Worker.
    - **`PUBLIC_URL`:** a página mostra o valor (o próprio endereço, ou o seu domínio); adicione como variável de build.
@@ -184,7 +185,7 @@ Precisa do Docker (para a imagem do container):
 
 ```sh
 pnpm install
-cp .dev.vars.example .dev.vars   # os secrets da App, para o cf dev
+# para o cf dev: um .dev.vars com GITHUB_APP_ID, GITHUB_PRIVATE_KEY e GITHUB_WEBHOOK_SECRET
 pnpm exec cf auth login          # ou CLOUDFLARE_API_TOKEN
 pnpm run deploy                  # com as variáveis acima no ambiente, se tiver
 ```
