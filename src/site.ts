@@ -30,43 +30,47 @@ export function handleHome(pending: boolean): Response {
 }
 
 const CHECKS = [
-	{
-		name: "Tests",
-		body: "Runs your vitest suite inside Dynamic Workers created for each run, sharded through a Queue. No config for the common case: test files, the lockfile and tsconfig paths are found on their own.",
-		link: "checks#tests",
-	},
-	{
-		name: "Container tests",
-		body: "Runs your own vitest and config in a fresh container, then your named commands (Typecheck, Lint…), each as its own check run with live logs.",
-		link: "checks#container-tests",
-	},
-	{
-		name: "Closes an issue",
-		body: "Passes when the pull request closes an issue, by keyword or sidebar link, or carries the no-issue label.",
-		link: "checks#closes-an-issue",
-	},
-	{
-		name: "Codex review",
-		body: "Holds the merge until every Codex review thread is resolved, and waits while Codex is still reviewing.",
-		link: "checks#codex-review",
-	},
-	{
-		name: "Dependabot auto-merge",
-		body: "Turns on squash auto-merge for Dependabot pull requests, without a GitHub Actions workflow.",
-		link: "checks#dependabot-auto-merge",
-	},
+	{ name: "Tests", link: "checks#tests", body: "Your vitest suite in Dynamic Workers created for each run, sharded through a Queue. Test files, the lockfile and tsconfig paths are found without config." },
+	{ name: "Container tests", link: "checks#container-tests", body: "Your own vitest and config in a fresh container, then named commands such as Typecheck and Lint, each as its own check run with a live log." },
+	{ name: "Closes an issue", link: "checks#closes-an-issue", body: "Passes when the pull request closes an issue, by keyword or sidebar link, or carries the no-issue label." },
+	{ name: "Codex review", link: "checks#codex-review", body: "Holds the merge until every Codex review thread is resolved, and waits while Codex is still reviewing." },
+	{ name: "Dependabot auto-merge", link: "checks#dependabot-auto-merge", body: "Turns on squash auto-merge for Dependabot pull requests, without a workflow." },
 ];
 
 const FEATURES = [
-	{ name: "Tests on demand", body: "Pushes don't spend a run. Comment <code>/quality-flare run</code> when the pull request is ready, and one status comment tells agents and people where it stands." },
-	{ name: "Only what changed", body: "Pull requests run the tests that depend on the change; a daily full run on the default branch catches the rest and opens an issue when it fails." },
-	{ name: "Caches on R2", body: "Turborepo's remote cache, tool caches such as ESLint's and tsc's, and container snapshots that skip the install." },
-	{ name: "Live progress", body: "Check runs update every few seconds with counts and failures, and the admin streams each test as it finishes." },
-	{ name: "Costs you can see", body: "The admin shows the account's measured usage next to an estimate for every run, repository and day." },
-	{ name: "Off until you say so", body: "Every repository and every check starts disabled. Turn them on one by one in the admin, behind Cloudflare Access." },
+	{ name: "Tests on demand", link: "on-demand", body: "Pushes don't spend a run. Comment <code>/quality-flare run</code> when the pull request is ready; one status comment tells agents and people where it stands." },
+	{ name: "Only what changed", link: "on-demand#only-the-tests-that-changed", body: "Pull requests run the tests that depend on the change. A daily full run on the default branch catches the rest and opens an issue when it fails." },
+	{ name: "Caches on R2", link: "configuration#caches", body: "Turborepo's remote cache, tool caches such as ESLint's and tsc's, and container snapshots that skip the install." },
+	{ name: "Live progress", link: "checks#container-tests", body: "Check runs update every few seconds with counts and failures, and the admin streams each test as it finishes." },
+	{ name: "Costs you can see", link: "admin#costs", body: "Measured account usage next to an estimate for every run, repository and day." },
+	{ name: "Off until you say so", link: "admin", body: "Every repository and check starts disabled. Turn them on one by one in an admin behind Cloudflare Access." },
 ];
 
-const PRODUCTS = ["Workers", "Dynamic Workers", "Containers", "Queues", "Durable Objects", "D1", "KV", "R2", "Access", "Workers Builds"];
+/** The steps of a pull request through quality-flare, with the Cloudflare product behind each. */
+const FLOW = [
+	{ step: "Webhook", body: "GitHub calls the Worker, which verifies the signature and answers at once.", product: "Workers" },
+	{ step: "Checks", body: "Each enabled check opens a check run on the head commit.", product: "KV settings" },
+	{ step: "Run", body: "Test batches go to Dynamic Workers through a Queue, or to a container per run.", product: "Queues · Dynamic Workers · Containers" },
+	{ step: "Report", body: "Check runs, one status comment and live admin pages. History stays in D1.", product: "Durable Objects · D1" },
+];
+
+/** A pull request's checks box, as GitHub shows it, drawn with what quality-flare reports. */
+function checksPanel(): string {
+	const row = (state: "ok" | "wait", name: string, detail: string) =>
+		`<li><span class="dot ${state}" aria-hidden="true"></span><span class="name">${esc(name)}</span><span class="detail">${esc(detail)}</span></li>`;
+	return `<figure class="panel" aria-label="Example: the checks quality-flare reports on a pull request">
+			<div class="panel-head"><span class="dot ok" aria-hidden="true"></span><strong>All checks have passed</strong><span class="muted">6 successful checks</span></div>
+			<ul>
+				${row("ok", "Tests", "3,063 passed in 214 files · 1m 48s")}
+				${row("ok", "Container tests", "Affected tests passed · standard-4")}
+				${row("ok", "Typecheck", "tsc --noEmit · 52s")}
+				${row("ok", "Lint", "eslint, cached on R2 · 19s")}
+				${row("ok", "Closes an issue", "Closes #128")}
+				${row("ok", "Codex review", "Every suggestion resolved")}
+			</ul>
+			<div class="panel-comment"><span class="avatar" aria-hidden="true"></span><code>/quality-flare run</code><span class="reaction" aria-label="started">🚀</span></div>
+		</figure>`;
+}
 
 function renderHome(pending: boolean): string {
 	const docLink = (path: string) => `${DOCS_PATH}/${path}`;
@@ -75,68 +79,87 @@ function renderHome(pending: boolean): string {
 		"Continuous integration that runs entirely on Cloudflare, delivered as a GitHub App.",
 		`${pending ? `<p class="banner">This installation isn't finished yet. <a href="${SETUP_PATH}">Finish setting it up</a>.</p>` : ""}
 		<section class="hero">
-			<p class="eyebrow">GitHub App · open source · runs on Cloudflare</p>
-			<h1>Continuous integration that runs entirely on Cloudflare</h1>
-			<p class="lead">quality-flare turns each check into a check run on your pull requests. Tests run in Dynamic Workers or in a container per run, results stream live, and the whole thing is one Worker you deploy to your own Cloudflare account.</p>
-			<p class="actions">
-				<a class="button primary" href="${DOCS_PATH}">Read the docs</a>
-				<a class="button" href="${docLink("self-hosting")}">Run your own</a>
-				<a class="button" href="${REPO_URL}" rel="noopener">Source on GitHub</a>
-			</p>
+			<div class="hero-copy">
+				<p class="eyebrow">GitHub App · MIT · one Worker</p>
+				<h1>Continuous integration that runs entirely on Cloudflare</h1>
+				<p class="lead">Every check is a check run on your pull requests. Tests run in Dynamic Workers or in a container per run, progress streams live, and nothing runs outside your own Cloudflare account.</p>
+				<p class="actions">
+					<a class="button primary" href="${DOCS_PATH}">Read the docs</a>
+					<a class="button" href="${docLink("self-hosting")}">Run your own</a>
+					<a class="text-link" href="${REPO_URL}" rel="noopener">Source on GitHub →</a>
+				</p>
+			</div>
+			${checksPanel()}
 		</section>
 
-		<section>
-			<h2>Checks</h2>
-			<p class="section-lead">Each check reports as its own check run, so branch protection can require any of them. Turn them on per repository.</p>
-			<ul class="cards">
-				${CHECKS.map((c) => `<li><h3><a href="${docLink(c.link)}">${esc(c.name)}</a></h3><p>${esc(c.body)}</p></li>`).join("")}
-			</ul>
+		<section class="band">
+			<header class="section-head">
+				<p class="kicker">Checks</p>
+				<h2>Five checks, each its own check run</h2>
+				<p>Branch protection can require any of them. Turn them on per repository.</p>
+			</header>
+			<dl class="checks">
+				${CHECKS.map((c) => `<div><dt><span class="dot ok" aria-hidden="true"></span><a href="${docLink(c.link)}">${esc(c.name)}</a></dt><dd>${esc(c.body)}</dd></div>`).join("")}
+			</dl>
 		</section>
 
-		<section>
-			<h2>Built for cheap, agent-driven pull requests</h2>
-			<ul class="cards features">
-				${FEATURES.map((f) => `<li><h3>${esc(f.name)}</h3><p>${f.body}</p></li>`).join("")}
-			</ul>
-		</section>
-
-		<section>
-			<h2>How it works</h2>
-			<ol class="flow">
-				<li><strong>GitHub sends a webhook</strong> to the Worker, which checks its signature and answers right away.</li>
-				<li><strong>The Worker runs each enabled check</strong> with an installation token and opens a check run on the pull request's head commit.</li>
-				<li><strong>Tests fan out</strong> to Dynamic Workers through a Queue, or to a container started by a Durable Object.</li>
-				<li><strong>Results come back</strong> as check runs, a status comment and live pages in the admin; run history lives in D1.</li>
+		<section class="band">
+			<header class="section-head">
+				<p class="kicker">Built for agents</p>
+				<h2>Cheap runs for pull requests that get pushed all day</h2>
+			</header>
+			<ol class="features">
+				${FEATURES.map((f) => `<li><h3><a href="${docLink(f.link)}">${esc(f.name)}</a></h3><p>${f.body}</p></li>`).join("")}
 			</ol>
-			<p><a href="${docLink("architecture")}">Read the architecture</a></p>
 		</section>
 
-		<section>
-			<h2>Only Cloudflare</h2>
-			<p class="section-lead">No runners to keep, no other cloud. Deploys run on Workers Builds from your fork.</p>
-			<ul class="chips">${PRODUCTS.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>
+		<section class="band">
+			<header class="section-head">
+				<p class="kicker">How it works</p>
+				<h2>From webhook to check run, on Cloudflare only</h2>
+			</header>
+			<ol class="flow">
+				${FLOW.map((f) => `<li><h3>${esc(f.step)}</h3><p>${esc(f.body)}</p><p class="product">${esc(f.product)}</p></li>`).join("")}
+			</ol>
+			<p><a class="text-link" href="${docLink("architecture")}">Read the architecture →</a></p>
+		</section>
+
+		<section class="cta">
+			<div>
+				<h2>Run it on your own account</h2>
+				<p>Fork the repository, import it in Workers Builds, and open <code>/setup</code>. The page creates the GitHub App for you. You need Workers Paid.</p>
+			</div>
+			<a class="button primary" href="${docLink("self-hosting")}">Self-hosting guide</a>
 		</section>`,
 	);
 }
 
 function renderDocsPage(pages: DocPage[], page: DocPage | undefined): string {
-	const nav = pages
-		.map((p) => {
-			const href = p.slug === "index" ? DOCS_PATH : `${DOCS_PATH}/${p.slug}`;
-			return `<li><a href="${href}"${p.slug === page?.slug ? ' aria-current="page"' : ""}>${esc(p.slug === "index" ? "Introduction" : p.title)}</a></li>`;
-		})
-		.join("");
-	const source = page ? `<p class="edit"><a href="${REPO_URL}/blob/main/docs/${page.slug}.md" rel="noopener">Edit this page on GitHub</a></p>` : "";
+	const href = (p: DocPage) => (p.slug === "index" ? DOCS_PATH : `${DOCS_PATH}/${p.slug}`);
+	const label = (p: DocPage) => (p.slug === "index" ? "Introduction" : p.title);
+	const nav = pages.map((p) => `<li><a href="${href(p)}"${p.slug === page?.slug ? ' aria-current="page"' : ""}>${esc(label(p))}</a></li>`).join("");
+	const at = page ? pages.indexOf(page) : -1;
+	const prev = at > 0 ? pages[at - 1] : undefined;
+	const next = at >= 0 && at < pages.length - 1 ? pages[at + 1] : undefined;
+	const pager = page
+		? `<nav class="pager" aria-label="Pages">
+				${prev ? `<a class="prev" href="${href(prev)}"><span>Previous</span>${esc(label(prev))}</a>` : "<span></span>"}
+				${next ? `<a class="next" href="${href(next)}"><span>Next</span>${esc(label(next))}</a>` : "<span></span>"}
+			</nav>
+			<p class="edit"><a href="${REPO_URL}/blob/main/docs/${page.slug}.md" rel="noopener">Edit this page on GitHub</a></p>`
+		: "";
 	const body = page ? page.html : `<h1>Page not found</h1><p>This page doesn't exist. Start from the <a href="${DOCS_PATH}">introduction</a>.</p>`;
 	return layout(
 		page ? `${page.title} · quality-flare docs` : "Not found · quality-flare docs",
 		"Documentation of quality-flare, continuous integration on Cloudflare.",
 		`<div class="docs">
-			<nav class="sidebar" aria-label="Documentation"><ul>${nav}</ul></nav>
-			<article class="prose">${body}${source}</article>
+			<nav class="sidebar" aria-label="Documentation"><p class="kicker">Documentation</p><ul>${nav}</ul></nav>
+			<article class="prose">${body}${pager}</article>
 		</div>`,
 	);
 }
+
+const MARK = `<svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5c.9 3.4 3.1 5.6 6.5 6.5-3.4.9-5.6 3.1-6.5 6.5-.9-3.4-3.1-5.6-6.5-6.5 3.4-.9 5.6-3.1 6.5-6.5Z" fill="currentColor"/><path d="m7 18.5 2.2 2.2L14 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
 function layout(title: string, description: string, main: string): string {
 	return `<!doctype html>
@@ -146,75 +169,173 @@ function layout(title: string, description: string, main: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)}</title>
 <meta name="description" content="${esc(description)}">
+<meta name="theme-color" content="#fbf8f3" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#14110e" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="data:image/svg+xml,${encodeURIComponent(MARK.replace('class="mark"', 'xmlns="http://www.w3.org/2000/svg" color="#c2410c"'))}">
 <style>
-	:root { --bg: #fffdf9; --fg: #1d1a16; --muted: #5f5a52; --line: #e6dfd4; --panel: #f7f2ea; --accent: #c2410c; --accent-fg: #fff; --code: #f1ebe1; color-scheme: light; }
-	@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #13110f; --fg: #f3eee7; --muted: #a8a096; --line: #34302b; --panel: #1c1916; --accent: #fb923c; --accent-fg: #1d1a16; --code: #24201c; color-scheme: dark; } }
-	:root[data-theme="dark"] { --bg: #13110f; --fg: #f3eee7; --muted: #a8a096; --line: #34302b; --panel: #1c1916; --accent: #fb923c; --accent-fg: #1d1a16; --code: #24201c; color-scheme: dark; }
+	:root {
+		--bg: #fbf8f3; --surface: #f4eee5; --raised: #fffdf9; --fg: #1c1814; --muted: #625a50; --faint: #8b8276; --line: #e3dace; --line-strong: #cfc3b3;
+		--accent: #c2410c; --accent-hover: #9a3412; --accent-fg: #fff; --accent-soft: #fbe3d3; --ok: #1a7f37; --wait: #9a6700; --code: #efe7dc;
+		--sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+		--radius: 10px; --wide: 1160px; color-scheme: light;
+	}
+	@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+		--bg: #14110e; --surface: #1b1814; --raised: #211d18; --fg: #f2ece4; --muted: #b0a698; --faint: #857b6e; --line: #2f2a24; --line-strong: #453d34;
+		--accent: #fb8c4a; --accent-hover: #fdba74; --accent-fg: #1c1814; --accent-soft: #3a2416; --ok: #3fb950; --wait: #d29922; --code: #26211b; color-scheme: dark;
+	} }
+	:root[data-theme="dark"] {
+		--bg: #14110e; --surface: #1b1814; --raised: #211d18; --fg: #f2ece4; --muted: #b0a698; --faint: #857b6e; --line: #2f2a24; --line-strong: #453d34;
+		--accent: #fb8c4a; --accent-hover: #fdba74; --accent-fg: #1c1814; --accent-soft: #3a2416; --ok: #3fb950; --wait: #d29922; --code: #26211b; color-scheme: dark;
+	}
 	* { box-sizing: border-box; }
-	body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
-	a { color: var(--accent); }
-	code { font: 0.9em ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code); padding: 0.1em 0.35em; border-radius: 4px; overflow-wrap: anywhere; }
-	.top { display: flex; align-items: center; gap: 20px; padding: 14px 16px; border-bottom: 1px solid var(--line); max-width: 1120px; margin: 0 auto; }
-	.top .brand { font-weight: 700; color: var(--fg); text-decoration: none; margin-right: auto; display: flex; align-items: center; gap: 8px; }
-	.top .brand::before { content: ""; width: 14px; height: 14px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #fdba74, var(--accent)); }
+	html { -webkit-text-size-adjust: 100%; }
+	body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 var(--sans); font-feature-settings: "kern", "liga", "tnum"; -webkit-font-smoothing: antialiased; }
+	a { color: var(--accent); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+	a:hover { color: var(--accent-hover); }
+	:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+	code { font: 0.875em var(--mono); background: var(--code); padding: 0.12em 0.4em; border-radius: 5px; overflow-wrap: anywhere; }
+	h1, h2, h3 { text-wrap: balance; }
+	p { text-wrap: pretty; }
+
+	.top { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+	.top div { display: flex; align-items: center; gap: 24px; max-width: var(--wide); margin: 0 auto; padding: 12px 16px; }
+	.brand { display: flex; align-items: center; gap: 8px; margin-right: auto; color: var(--fg); text-decoration: none; font-weight: 700; letter-spacing: -0.01em; }
+	.brand:hover { color: var(--fg); }
+	.mark { width: 22px; height: 22px; color: var(--accent); }
+	.top a { white-space: nowrap; }
 	.top a:not(.brand) { color: var(--muted); text-decoration: none; font-size: 15px; }
-	.top a:not(.brand):hover { color: var(--fg); }
-	main { max-width: 1120px; margin: 0 auto; padding: 0 16px 64px; }
-	.banner { margin: 16px 0 0; padding: 10px 14px; border: 1px solid var(--accent); border-radius: 8px; background: var(--panel); }
-	.hero { padding: 72px 0 40px; max-width: 760px; }
-	.eyebrow { color: var(--accent); font-weight: 600; font-size: 14px; letter-spacing: 0.02em; margin: 0 0 12px; }
-	.hero h1 { font-size: clamp(32px, 6vw, 52px); line-height: 1.1; margin: 0 0 20px; letter-spacing: -0.02em; text-wrap: balance; }
-	.lead { font-size: 19px; color: var(--muted); margin: 0 0 28px; }
-	.actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 0; }
-	.button { display: inline-block; padding: 10px 18px; border-radius: 8px; border: 1px solid var(--line); color: var(--fg); text-decoration: none; font-weight: 600; background: var(--panel); }
+	@media (max-width: 480px) { .top div { gap: 16px; } .top .wide-only { display: none; } }
+	.top a:not(.brand):hover, .top a[aria-current] { color: var(--fg); }
+	main { max-width: var(--wide); margin: 0 auto; padding: 0 16px 80px; }
+	.banner { margin: 20px 0 0; padding: 10px 14px; border: 1px solid var(--accent); border-radius: var(--radius); background: var(--accent-soft); }
+
+	.kicker, .eyebrow { font: 600 12px/1.4 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); margin: 0 0 12px; }
+	.hero { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr); gap: 56px; align-items: center; padding: 80px 0 72px; }
+	.hero h1 { font-size: clamp(36px, 5.4vw, 60px); line-height: 1.04; letter-spacing: -0.035em; margin: 0 0 22px; font-weight: 750; }
+	.lead { font-size: clamp(17px, 2vw, 19px); color: var(--muted); margin: 0 0 32px; max-width: 34em; }
+	.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; margin: 0; }
+	.button { display: inline-flex; align-items: center; padding: 11px 20px; border-radius: 8px; border: 1px solid var(--line-strong); color: var(--fg); background: var(--raised); text-decoration: none; font-weight: 600; font-size: 15px; transition: border-color .15s, background .15s, transform .15s; }
+	.button:hover { color: var(--fg); border-color: var(--fg); }
 	.button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
-	section { padding: 32px 0; }
-	section h2 { font-size: 26px; margin: 0 0 8px; letter-spacing: -0.01em; }
-	.section-lead { color: var(--muted); margin: 0 0 20px; max-width: 680px; }
-	.cards { list-style: none; padding: 0; margin: 20px 0 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
-	.cards li { border: 1px solid var(--line); border-radius: 10px; padding: 18px; background: var(--panel); }
-	.cards h3 { margin: 0 0 6px; font-size: 17px; }
-	.cards h3 a { color: var(--fg); text-decoration: none; }
-	.cards h3 a:hover { color: var(--accent); }
-	.cards p { margin: 0; color: var(--muted); font-size: 15px; }
-	.flow { padding-left: 22px; max-width: 720px; }
-	.flow li { margin: 0 0 10px; }
-	.chips { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 8px; }
-	.chips li { border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; font-size: 14px; }
-	.docs { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 40px; padding-top: 32px; }
-	.sidebar ul { list-style: none; padding: 0; margin: 0; position: sticky; top: 16px; }
-	.sidebar a { display: block; padding: 5px 10px; border-radius: 6px; color: var(--muted); text-decoration: none; font-size: 15px; }
+	.button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--accent-fg); }
+	.button:active { transform: translateY(1px); }
+	.text-link { font-weight: 600; text-decoration: none; font-size: 15px; }
+
+	.panel { margin: 0; background: var(--raised); border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: 0 1px 0 var(--line), 0 24px 48px -28px rgb(60 30 10 / 0.35); overflow: hidden; font-size: 14px; }
+	.panel-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+	.panel-head .muted { color: var(--muted); margin-left: auto; font-size: 13px; }
+	.panel ul { list-style: none; margin: 0; padding: 6px 0; }
+	.panel li { display: grid; grid-template-columns: 10px auto 1fr; align-items: baseline; gap: 10px; padding: 7px 16px; }
+	.panel .name { font-weight: 600; white-space: nowrap; }
+	.panel .detail { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+	.panel-comment { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--line); background: var(--surface); }
+	.avatar { width: 20px; height: 20px; border-radius: 50%; background: linear-gradient(135deg, var(--line-strong), var(--faint)); flex: none; }
+	.reaction { margin-left: auto; border: 1px solid var(--line-strong); border-radius: 999px; padding: 0 8px; font-size: 13px; background: var(--raised); }
+	.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex: none; }
+	.dot.ok { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); }
+	.dot.wait { background: var(--wait); }
+
+	.band { padding: 72px 0; border-top: 1px solid var(--line); }
+	.section-head { max-width: 640px; margin-bottom: 40px; }
+	.section-head h2 { font-size: clamp(26px, 3.4vw, 36px); line-height: 1.15; letter-spacing: -0.025em; margin: 0 0 10px; }
+	.section-head p:not(.kicker) { color: var(--muted); margin: 0; font-size: 17px; }
+
+	.checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0 48px; margin: 0; }
+	.checks div { padding: 18px 0; border-top: 1px solid var(--line); }
+	.checks dt { display: flex; align-items: center; gap: 12px; font-weight: 650; font-size: 17px; margin-bottom: 4px; }
+	.checks dt a { color: var(--fg); text-decoration: none; }
+	.checks dt a:hover { color: var(--accent); }
+	.checks dd { margin: 0 0 0 22px; color: var(--muted); }
+
+	.features { list-style: none; counter-reset: feature; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 40px 48px; }
+	.features li { counter-increment: feature; }
+	.features li::before { content: counter(feature, decimal-leading-zero); display: block; font: 600 13px var(--mono); color: var(--faint); padding-bottom: 10px; margin-bottom: 14px; border-bottom: 1px solid var(--line-strong); }
+	.features h3 { font-size: 18px; margin: 0 0 6px; letter-spacing: -0.01em; }
+	.features h3 a { color: var(--fg); text-decoration: none; }
+	.features h3 a:hover { color: var(--accent); }
+	.features p { margin: 0; color: var(--muted); }
+
+	.flow { list-style: none; padding: 0; margin: 0 0 28px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); counter-reset: step; }
+	.flow li { counter-increment: step; position: relative; padding: 0 24px 0 0; }
+	.flow li::before { content: counter(step); display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--accent); color: var(--accent); font: 600 14px var(--mono); background: var(--bg); position: relative; z-index: 1; margin-bottom: 16px; }
+	.flow li:not(:last-child)::after { content: ""; position: absolute; top: 16px; left: 32px; right: 0; height: 1.5px; background: repeating-linear-gradient(90deg, var(--line-strong) 0 6px, transparent 6px 10px); }
+	.flow h3 { font-size: 18px; margin: 0 0 6px; }
+	.flow p { margin: 0; color: var(--muted); }
+	.flow .product { margin-top: 10px; font: 12px/1.5 var(--mono); color: var(--fg); }
+
+	.cta { display: flex; align-items: center; justify-content: space-between; gap: 24px 40px; flex-wrap: wrap; margin-top: 24px; padding: 36px 40px; border-radius: 16px; background: var(--surface); border: 1px solid var(--line); }
+	.cta h2 { margin: 0 0 6px; font-size: 26px; letter-spacing: -0.02em; }
+	.cta p { margin: 0; color: var(--muted); max-width: 40em; }
+
+	@media (max-width: 900px) {
+		.hero { grid-template-columns: 1fr; gap: 40px; padding: 48px 0 56px; }
+		.features { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+		.flow { grid-template-columns: 1fr 1fr; gap: 32px 0; }
+		.flow li:nth-child(2)::after { display: none; }
+	}
+	@media (max-width: 600px) {
+		.features, .flow { grid-template-columns: 1fr; }
+		.flow li::after { display: none; }
+		.band { padding: 56px 0; }
+		.cta { padding: 28px 20px; }
+		.panel .detail { white-space: normal; }
+		.panel li { grid-template-columns: 10px 1fr; }
+		.panel .detail { grid-column: 2; }
+	}
+
+	.docs { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 56px; padding-top: 40px; }
+	.sidebar ul { list-style: none; padding: 0; margin: 0; border-left: 1px solid var(--line); }
+	.sidebar .kicker { color: var(--faint); }
+	.sidebar { align-self: start; position: sticky; top: 72px; }
+	.sidebar a { display: block; padding: 6px 14px; margin-left: -1px; border-left: 2px solid transparent; color: var(--muted); text-decoration: none; font-size: 15px; }
 	.sidebar a:hover { color: var(--fg); }
-	.sidebar a[aria-current] { color: var(--fg); background: var(--panel); font-weight: 600; }
-	@media (max-width: 760px) { .docs { grid-template-columns: 1fr; gap: 16px; padding-top: 16px; } .sidebar ul { position: static; display: flex; flex-wrap: wrap; gap: 4px; } }
-	.prose { max-width: 760px; min-width: 0; }
-	.prose h1 { font-size: 34px; line-height: 1.2; margin: 0 0 16px; letter-spacing: -0.01em; }
-	.prose h2 { font-size: 24px; margin: 40px 0 10px; padding-top: 8px; border-top: 1px solid var(--line); }
-	.prose h3 { font-size: 19px; margin: 28px 0 8px; }
+	.sidebar a[aria-current] { color: var(--fg); border-left-color: var(--accent); font-weight: 600; }
+	@media (max-width: 800px) {
+		.docs { grid-template-columns: 1fr; gap: 20px; padding-top: 20px; }
+		.sidebar { position: static; }
+		.sidebar ul { display: flex; flex-wrap: wrap; gap: 4px; border: 0; }
+		.sidebar a { border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; margin: 0; font-size: 14px; }
+		.sidebar a[aria-current] { border-color: var(--accent); background: var(--accent-soft); }
+	}
+	.prose { max-width: 740px; min-width: 0; }
+	.prose h1 { font-size: clamp(32px, 4.4vw, 42px); line-height: 1.1; letter-spacing: -0.03em; margin: 0 0 20px; }
+	.prose h1 + p { font-size: 18px; color: var(--muted); }
+	.prose h2 { font-size: 24px; letter-spacing: -0.015em; margin: 52px 0 12px; padding-top: 20px; border-top: 1px solid var(--line); scroll-margin-top: 72px; }
+	.prose h3 { font-size: 18px; margin: 32px 0 8px; scroll-margin-top: 72px; }
 	.prose .anchor { color: inherit; text-decoration: none; }
-	.prose .anchor:hover::after { content: " #"; color: var(--muted); }
-	.prose pre { background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; font-size: 14px; line-height: 1.5; }
-	.prose pre code { background: none; padding: 0; overflow-wrap: normal; }
-	.prose table { width: 100%; border-collapse: collapse; font-size: 15px; display: block; overflow-x: auto; }
-	.prose th, .prose td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
-	.prose th { color: var(--muted); font-weight: 600; }
+	.prose .anchor:hover::after { content: " #"; color: var(--faint); font-weight: 400; }
+	.prose pre { background: var(--code); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; overflow-x: auto; font-size: 14px; line-height: 1.55; }
+	.prose pre code { background: none; padding: 0; overflow-wrap: normal; font-size: inherit; }
+	.prose table { width: 100%; border-collapse: collapse; font-size: 15px; display: block; overflow-x: auto; margin: 20px 0; }
+	.prose th, .prose td { text-align: left; padding: 10px 12px 10px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+	.prose th { color: var(--faint); font: 600 12px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; border-bottom-color: var(--line-strong); }
 	.prose td:first-child code { white-space: nowrap; overflow-wrap: normal; }
-	.prose blockquote { margin: 16px 0; padding: 4px 16px; border-left: 3px solid var(--accent); background: var(--panel); border-radius: 0 6px 6px 0; }
-	.prose li { margin: 4px 0; }
-	.edit { margin-top: 48px; font-size: 14px; }
+	.prose blockquote { margin: 20px 0; padding: 4px 18px; border-left: 3px solid var(--accent); background: var(--surface); border-radius: 0 8px 8px 0; }
+	.prose li { margin: 6px 0; }
+	.prose li::marker { color: var(--faint); }
+	.pager { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 64px; }
+	.pager a { display: flex; flex-direction: column; gap: 2px; padding: 14px 18px; border: 1px solid var(--line); border-radius: var(--radius); text-decoration: none; color: var(--fg); font-weight: 600; }
+	.pager a:hover { border-color: var(--accent); color: var(--fg); }
+	.pager span { font: 12px var(--mono); color: var(--faint); font-weight: 400; text-transform: uppercase; letter-spacing: 0.06em; }
+	.pager .next { text-align: right; }
+	.edit { margin-top: 24px; font-size: 14px; }
+
 	footer { border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
-	footer div { max-width: 1120px; margin: 0 auto; padding: 20px 16px; display: flex; flex-wrap: wrap; gap: 8px 20px; }
+	footer div { max-width: var(--wide); margin: 0 auto; padding: 24px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 24px; }
+	footer span { margin-right: auto; }
 	footer a { color: var(--muted); }
+	@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
 <body>
-<header class="top">
-	<a class="brand" href="/">quality-flare</a>
+<header class="top"><div>
+	<a class="brand" href="/">${MARK}quality-flare</a>
 	<a href="${DOCS_PATH}">Docs</a>
+	<a class="wide-only" href="${DOCS_PATH}/self-hosting">Self-hosting</a>
 	<a href="${REPO_URL}" rel="noopener">GitHub</a>
-</header>
+</div></header>
 <main>${main}</main>
-<footer><div><span>quality-flare is open source under the MIT license.</span><a href="${REPO_URL}" rel="noopener">GitHub</a><a href="${DOCS_PATH}">Docs</a></div></footer>
+<footer><div><span>quality-flare is open source under the MIT license.</span><a href="${DOCS_PATH}">Docs</a><a href="${REPO_URL}" rel="noopener">GitHub</a></div></footer>
 </body>
 </html>`;
 }
