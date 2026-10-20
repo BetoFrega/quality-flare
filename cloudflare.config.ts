@@ -2,6 +2,20 @@ import { bindings, defineConfig, defineContainer, exports, triggers } from "cf/c
 import type { TestShard } from "./src/checks/tests/jobs.ts";
 import * as entrypoint from "./src/index.ts" with { type: "cf-worker" };
 
+// This deployment's account and resource IDs stay out of the repository: Workers Builds sets them as build
+// variables (see README). In Workers Builds (WORKERS_CI) a missing one fails the build before anything deploys;
+// elsewhere (types, dev, tests) a placeholder stands in.
+// This file runs in Node; tsconfig checks it without Node's types.
+declare const process: { argv: string[]; env: Record<string, string | undefined> };
+
+const deploying = Boolean(process.env.WORKERS_CI) || process.argv.includes("deploy");
+function fromEnv(name: string): string {
+	const value = process.env[name];
+	if (value) return value;
+	if (deploying) throw new Error(`Set ${name} to deploy (a Workers Builds build variable).`);
+	return `<${name}>`;
+}
+
 // The Tests check's "Container" runner (src/checks/tests/container.ts): one container per run,
 // started by the TestBox Durable Object, which picks the instance type.
 const testBox = defineContainer({
@@ -49,13 +63,13 @@ export default defineConfig({
 			// The webhook secret configured on the GitHub App.
 			GITHUB_WEBHOOK_SECRET: bindings.secret(),
 			// Where people open the admin; check runs link to their run there.
-			PUBLIC_URL: bindings.text("https://quality-flare.frega.dev"),
+			PUBLIC_URL: bindings.text(fromEnv("PUBLIC_URL")),
 			// Label that exempts a PR from the "Closes an issue" check.
 			NO_ISSUE_LABEL: bindings.text("no-issue"),
 			// Per-repository check settings, edited in the admin UI.
-			SETTINGS: bindings.kv({ id: "a5795e2f7f424adb8edb5576967d0087" }),
+			SETTINGS: bindings.kv({ id: fromEnv("SETTINGS_KV_ID") }),
 			// History of Tests check runs, shown in the admin.
-			RUNS: bindings.d1({ id: "f30a90b8-1c92-44b0-9fe2-dcc87418b046" }),
+			RUNS: bindings.d1({ id: fromEnv("RUNS_D1_ID") }),
 			// Turborepo artifacts of Container tests runs (src/turbo-cache.ts); a lifecycle rule expires them.
 			TURBO_CACHE: bindings.r2({ name: "quality-flare-turbo-cache" }),
 			// The RunsHub Durable Object (see exports).
@@ -65,11 +79,11 @@ export default defineConfig({
 			// Shards of Tests runs, consumed by this same Worker (see triggers).
 			TESTS_QUEUE: bindings.queue<TestShard>({ name: "quality-flare-tests" }),
 			// API token with Account Analytics: Read, for the admin's real account usage (src/account-usage.ts).
-			ANALYTICS_TOKEN: bindings.secretsStoreSecret({ storeId: "85fcda41135f46eca687febcae69ca34", secretName: "quality-flare-analytics-token" }),
+			ANALYTICS_TOKEN: bindings.secretsStoreSecret({ storeId: fromEnv("SECRETS_STORE_ID"), secretName: "quality-flare-analytics-token" }),
 			// The account whose usage the admin shows.
-			CLOUDFLARE_ACCOUNT_ID: bindings.text("abd87961a304b923acbc329f0b0d1919"),
+			CLOUDFLARE_ACCOUNT_ID: bindings.text(fromEnv("CLOUDFLARE_ACCOUNT_ID")),
 			// Audience tag of the Cloudflare Access application that protects /admin.
-			ACCESS_AUD: bindings.text("b04a2d0ead7c4054e2cf3ea58e43a1bcd1f9f276aa944fec5cb9c2f11f577bae"),
+			ACCESS_AUD: bindings.text(fromEnv("ACCESS_AUD")),
 		},
 	},
 });
