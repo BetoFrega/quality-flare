@@ -246,6 +246,13 @@ describe("tests on demand", () => {
 		const commanded = mockGitHub({ existingRuns: { Tests: "completed:action_required" } });
 		await runPlan({ pullRequests: [7], checks: [tests], command: { commentId: 5 } }, "octo/repo", 99, settings(true), free);
 		expect(ran).toEqual([pr.number, 7]);
+		// A status comment left from before the deploy stops saying the tests wait.
+		const before = mockGitHub();
+		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), env);
+		expect(before.comments[0].body).toContain("esperando");
+		const after = mockGitHub({ existingComments: [{ id: 3, ...before.comments[0] }], existingRuns: { Tests: "completed:neutral" } });
+		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), free);
+		expect(after.edits).toEqual([expect.objectContaining({ id: "3", body: expect.not.stringContaining("esperando") })]);
 	});
 
 	it("keeps one status comment on a ready PR, edited only when what it says changes", async () => {

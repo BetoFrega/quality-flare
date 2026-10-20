@@ -153,7 +153,7 @@ export async function runPlan(plan: Plan, repo: string, installationId: number, 
 			if (result) await github.createCheckRun(repo, pr.head.sha, check.name, result);
 		}
 		// Bots' PRs run on push and the setting off runs everything, so neither has anything to explain.
-		const reported = off ? [] : allChecks.filter((c) => c.onDemand && settings.enabledChecks.has(c.id)).map((c) => c.name);
+		const reported = allChecks.filter((c) => c.onDemand && settings.enabledChecks.has(c.id)).map((c) => c.name);
 		const affectsStatus = plan.finished || checks.some((c) => c.onDemand || c.id === codexReview.id);
 		if (settings.onDemand && !runsOnPush(true, pr) && reported.length && affectsStatus) {
 			// Agents watching a PR see a check's title, not its text; the comment reaches them.
@@ -161,7 +161,7 @@ export async function runPlan(plan: Plan, repo: string, installationId: number, 
 			await updateStatus(github, repo, pr, {
 				checks: reported,
 				appId: env.GITHUB_APP_ID,
-				codexBlock: runsCodex ? codexBlock : undefined,
+				codexBlock: runsCodex && !off ? codexBlock : undefined,
 				ignoredCommand: Boolean(blocked),
 				create: Boolean(plan.command) || (waiting.length > 0 && !pr.draft),
 			}).catch((error: unknown) => {
