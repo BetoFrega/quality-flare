@@ -84,8 +84,8 @@ describe("worker before setup", () => {
 		expect(turbo.status).toBe(503);
 	});
 
-	it("says what is left once the App exists", async () => {
+	it("sends the root to /setup until what is left is done", async () => {
 		const res = await worker.fetch(get("/") as Parameters<typeof worker.fetch>[0], { ...ready, ACCESS_AUD: "" } as Env, ctx);
-		expect(await res.text()).toContain("/setup");
+		expect(res.headers.get("Location")).toBe(`${BASE}/setup`);
 	});
 });

@@ -101,6 +101,13 @@ describe("admin", () => {
 		expect(await (await call(new Request("https://worker.example/admin"))).text()).toContain("https://github.com/apps/qf-test/installations/new");
 	});
 
+	it("links to this installation's docs and to the project's site", async () => {
+		const { call } = setup();
+		const page = await (await call(new Request("https://worker.example/admin"))).text();
+		expect(page).toContain('<a href="/docs">Docs</a>');
+		expect(page).toContain('<a href="https://quality-flare.frega.dev">Site</a>');
+	});
+
 	it("lists installed repositories, off by default, with their checks collapsed", async () => {
 		const { env, call } = setup();
 		await setRepoEnabled(env.SETTINGS, "octo/app", true);

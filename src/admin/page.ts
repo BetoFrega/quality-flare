@@ -2,6 +2,7 @@ import type { Check } from "../checks/types.ts";
 import type { InstalledRepo } from "../github.ts";
 import type { RepoSettings } from "../settings.ts";
 import { RUN_COMMAND } from "../on-demand.ts";
+import { DOCS_PATH, OFFICIAL_URL } from "../site.ts";
 
 export interface AdminPageData {
 	email?: string;
@@ -102,13 +103,13 @@ export function renderAdminPage({ email, checks, rows, open, query = {}, install
 	);
 }
 
-/** The admin's top bar: name, the two sections, and who is signed in. */
+/** The admin's top bar: name, its sections, links to the docs and the project's site, and who is signed in. */
 export function renderHeader(email: string | undefined, current: "repos" | "runs" | "costs"): string {
 	const link = (href: string, id: typeof current, text: string) =>
 		`<a href="${href}"${id === current ? ' aria-current="page"' : ""}>${text}</a>`;
 	return `<header>
 			<h1>quality-flare</h1>
-			<nav>${link("/admin", "repos", "Repositórios")}${link("/admin/runs", "runs", "Execuções de testes")}${link("/admin/costs", "costs", "Custos")}</nav>
+			<nav>${link("/admin", "repos", "Repositórios")}${link("/admin/runs", "runs", "Execuções de testes")}${link("/admin/costs", "costs", "Custos")}<a href="${DOCS_PATH}">Docs</a><a href="${OFFICIAL_URL}">Site</a></nav>
 			${email ? `<span class="who">${esc(email)}</span>` : ""}
 		</header>`;
 }
@@ -207,7 +208,7 @@ ${head}
 	body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
 	header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
 	h1 { font-size: 16px; margin: 0; }
-	nav { display: flex; gap: 16px; margin-right: auto; font-size: 14px; }
+	nav { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-right: auto; font-size: 14px; }
 	nav a { color: var(--muted); text-decoration: none; }
 	nav a[aria-current] { color: var(--fg); font-weight: 600; }
 	table { width: 100%; border-collapse: collapse; font-size: 14px; }

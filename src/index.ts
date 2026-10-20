@@ -10,7 +10,7 @@ import { codexReviewBlock, inheritedRuns, isRunCommand, type PullRequestComment,
 import { GitHubClient, type PullRequest } from "./github.ts";
 import { getRepoSettings, type RepoSettings } from "./settings.ts";
 import { appConfigured, handleSetup, SETUP_PATH, setupPending } from "./setup.ts";
-import { DOCS_PATH, handleDocs, handleHome } from "./site.ts";
+import { DOCS_PATH, handleDocs, handleHome, OFFICIAL_URL } from "./site.ts";
 import { handleTurboCache, TURBO_PATH } from "./turbo-cache.ts";
 
 const PULL_REQUEST_ACTIONS = new Set([
@@ -72,7 +72,11 @@ export default {
 			return new Response(`quality-flare is not set up yet: see ${SETUP_PATH}\n`, { status: 503 });
 		}
 		if (pathname.startsWith(`${TURBO_PATH}/`)) return handleTurboCache(request, env.TURBO_CACHE, env.GITHUB_WEBHOOK_SECRET);
-		if (reading && pathname === "/") return handleHome(setupPending(env));
+		if (reading && pathname === "/") {
+			if (new URL(request.url).origin === OFFICIAL_URL) return handleHome(setupPending(env));
+			// Other installations: the root is where their owner works, the admin, or /setup until it is finished.
+			return Response.redirect(new URL(setupPending(env) ? SETUP_PATH : ADMIN_PATH, request.url).href, 302);
+		}
 		if (request.method === "GET") return new Response(setupPending(env) ? `quality-flare is running; finish setting it up at ${SETUP_PATH}\n` : "quality-flare is running\n");
 		if (request.method !== "POST") return new Response("Method not allowed\n", { status: 405 });
 
