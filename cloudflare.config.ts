@@ -62,7 +62,9 @@ export default defineConfig({
 			// Runs one Container tests run in a container (src/checks/tests/container.ts). Reached through
 			// `exports` from cloudflare:workers, not a binding: a container's Durable Object can't be bound with a
 			// Worker name, which bindings.durableObject always sets.
-			...(noTests ? {} : { TestBox: exports.durableObject({ storage: "sqlite", container: testBox }) }),
+			// Without Workers Paid it stays declared, without its container: a namespace an earlier deploy created
+			// can't just disappear from the exports.
+			TestBox: exports.durableObject(noTests ? { storage: "sqlite" } : { storage: "sqlite", container: testBox }),
 		},
 		env: {
 			// GitHub App ID (or Client ID), used as the JWT issuer.
