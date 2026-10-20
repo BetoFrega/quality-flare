@@ -10,6 +10,7 @@ import { codexReviewBlock, inheritedRuns, isRunCommand, type PullRequestComment,
 import { GitHubClient, type PullRequest } from "./github.ts";
 import { getRepoSettings, type RepoSettings } from "./settings.ts";
 import { appConfigured, handleSetup, SETUP_PATH, setupPending } from "./setup.ts";
+import { DOCS_PATH, handleDocs, handleHome } from "./site.ts";
 import { handleTurboCache, TURBO_PATH } from "./turbo-cache.ts";
 
 const PULL_REQUEST_ACTIONS = new Set([
@@ -63,12 +64,15 @@ export default {
 		const { pathname } = new URL(request.url);
 		if (pathname === SETUP_PATH || pathname.startsWith(`${SETUP_PATH}/`)) return handleSetup(request, env);
 		if (pathname === ADMIN_PATH || pathname.startsWith(`${ADMIN_PATH}/`)) return handleAdmin(request, env, ctx.access);
+		const reading = request.method === "GET" || request.method === "HEAD";
+		if (reading && (pathname === DOCS_PATH || pathname.startsWith(`${DOCS_PATH}/`))) return handleDocs(pathname);
 		// Until the App exists its secrets are placeholders anyone could sign with (scripts/deploy.mjs).
 		if (!appConfigured(env)) {
 			if (request.method === "GET" && pathname === "/") return Response.redirect(new URL(SETUP_PATH, request.url).href, 302);
 			return new Response(`quality-flare is not set up yet: see ${SETUP_PATH}\n`, { status: 503 });
 		}
 		if (pathname.startsWith(`${TURBO_PATH}/`)) return handleTurboCache(request, env.TURBO_CACHE, env.GITHUB_WEBHOOK_SECRET);
+		if (reading && pathname === "/") return handleHome(setupPending(env));
 		if (request.method === "GET") return new Response(setupPending(env) ? `quality-flare is running; finish setting it up at ${SETUP_PATH}\n` : "quality-flare is running\n");
 		if (request.method !== "POST") return new Response("Method not allowed\n", { status: 405 });
 
