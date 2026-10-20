@@ -283,7 +283,14 @@ export class TestBox {
 		const job = await this.ctx.storage.get<BoxJob>("job");
 		const config = (await this.ctx.storage.get<ContainerConfig>("config")) ?? {};
 		const container = this.ctx.container;
-		if (!job || !container) return;
+		if (!job) return;
+		if (!container) {
+			// A deploy without the tests (no Workers Paid) took the container away mid-run: close the commands' check
+			// runs, which only this object knows; the sweep closes the run itself.
+			await this.abandon(job, { wallMs: Date.now() - job.startedAt }).catch(logError);
+			await this.ctx.storage.deleteAll();
+			return;
+		}
 		// A cancelled run (its job gone) skips the wait: pollBox below abandons it at once.
 		if ((job.restored || job.fallbackAt) && !(await this.ctx.storage.get("seen")) && (await d1JobStore(this.env.RUNS).get(job.runId))) {
 			if (!container.running) {

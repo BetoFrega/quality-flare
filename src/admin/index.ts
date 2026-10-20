@@ -1,4 +1,4 @@
-import { checksFor, testsOff } from "../checks/index.ts";
+import { adminChecksFor, testsOff } from "../checks/index.ts";
 import type { Check } from "../checks/types.ts";
 import { GitHubClient, type InstalledRepo } from "../github.ts";
 import { getRepoSettings, setChecksEnabled, setOnDemand, setRepoEnabled } from "../settings.ts";
@@ -39,7 +39,7 @@ export async function handleAdmin(
 	env: Env,
 	access: CloudflareAccessContext | undefined,
 	{
-		checks = checksFor(env),
+		checks = adminChecksFor(env),
 		listRepos = listInstalledRepos,
 		runs = (e) => d1RunStore(e.RUNS),
 		metrics = (e) => d1MetricsStore(e.RUNS),

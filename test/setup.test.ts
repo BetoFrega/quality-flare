@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
-import { checksFor } from "../src/checks/index.ts";
+import { adminChecksFor, checksFor, UNAVAILABLE_RESULT } from "../src/checks/index.ts";
 import { appConfigured, handleSetup, manifest, PENDING } from "../src/setup.ts";
 
 const ready = { GITHUB_APP_ID: "42", GITHUB_PRIVATE_KEY: "pem", GITHUB_WEBHOOK_SECRET: "s", PUBLIC_URL: "https://qf.example", ACCESS_AUD: "aud" } as Env;
@@ -28,10 +28,13 @@ describe("setup", () => {
 
 	it("without Workers Paid, drops the Tests checks and says so", async () => {
 		const free = { ...ready, TESTS_OFF: "free-plan" } as Env;
-		expect(checksFor(ready).map((c) => c.id)).toEqual(expect.arrayContaining(["tests", "container-tests"]));
-		expect(checksFor(free).map((c) => c.id)).not.toEqual(expect.arrayContaining(["tests"]));
-		expect(checksFor(free).map((c) => c.id)).toContain("closes-issue");
-		expect(checksFor(free).some((c) => c.onDemand)).toBe(false);
+		expect(adminChecksFor(ready).map((c) => c.id)).toEqual(expect.arrayContaining(["tests", "container-tests"]));
+		expect(adminChecksFor(free).map((c) => c.id)).not.toContain("tests");
+		expect(adminChecksFor(free).map((c) => c.id)).toContain("closes-issue");
+		// Webhooks still report them, as neutral, for branch protections that require them.
+		const tests = checksFor(free).find((c) => c.id === "tests")!;
+		expect(tests.onDemand).toBe(false);
+		expect(await tests.run({} as Parameters<typeof tests.run>[0])).toEqual(UNAVAILABLE_RESULT);
 		const page = await (await handleSetup(get("/setup"), free)).text();
 		expect(page).toContain("Workers Paid");
 		expect(page).toContain("Tudo pronto");
