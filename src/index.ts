@@ -99,9 +99,10 @@ export default {
 	},
 	// Fails Tests runs past their deadline, and once a day runs every test on default branches (see cloudflare.config.ts triggers).
 	async scheduled(controller, env) {
-		if (!appConfigured(env) || testsOff(env)) return;
-		if (controller.cron === DAILY_CRON) await runDailyFullRuns(env);
-		else await sweepOverdueRuns(env);
+		if (!appConfigured(env)) return;
+		// Without the Tests checks there is no daily run, but runs started before still need to expire.
+		if (controller.cron !== DAILY_CRON) await sweepOverdueRuns(env);
+		else if (!testsOff(env)) await runDailyFullRuns(env);
 	},
 } satisfies ExportedHandler<Env, TestShard>;
 
