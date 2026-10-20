@@ -7,8 +7,8 @@ export function evaluate(errors: string[]): CheckResult {
 	if (!errors.length) {
 		return {
 			conclusion: "success",
-			title: "Auto-merge habilitado (squash)",
-			summary: "A PR do Dependabot vai ser mergeada com squash assim que os checks exigidos passarem.",
+			title: "Auto-merge enabled (squash)",
+			summary: "The Dependabot PR will be squash-merged as soon as the required checks pass.",
 		};
 	}
 	const message = errors.join("; ");
@@ -17,18 +17,18 @@ export function evaluate(errors: string[]): CheckResult {
 	if (/clean status|unstable status/i.test(message)) {
 		return {
 			conclusion: "neutral",
-			title: "Nada a fazer: a PR já pode ser mergeada",
+			title: "Nothing to do: the PR can already be merged",
 			summary:
-				"O GitHub só aceita auto-merge enquanto há checks exigidos pendentes. Quando a branch base mudar, o Dependabot faz rebase e o check tenta de novo.",
+				"GitHub only accepts auto-merge while required checks are pending. When the base branch changes, Dependabot rebases and the check tries again.",
 		};
 	}
 	if (/auto.?merge is not allowed|not allowed for this repository/i.test(message)) {
-		return failure(message, "Ative **Settings → General → Pull Requests → Allow auto-merge** no repositório.");
+		return failure(message, "Turn on **Settings → General → Pull Requests → Allow auto-merge** in the repository.");
 	}
 	if (/not accessible by integration/i.test(message)) {
 		return failure(
 			message,
-			"A GitHub App precisa das permissões **Contents: Read and write** e **Pull requests: Read and write**, aceitas na instalação.",
+			"The GitHub App needs the **Contents: Read and write** and **Pull requests: Read and write** permissions, accepted on the installation.",
 		);
 	}
 	return failure(message);
@@ -37,7 +37,7 @@ export function evaluate(errors: string[]): CheckResult {
 function failure(message: string, fix?: string): CheckResult {
 	return {
 		conclusion: "failure",
-		title: "Não foi possível habilitar o auto-merge",
-		summary: [`O GitHub respondeu: ${message}`, fix].filter(Boolean).join("\n\n"),
+		title: "Could not enable auto-merge",
+		summary: [`GitHub responded: ${message}`, fix].filter(Boolean).join("\n\n"),
 	};
 }

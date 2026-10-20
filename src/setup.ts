@@ -58,7 +58,7 @@ export interface SetupDeps {
 }
 
 export async function handleSetup(request: Request, env: Env, { fetch: fetchFn = fetch, random = randomState }: SetupDeps = {}): Promise<Response> {
-	if (request.method !== "GET") return html(renderMessage("Método não permitido", ""), 405);
+	if (request.method !== "GET") return html(renderMessage("Method not allowed", ""), 405);
 	const url = new URL(request.url);
 	const path = url.pathname.replace(/\/+$/, "");
 
@@ -71,7 +71,7 @@ export async function handleSetup(request: Request, env: Env, { fetch: fetchFn =
 
 	if (path === `${SETUP_PATH}/github`) {
 		const org = url.searchParams.get("org")?.trim() ?? "";
-		if (org && !/^[A-Za-z0-9-]{1,39}$/.test(org)) return html(renderMessage("Organização inválida", org), 400);
+		if (org && !/^[A-Za-z0-9-]{1,39}$/.test(org)) return html(renderMessage("Invalid organization", org), 400);
 		const state = random();
 		const target = org ? `https://github.com/organizations/${org}/settings/apps/new` : "https://github.com/settings/apps/new";
 		return html(renderManifestForm(`${target}?state=${state}`, manifest(url)), 200, {
@@ -83,18 +83,18 @@ export async function handleSetup(request: Request, env: Env, { fetch: fetchFn =
 		const code = url.searchParams.get("code");
 		const state = url.searchParams.get("state");
 		if (!code || !/^[A-Za-z0-9_-]+$/.test(code) || !state || cookie(request, STATE_COOKIE) !== state) {
-			return html(renderMessage("Link expirado", `Comece de novo em ${SETUP_PATH}.`), 400);
+			return html(renderMessage("Link expired", `Start again at ${SETUP_PATH}.`), 400);
 		}
 		const res = await fetchFn(`https://api.github.com/app-manifests/${code}/conversions`, {
 			method: "POST",
 			headers: { Accept: "application/vnd.github+json", "User-Agent": "quality-flare", "X-GitHub-Api-Version": "2022-11-28" },
 		});
-		if (!res.ok) return html(renderMessage("O GitHub recusou o código", `${res.status} ${await res.text()}`), 502);
+		if (!res.ok) return html(renderMessage("GitHub refused the code", `${res.status} ${await res.text()}`), 502);
 		const app = (await res.json()) as CreatedApp;
 		return html(renderCreated(app), 200, { "Set-Cookie": `${STATE_COOKIE}=; Path=${SETUP_PATH}; Max-Age=0; HttpOnly; Secure; SameSite=Lax` });
 	}
 
-	return html(renderMessage("Página não encontrada", ""), 404);
+	return html(renderMessage("Page not found", ""), 404);
 }
 
 interface CreatedApp {
@@ -132,36 +132,36 @@ function renderStatus(env: Env, origin: string): string {
 			app,
 			"GitHub App",
 			app
-				? `<p>Configurada (App ID ${esc(env.GITHUB_APP_ID)}).</p>`
-				: `<p>Cria a App no GitHub com as permissões e eventos que os checks usam, apontando o webhook para este endereço.</p>
+				? `<p>Set up (App ID ${esc(env.GITHUB_APP_ID)}).</p>`
+				: `<p>Creates the App on GitHub with the permissions and events the checks use, with its webhook pointing to this address.</p>
 				<form method="get" action="${SETUP_PATH}/github">
-					<label>Organização (vazio para a sua conta) <input name="org" placeholder="minha-org" pattern="[A-Za-z0-9-]{1,39}"></label>
-					<button type="submit">Criar a GitHub App</button>
+					<label>Organization (empty for your account) <input name="org" placeholder="my-org" pattern="[A-Za-z0-9-]{1,39}"></label>
+					<button type="submit">Create the GitHub App</button>
 				</form>`,
 		),
 		step(
 			Boolean(env.PUBLIC_URL),
-			"Endereço público",
+			"Public address",
 			env.PUBLIC_URL
 				? `<p><code>PUBLIC_URL</code> = <code>${esc(env.PUBLIC_URL)}</code>.</p>`
-				: `<p>Adicione a variável de build <code>PUBLIC_URL</code> = <code>${esc(origin)}</code> (ou o seu domínio) em <a href="${DASHBOARD}">Settings → Build → Variables and secrets</a> do Worker. Os check runs linkam para o admin nele.</p>`,
+				: `<p>Add the build variable <code>PUBLIC_URL</code> = <code>${esc(origin)}</code> (or your own domain) in the Worker's <a href="${DASHBOARD}">Settings → Build → Variables and secrets</a>. Check runs link to the admin at this address.</p>`,
 		),
 		step(
 			Boolean(env.ACCESS_AUD),
-			"Login do admin (Cloudflare Access)",
+			"Admin sign-in (Cloudflare Access)",
 			env.ACCESS_AUD
-				? `<p>O admin está em <a href="/admin">/admin</a>.</p>`
-				: `<p>No <a href="${ZERO_TRUST}">Zero Trust</a>, em Access → Applications, crie uma aplicação <em>Self-hosted</em> para <code>${esc(new URL(origin).host)}</code> com os caminhos <code>admin</code> e <code>admin/*</code> e uma política que permita o seu e-mail. Copie o <em>Application Audience (AUD) Tag</em> para a variável de build <code>ACCESS_AUD</code>.</p>`,
+				? `<p>The admin is at <a href="/admin">/admin</a>.</p>`
+				: `<p>In <a href="${ZERO_TRUST}">Zero Trust</a>, under Access → Applications, create a <em>Self-hosted</em> application for <code>${esc(new URL(origin).host)}</code> with the paths <code>admin</code> and <code>admin/*</code> and a policy that allows your email. Copy the <em>Application Audience (AUD) Tag</em> into the build variable <code>ACCESS_AUD</code>.</p>`,
 		),
 	];
 	// Not a step: the other checks work without Workers Paid, and the deploy turns the tests on once the account has it.
-	if (testsOff(env)) steps.push(`<li><h3>ℹ️ Testes</h3><p>${TESTS_OFF_NOTE}</p></li>`);
+	if (testsOff(env)) steps.push(`<li><h3>ℹ️ Tests</h3><p>${TESTS_OFF_NOTE}</p></li>`);
 	const done = !setupPending(env);
 	return layout(
-		"Instalação",
+		"Setup",
 		`<main>
-			<h2>Instalação do quality-flare</h2>
-			<p class="hint">${done ? "Tudo pronto. Instale a App nos repositórios e ative-os no admin." : "Depois de mudar variáveis ou secrets de build, rode o build de novo (Deployments → Retry build, ou um push na main) para publicar com eles."}</p>
+			<h2>quality-flare setup</h2>
+			<p class="hint">${done ? "All set. Install the App on your repositories and enable them in the admin." : "After you change build variables or secrets, run the build again (Deployments → Retry build, or a push to main) to deploy with them."}</p>
 			<ol class="setup">${steps.join("")}</ol>
 		</main>`,
 		`<style>.setup { list-style: none; padding: 0; } .setup li { border-top: 1px solid var(--line); padding: 12px 0; } .setup h3 { margin: 0 0 4px; } .setup label { display: flex; flex-direction: column; gap: 2px; color: var(--muted); font-size: 13px; margin: 8px 0; } .setup input { font: inherit; padding: 4px 8px; max-width: 280px; } .setup textarea { width: 100%; font: 12px ui-monospace, monospace; } code { overflow-wrap: anywhere; }</style>`,
@@ -175,12 +175,12 @@ function step(ok: boolean, title: string, body: string): string {
 /** Sends the manifest to GitHub: a form that submits itself, with a button if scripts are off. */
 function renderManifestForm(action: string, app: object): string {
 	return layout(
-		"Criar a GitHub App",
+		"Create the GitHub App",
 		`<main>
-			<h2>Criando a GitHub App…</h2>
+			<h2>Creating the GitHub App…</h2>
 			<form id="manifest" method="post" action="${esc(action)}">
 				<input type="hidden" name="manifest" value="${esc(JSON.stringify(app))}">
-				<button type="submit">Continuar no GitHub</button>
+				<button type="submit">Continue on GitHub</button>
 			</form>
 			<script>document.getElementById("manifest").submit();</script>
 		</main>`,
@@ -191,21 +191,21 @@ function renderCreated(app: CreatedApp): string {
 	const secret = (name: string, value: string, rows = 1) =>
 		`<label><code>${name}</code><textarea readonly rows="${rows}">${esc(value)}</textarea></label>`;
 	return layout(
-		"GitHub App criada",
+		"GitHub App created",
 		`<main>
-			<h2>GitHub App <a href="${esc(app.html_url)}">${esc(app.slug)}</a> criada</h2>
-			<p class="hint">Estes valores aparecem só agora: o quality-flare não os guarda. Se perder esta página, gere outra chave e outro webhook secret nas configurações da App.</p>
+			<h2>GitHub App <a href="${esc(app.html_url)}">${esc(app.slug)}</a> created</h2>
+			<p class="hint">These values show only now: quality-flare does not store them. If you lose this page, generate a new key and a new webhook secret in the App's settings.</p>
 			<ol class="setup">
-				<li><h3>1. Guarde os secrets</h3>
-					<p>Em <a href="${DASHBOARD}">Settings → Build → Variables and secrets</a> do Worker, adicione cada um como <em>Secret</em>:</p>
+				<li><h3>1. Save the secrets</h3>
+					<p>In the Worker's <a href="${DASHBOARD}">Settings → Build → Variables and secrets</a>, add each one as a <em>Secret</em>:</p>
 					${secret("GITHUB_APP_ID", String(app.id))}
 					${secret("GITHUB_WEBHOOK_SECRET", app.webhook_secret)}
 					${secret("GITHUB_PRIVATE_KEY", app.pem, 8)}
 				</li>
-				<li><h3>2. Publique de novo</h3><p>Deployments → Retry build (ou um push na main). O deploy passa os secrets para o Worker.</p></li>
-				<li><h3>3. Instale a App</h3><p><a href="${esc(app.html_url)}/installations/new">Escolha os repositórios</a>; depois ative-os no admin.</p></li>
+				<li><h3>2. Deploy again</h3><p>Deployments → Retry build (or a push to main). The deploy passes the secrets to the Worker.</p></li>
+				<li><h3>3. Install the App</h3><p><a href="${esc(app.html_url)}/installations/new">Choose the repositories</a>, then enable them in the admin.</p></li>
 			</ol>
-			<p><a href="${SETUP_PATH}">Voltar para a instalação</a></p>
+			<p><a href="${SETUP_PATH}">Back to setup</a></p>
 		</main>`,
 		`<style>.setup { list-style: none; padding: 0; } .setup li { border-top: 1px solid var(--line); padding: 12px 0; } .setup h3 { margin: 0 0 4px; } .setup label { display: flex; flex-direction: column; gap: 2px; margin: 8px 0; } .setup textarea { width: 100%; font: 12px ui-monospace, monospace; }</style>`,
 	);

@@ -455,7 +455,7 @@ export default { fetch: handleRequest };`,
 		const pkg = /^(@[^/]+\/)?[^/]+/.exec(specifier)?.[0];
 		if (pkg && NATIVE_PACKAGES.has(pkg)) {
 			const module = `__qf/native/${pkg}.js`;
-			const message = `O pacote "${pkg}" usa um binário nativo, que não roda no Workers.`;
+			const message = `The package "${pkg}" uses a native binary, which does not run on Workers.`;
 			// require() of an ES module returns its default export in workerd: CommonJS gets the proxy too.
 			modules[module] ??= {
 				js: `const fail = () => { throw new Error(${JSON.stringify(message)}); };\nexport default new Proxy(function () {}, { get: (_, key) => (typeof key === "string" && key !== "__esModule" && key !== "then" ? fail() : undefined), apply: fail, construct: fail });`,
@@ -472,7 +472,7 @@ export default { fetch: handleRequest };`,
 			unresolved.push(entry);
 			const name = `__qf/missing/${specifier.replace(/[^\w.@-]+/g, "_")}.js`;
 			missingNames.set(entry, `/${name}`);
-			modules[name] = { js: `throw new Error(${JSON.stringify(reason ? `"${from}" importa "${specifier}": ${reason}` : missingMessage(specifier, from))});` };
+			modules[name] = { js: `throw new Error(${JSON.stringify(reason ? `"${from}" imports "${specifier}": ${reason}` : missingMessage(specifier, from))});` };
 			return `/${name}`;
 		}
 		enqueue(target);
@@ -529,7 +529,7 @@ export default { fetch: handleRequest };`,
 	/** A module that can't be parsed fails when imported, not the whole bundle. */
 	const load = (name: string) =>
 		loadModule(name).catch((error: unknown) => {
-			const message = `quality-flare não conseguiu ler "${name}": ${error instanceof Error ? error.message : String(error)}`;
+			const message = `quality-flare could not read "${name}": ${error instanceof Error ? error.message : String(error)}`;
 			modules[name] = { js: `throw new Error(${JSON.stringify(message)});` };
 		});
 
@@ -538,7 +538,7 @@ export default { fetch: handleRequest };`,
 		const source = sourceOf(name);
 		const kind = kindOf(name);
 		if (source === undefined) {
-			modules[name] = { js: `throw new Error(${JSON.stringify(`Não foi possível baixar ${name}`)});` };
+			modules[name] = { js: `throw new Error(${JSON.stringify(`Could not download ${name}`)});` };
 		} else if (kind === "json") {
 			modules[name] = { json: JSON.parse(source) };
 		} else if (kind === "cjs") {
@@ -633,7 +633,7 @@ export default { fetch: handleRequest };`,
 		if (repoFiles.has(path)) enqueue(path);
 		else {
 			unresolved.push({ specifier: path, from: "quality-flare.json" });
-			modules[path] = { js: `throw new Error(${JSON.stringify(`quality-flare.json cita "${path}", que não existe no repositório.`)});` };
+			modules[path] = { js: `throw new Error(${JSON.stringify(`quality-flare.json names "${path}", which does not exist in the repository.`)});` };
 		}
 	}
 	// Breadth first, one wave at a time, so packages download in parallel.
@@ -1157,15 +1157,15 @@ function rootJson(files: Map<string, string>): PackageJson {
 /** A locked package whose download or reading failed. */
 class DownloadFailed extends Error {
 	constructor(locked: LockedPackage, cause: unknown) {
-		super(`não foi possível baixar ${locked.name}@${locked.version} do npm (${cause instanceof Error ? cause.message : String(cause)})`);
+		super(`could not download ${locked.name}@${locked.version} from npm (${cause instanceof Error ? cause.message : String(cause)})`);
 	}
 }
 
 function missingMessage(specifier: string, from: string): string {
 	const isPackage = !/^[./#]/.test(specifier);
 	return isPackage
-		? `"${from}" importa o pacote "${specifier}", que não está no lockfile (pnpm-lock.yaml ou package-lock.json) ou não pôde ser baixado do npm.`
-		: `"${from}" importa "${specifier}", que não foi encontrado.`;
+		? `"${from}" imports the package "${specifier}", which is not in the lockfile (pnpm-lock.yaml or package-lock.json) or could not be downloaded from npm.`
+		: `"${from}" imports "${specifier}", which was not found.`;
 }
 
 /** TypeScript and JSX to plain JavaScript; JSX through React's automatic runtime, as Vite's React plugin does. */

@@ -60,7 +60,7 @@ describe.skipIf(inWorkers)("test run history", () => {
 		const pr = { number: 7, body: null, head: { sha: "abc" }, labels: [] } as unknown as PullRequest;
 		const result = await tests.run({ github, repo: "octo/app", pr, env: { RUNS } as Env, installationId: 1 });
 
-		expect(result).toMatchObject({ conclusion: "failure", title: "Não foi possível rodar os testes" });
+		expect(result).toMatchObject({ conclusion: "failure", title: "Could not run the tests" });
 		const [run] = await d1RunStore(RUNS).list();
 		expect(run).toMatchObject({ repo: "octo/app", pr: 7, sha: "abc", status: "completed", conclusion: "failure" });
 	});

@@ -17,13 +17,13 @@ describe("setup", () => {
 
 	it("lists what is missing, with this Worker's address as PUBLIC_URL", async () => {
 		const page = await (await handleSetup(get("/setup"), fresh)).text();
-		expect(page).toContain("Criar a GitHub App");
+		expect(page).toContain("Create the GitHub App");
 		expect(page).toContain(`<code>${BASE}</code>`);
 		expect(page).toContain("ACCESS_AUD");
 		const done = await (await handleSetup(get("/setup"), ready)).text();
-		expect(done).toContain("Tudo pronto");
+		expect(done).toContain("All set");
 		expect(done).toContain("App ID 42");
-		expect(done).not.toContain("Criar a GitHub App");
+		expect(done).not.toContain("Create the GitHub App");
 	});
 
 	it("without Workers Paid, drops the Tests checks and says so", async () => {
@@ -36,7 +36,7 @@ describe("setup", () => {
 		expect(await tests.run({} as Parameters<typeof tests.run>[0])).toEqual(UNAVAILABLE_RESULT);
 		const page = await (await handleSetup(get("/setup"), free)).text();
 		expect(page).toContain("Workers Paid");
-		expect(page).toContain("Tudo pronto");
+		expect(page).toContain("All set");
 		expect(await (await handleSetup(get("/setup"), ready)).text()).not.toContain("Workers Paid");
 	});
 

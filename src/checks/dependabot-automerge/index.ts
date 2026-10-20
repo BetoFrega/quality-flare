@@ -11,7 +11,7 @@ export const dependabotAutomerge: Check = {
 	pullRequestActions: COMMIT_ACTIONS,
 	async run({ github, pr }) {
 		if (pr.user.login !== DEPENDABOT_LOGIN) {
-			return { conclusion: "neutral", title: "Não é uma PR do Dependabot", summary: "Este check só age em PRs abertas pelo Dependabot." };
+			return { conclusion: "neutral", title: "Not a Dependabot PR", summary: "This check only acts on PRs opened by Dependabot." };
 		}
 		return evaluate(await github.enableAutoMerge(pr.node_id, "SQUASH"));
 	},

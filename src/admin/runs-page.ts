@@ -12,10 +12,10 @@ const LIVE = '<script src="/admin/live.js" defer></script>';
 const FALLBACK = '<noscript><meta http-equiv="refresh" content="5"></noscript>';
 
 const SORT_LABEL: Record<RunSort, string> = {
-	recent: "Mais recentes",
-	oldest: "Mais antigas",
-	longest: "Mais demoradas",
-	shortest: "Mais rápidas",
+	recent: "Most recent",
+	oldest: "Oldest",
+	longest: "Slowest",
+	shortest: "Fastest",
 };
 
 /** Reads the runs list's filter and sort from the query string, ignoring values it doesn't know. */
@@ -47,7 +47,7 @@ export function renderRunsPage({ runs, repos, query, usage = new Map(), containe
 			return `<tr>
 				<td class="state ${s}"><a href="/admin/runs/${run.id}">${ICON[s]} ${LABEL[s]}</a></td>
 				<td>${target(run)} <span class="mono">${esc(run.sha.slice(0, 7))}</span></td>
-				<td>${s === "running" ? `<span data-progress="${run.id}">Preparando…</span>` : esc(run.title ?? "")}</td>
+				<td>${s === "running" ? `<span data-progress="${run.id}">Preparing…</span>` : esc(run.title ?? "")}</td>
 				<td class="num">${when(run.startedAt, now)}</td>
 				<td class="num">${duration(run, now)}</td>
 				${usageCells(usage.get(run.id), containers.get(run.id))}
@@ -55,23 +55,23 @@ export function renderRunsPage({ runs, repos, query, usage = new Map(), containe
 		})
 		.join("");
 	const table = runs.length
-		? `<div class="scroll"><table><thead><tr><th>Estado</th><th>PR</th><th>Resultado</th><th class="num">Início</th><th class="num">Duração</th><th class="num" title="Dynamic Workers criados (e quedas)">DW</th><th class="num">Custo est.</th></tr></thead><tbody>${rows}</tbody></table></div>`
+		? `<div class="scroll"><table><thead><tr><th>Status</th><th>PR</th><th>Result</th><th class="num">Started</th><th class="num">Duration</th><th class="num" title="Dynamic Workers created (and crashes)">DW</th><th class="num">Est. cost</th></tr></thead><tbody>${rows}</tbody></table></div>`
 		: filtered
-			? `<p class="empty">Nenhuma execução com esses filtros. <a href="/admin/runs">Limpar filtros</a></p>`
-			: `<p class="empty">Nenhuma execução ainda. O check Tests roda quando está ativo num repositório e uma PR recebe commits.</p>`;
+			? `<p class="empty">No runs match these filters. <a href="/admin/runs">Clear filters</a></p>`
+			: `<p class="empty">No runs yet. The Tests check runs when it is enabled on a repository and a PR gets commits.</p>`;
 	const filters = `<form class="filters" method="get" action="/admin/runs">
-				${select("repo", "Repositório", query.repo ?? "", [["", "Todos os repositórios"], ...repos.map((r): [string, string] => [r, r])])}
-				${select("state", "Estado", query.state ?? "", [["", "Todos os estados"], ...RUN_STATES.map((s): [string, string] => [s, LABEL[s]])])}
-				${select("sort", "Ordenar", query.sort ?? "recent", RUN_SORTS.map((s): [string, string] => [s, SORT_LABEL[s]]))}
-				<button type="submit" class="secondary">Aplicar</button>
-				${filtered || (query.sort && query.sort !== "recent") ? '<a href="/admin/runs">Limpar</a>' : ""}
+				${select("repo", "Repository", query.repo ?? "", [["", "All repositories"], ...repos.map((r): [string, string] => [r, r])])}
+				${select("state", "Status", query.state ?? "", [["", "All statuses"], ...RUN_STATES.map((s): [string, string] => [s, LABEL[s]])])}
+				${select("sort", "Sort", query.sort ?? "recent", RUN_SORTS.map((s): [string, string] => [s, SORT_LABEL[s]]))}
+				<button type="submit" class="secondary">Apply</button>
+				${filtered || (query.sort && query.sort !== "recent") ? '<a href="/admin/runs">Clear</a>' : ""}
 			</form>`;
 	return layout(
-		"Execuções de testes",
+		"Test runs",
 		`${renderHeader(email, "runs")}
 		<main data-live="all">
-			<h2>Execuções de testes</h2>
-			<p class="hint">Até 50 execuções do check Tests. A página acompanha ao vivo os testes que estão rodando.</p>
+			<h2>Test runs</h2>
+			<p class="hint">Up to 50 runs of the Tests check. The page follows running tests live.</p>
 			${filters}
 			${table}
 		</main>`,
@@ -107,17 +107,17 @@ export function renderRunPage(
 		.join("");
 	const body =
 		s === "running"
-			? `<p data-progress="${run.id}">Preparando os testes…</p><ul class="tests" data-tests="${run.id}"></ul>`
+			? `<p data-progress="${run.id}">Preparing the tests…</p><ul class="tests" data-tests="${run.id}"></ul>`
 			: s === "stale"
-				? "<p>A execução foi interrompida antes de terminar: o Worker parou (limite de memória ou de tempo) sem registrar o resultado. Nada continua rodando. Rode de novo com <strong>Re-run</strong> na PR.</p>"
+				? "<p>The run stopped before it finished: the Worker stopped (memory or time limit) without recording the result. Nothing is still running. Run it again with <strong>Re-run</strong> on the PR.</p>"
 				: files.length
-					? `<table><thead><tr><th></th><th>Arquivo</th><th class="num">Passaram</th></tr></thead><tbody>${fileRows}</tbody></table>${details}`
+					? `<table><thead><tr><th></th><th>File</th><th class="num">Passed</th></tr></thead><tbody>${fileRows}</tbody></table>${details}`
 					: `<pre>${esc(run.summary ?? "")}</pre>`;
 	return layout(
-		`Execução ${run.id}`,
+		`Run ${run.id}`,
 		`${renderHeader(email, "runs")}
 		<main${s === "running" ? ` data-live="${run.id}"` : ""}>
-			<p class="hint"><a href="/admin/runs">← Execuções de testes</a></p>
+			<p class="hint"><a href="/admin/runs">← Test runs</a></p>
 			<h2 class="state ${s}">${ICON[s]} ${esc(run.title ?? LABEL[s])}</h2>
 			<p class="meta">
 				${target(run)}
@@ -136,12 +136,12 @@ export function renderRunPage(
 type State = keyof typeof ICON;
 
 const LABEL: Record<State, string> = {
-	success: "Passou",
-	failure: "Falhou",
-	neutral: "Neutro",
-	cancelled: "Cancelada",
-	running: "Rodando",
-	stale: "Interrompida",
+	success: "Passed",
+	failure: "Failed",
+	neutral: "Neutral",
+	cancelled: "Cancelled",
+	running: "Running",
+	stale: "Interrupted",
 };
 
 const testIcon = (s: string) => (s === "pass" ? ICON.success : s === "fail" ? ICON.failure : ICON.neutral);
@@ -156,9 +156,9 @@ function duration(run: TestRun, now: number): string {
 
 function when(at: number, now: number): string {
 	const s = Math.round((now - at) / 1000);
-	if (s < 60) return "agora";
-	if (s < 3600) return `há ${Math.floor(s / 60)} min`;
-	if (s < 86_400) return `há ${Math.floor(s / 3600)} h`;
+	if (s < 60) return "now";
+	if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+	if (s < 86_400) return `${Math.floor(s / 3600)} h ago`;
 	return new Date(at).toISOString().slice(0, 10);
 }
 
@@ -166,20 +166,20 @@ function when(at: number, now: number): string {
 function renderContainerUsage(u: BoxUsage): string {
 	const size = instanceSize(u.instance);
 	const items: [string, string][] = [
-		["Custo estimado", money(boxCost(u))],
+		["Estimated cost", money(boxCost(u))],
 		["Container", `${u.instance ?? DEFAULT_INSTANCE} (${size.vcpu} vCPU, ${size.memoryGiB} GiB)`],
-		["Tempo ligado", cpu(u.wallMs)],
-		["CPU usada", u.cpuUs === undefined ? "—" : cpu(Math.round(u.cpuUs / 1000))],
+		["Time on", cpu(u.wallMs)],
+		["CPU used", u.cpuUs === undefined ? "—" : cpu(Math.round(u.cpuUs / 1000))],
 	];
 	return `<section class="usage">
-		<h3>Uso e custo</h3>
+		<h3>Usage and cost</h3>
 		<dl class="stats">${items.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>
-		<p class="hint">Estimativa sem a franquia mensal: memória e disco pelo tempo ligado, CPU pelo que foi usado.</p>
+		<p class="hint">Estimate without the monthly allowance: memory and disk for the time it was on, CPU for what it used.</p>
 	</section>`;
 }
 
 /** The PR a run tested, or the commit for a full run, which has none (pr 0). */
 function target(run: Pick<TestRun, "repo" | "pr" | "sha">): string {
-	if (!run.pr) return `<a href="https://github.com/${esc(run.repo)}/commit/${esc(run.sha)}">${esc(run.repo)} (run completa)</a>`;
+	if (!run.pr) return `<a href="https://github.com/${esc(run.repo)}/commit/${esc(run.sha)}">${esc(run.repo)} (full run)</a>`;
 	return `<a href="https://github.com/${esc(run.repo)}/pull/${run.pr}">${esc(run.repo)}#${run.pr}</a>`;
 }

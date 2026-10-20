@@ -46,8 +46,8 @@ interface WebhookPayload {
  */
 export const DISABLED_RESULT: CheckResult = {
 	conclusion: "neutral",
-	title: "Desativado",
-	summary: "Este check está desativado para este repositório no admin do quality-flare.",
+	title: "Disabled",
+	summary: "This check is disabled for this repository in the quality-flare admin.",
 };
 
 export interface Plan {

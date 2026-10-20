@@ -51,6 +51,6 @@ describe("evaluate", () => {
 	});
 
 	it("fails with GitHub's message otherwise", () => {
-		expect(evaluate(["boom"])).toMatchObject({ conclusion: "failure", summary: "O GitHub respondeu: boom" });
+		expect(evaluate(["boom"])).toMatchObject({ conclusion: "failure", summary: "GitHub responded: boom" });
 	});
 });

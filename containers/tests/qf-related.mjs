@@ -176,18 +176,18 @@ function related(base, config) {
 		if (NPM_LOCKFILE.test(path)) {
 			for (const [name, cause] of lockfilePackages(json(atBase(base, path)), json(current(path)))) packages.set(name, cause);
 		} else if (OTHER_LOCKFILE.test(path)) {
-			return all(`${path} mudou e só package-lock.json é lido.`);
+			return all(`${path} changed, and only package-lock.json is read.`);
 		} else if (MANIFEST.test(path)) {
 			const before = json(atBase(base, path));
 			const after = json(current(path));
 			if (!locked) for (const name of changedDependencies(before, after)) if (runs(name)) packages.set(name, name);
 			// A workspace added or removed: its files are in the diff.
 			if (!before || !after) {
-				if (path === "package.json") return all("package.json foi criado ou removido.");
+				if (path === "package.json") return all("package.json was created or removed.");
 			} else if (without(before, DEPENDENCY_FIELDS) !== without(after, DEPENDENCY_FIELDS)) {
 				metadata = true;
 				if (without(before, [...DEPENDENCY_FIELDS, ...METADATA_FIELDS]) === without(after, [...DEPENDENCY_FIELDS, ...METADATA_FIELDS])) continue;
-				if (path === "package.json") return all("package.json mudou além de dependências e scripts.");
+				if (path === "package.json") return all("package.json changed beyond dependencies and scripts.");
 				for (const file of lines(git("ls-files", "-z", "--", path.slice(0, -"package.json".length)))) {
 					if (!RERUN_TRIGGER.test(file)) files.add(file);
 				}
@@ -198,11 +198,11 @@ function related(base, config) {
 	}
 	const naming = [...filesNaming([...packages.keys()], metadata)];
 	for (const [name, cause] of packages) {
-		if (name === "vitest" || name === "vite" || name.startsWith("@vitest/")) return all(cause === name ? `${name} mudou.` : `${cause} mudou e ${name} depende dele.`);
+		if (name === "vitest" || name === "vite" || name.startsWith("@vitest/")) return all(cause === name ? `${name} changed.` : `${cause} changed and ${name} depends on it.`);
 	}
 	const configs = configFiles(config);
 	const configuring = naming.find((file) => configs.has(file));
-	if (configuring) return all(`${configuring} usa um pacote que mudou.`);
+	if (configuring) return all(`${configuring} uses a package that changed.`);
 	return [...new Set([...files, ...naming.filter((file) => !RERUN_TRIGGER.test(file))])];
 }
 

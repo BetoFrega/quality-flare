@@ -45,7 +45,7 @@ export async function handleAdmin(
 		metrics = (e) => d1MetricsStore(e.RUNS),
 		account = async (e) => {
 			// Bound only when the deploy had SECRETS_STORE_ID and CLOUDFLARE_ACCOUNT_ID (cloudflare.config.ts).
-			if (!e.ANALYTICS_TOKEN) throw new Error("Sem token de analytics: defina SECRETS_STORE_ID e CLOUDFLARE_ACCOUNT_ID no build (veja o README).");
+			if (!e.ANALYTICS_TOKEN) throw new Error("No analytics token: set SECRETS_STORE_ID and CLOUDFLARE_ACCOUNT_ID in the build (see the README).");
 			return accountUsage({ token: await e.ANALYTICS_TOKEN.get(), account: e.CLOUDFLARE_ACCOUNT_ID, script: "quality-flare" });
 		},
 		installUrl = (e) => GitHubClient.installUrl({ appId: e.GITHUB_APP_ID, privateKey: e.GITHUB_PRIVATE_KEY }),
@@ -53,10 +53,10 @@ export async function handleAdmin(
 	}: AdminDeps = {},
 ): Promise<Response> {
 	if (!env.ACCESS_AUD) {
-		return html(renderMessage("Admin fechado", `O Cloudflare Access ainda não protege o admin. Veja ${SETUP_PATH} para configurar.`), 403);
+		return html(renderMessage("Admin closed", `Cloudflare Access does not protect the admin yet. See ${SETUP_PATH} to set it up.`), 403);
 	}
 	if (!access || access.aud !== env.ACCESS_AUD) {
-		return html(renderMessage("Acesso negado", "Entre pelo Cloudflare Access para usar o admin."), 403);
+		return html(renderMessage("Access denied", "Sign in through Cloudflare Access to use the admin."), 403);
 	}
 	const url = new URL(request.url);
 	const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -81,9 +81,9 @@ export async function handleAdmin(
 	}
 
 	if (request.method === "GET" && path === `${ADMIN_PATH}/live`) {
-		if (request.headers.get("Upgrade") !== "websocket") return html(renderMessage("Esperava um WebSocket", ""), 426);
+		if (request.headers.get("Upgrade") !== "websocket") return html(renderMessage("Expected a WebSocket", ""), 426);
 		// The browser sends Origin on WebSocket handshakes; refuse other sites.
-		if (request.headers.get("Origin") !== url.origin) return html(renderMessage("Origem inválida", ""), 403);
+		if (request.headers.get("Origin") !== url.origin) return html(renderMessage("Invalid origin", ""), 403);
 		return hub(env.LIVE).fetch(request);
 	}
 
@@ -105,7 +105,7 @@ export async function handleAdmin(
 	const runMatch = request.method === "GET" ? new RegExp(`^${ADMIN_PATH}/runs/(\\d+)$`).exec(path) : null;
 	if (runMatch) {
 		const run = await runs(env).get(Number(runMatch[1]));
-		if (!run) return html(renderMessage("Execução não encontrada", ""), 404);
+		if (!run) return html(renderMessage("Run not found", ""), 404);
 		const identity = await access.getIdentity();
 		const store = metrics(env);
 		const [usage, attempts, container] = await Promise.all([
@@ -143,7 +143,7 @@ export async function handleAdmin(
 
 	if (request.method === "POST" && path.startsWith(`${ADMIN_PATH}/`)) {
 		// Forms post from the admin page itself; anything else is a cross-site request.
-		if (request.headers.get("Origin") !== url.origin) return html(renderMessage("Origem inválida", ""), 403);
+		if (request.headers.get("Origin") !== url.origin) return html(renderMessage("Invalid origin", ""), 403);
 		const form = await request.formData();
 		const enabled = form.get("enabled") === "true";
 		const repo = (await listRepos(env)).find((r) => r.full_name === form.get("repo"))?.full_name;
@@ -166,7 +166,7 @@ export async function handleAdmin(
 				await setChecksEnabled(env.SETTINGS, repo, checks.map((c) => c.id), enabled);
 				break;
 			default:
-				return html(renderMessage("Página não encontrada", ""), 404);
+				return html(renderMessage("Page not found", ""), 404);
 		}
 		// Return to the same filtered view. Changes to checks happen inside the repository's
 		// collapsible, so keep it open.
@@ -175,7 +175,7 @@ export async function handleAdmin(
 		return Response.redirect(`${url.origin}${ADMIN_PATH}${search}#${encodeURIComponent(repo)}`, 303);
 	}
 
-	return html(renderMessage("Página não encontrada", ""), 404);
+	return html(renderMessage("Page not found", ""), 404);
 }
 
 function logMetricsError<T>(fallback: T): (error: unknown) => T {
@@ -185,7 +185,7 @@ function logMetricsError<T>(fallback: T): (error: unknown) => T {
 	};
 }
 
-const invalid = () => html(renderMessage("Pedido inválido", "Repositório ou check desconhecido."), 400);
+const invalid = () => html(renderMessage("Invalid request", "Unknown repository or check."), 400);
 
 function html(body: string, status = 200): Response {
 	return new Response(body, {
