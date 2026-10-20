@@ -6,6 +6,7 @@ import { TURBO_PATH, turboToken } from "../../turbo-cache.ts";
 import type { Check, CheckResult } from "../types.ts";
 import { CONFIG_FILE, containerCommands, readContainerConfig, type ContainerCommand, type ContainerConfig } from "./config.ts";
 import { cancelRuns, cannotRun, CODE_ACTIONS, finishRun } from "./index.ts";
+import { DEFAULT_INSTANCE, instanceSize, type InstanceType } from "./instances.ts";
 import { d1JobStore, type JobStore } from "./jobs.ts";
 import { toCheckResult, type TestReport, type TestResult } from "./report.ts";
 
@@ -27,9 +28,6 @@ import { toCheckResult, type TestReport, type TestResult } from "./report.ts";
 
 const NAME = "Container tests";
 
-/** Instance type of every run: 4 vCPU, 12 GiB, 20 GB. A smaller one uses the same CPU for longer. */
-export const INSTANCE = { name: "standard-4", vcpu: 4, memoryGiB: 12, diskGB: 20 } as const;
-
 /** Containers prices (https://developers.cloudflare.com/containers/pricing/), in US dollars. */
 export const CONTAINER_PRICES = {
 	/** Per GiB-second of memory, for as long as the container runs, busy or not. */
@@ -50,7 +48,7 @@ export const RESTORE_WAIT_MS = 2 * 60_000;
 
 /**
  * A run still going this long after it started is failed and its container destroyed: about twice the
- * longest real run (a full run of macae, ~11 min), since a hung run is billed for every minute it stays up.
+ * longest full run seen so far (~11 min, on a large monorepo), since a hung run is billed for every minute it stays up.
  * qf-run.sh's step limits (STEP_MINUTES) stop a single step that hangs first.
  */
 export const BOX_DEADLINE_MS = 20 * 60_000;
@@ -91,6 +89,8 @@ export interface BoxJob {
 	restored?: string;
 	/** When the image was started instead of a snapshot that never came up (epoch milliseconds). */
 	fallbackAt?: number;
+	/** The config's `instance`; jobs started before it existed ran on DEFAULT_INSTANCE. */
+	instance?: InstanceType;
 }
 
 /** The last snapshot kept for a repository (the config's `snapshot`), in SETTINGS under snapshotKey. */
@@ -185,7 +185,7 @@ export async function startRun({ github, env, installationId, repo, pr, sha, bas
 		}
 		await d1JobStore(env.RUNS).create(runId, { shards: 1, checkRunId, installationId });
 		const scope = full ? { full: true as const } : config.changed ? { changed: true as const } : {};
-		await startBox({ runId, repo, sha, base, installationId, checkRunId, commands, startedAt: Date.now(), ...scope }, config);
+		await startBox({ runId, repo, sha, base, installationId, checkRunId, commands, startedAt: Date.now(), instance: config.instance ?? DEFAULT_INSTANCE, ...scope }, config);
 		live.send({ type: "status", runId, text: "Container: iniciando" });
 		await live.flush();
 		return null;
@@ -237,7 +237,7 @@ export class TestBox {
 			? { api: `${this.env.PUBLIC_URL}${TURBO_PATH}`, token: await turboToken(secret, job.repo), cacheToken: await turboToken(secret, job.repo, job.full ? "files" : "read") }
 			: undefined;
 		// npm, GitHub and quality-flare's caches; the tokens reach this repository only.
-		const options = { instance: INSTANCE.name, enableInternet: true, env: boxEnv(job, config, token, turbo) };
+		const options = { instance: job.instance ?? DEFAULT_INSTANCE, enableInternet: true, env: boxEnv(job, config, token, turbo) };
 		const { restored: _, ...rest } = job;
 		const saved = usesSnapshot(config) && !fresh ? await this.env.SETTINGS.get<SavedSnapshot>(snapshotKey(job.repo), "json") : null;
 		if (saved && saved.image === container.images.tests) {
@@ -294,7 +294,7 @@ export class TestBox {
 			if (since === undefined) {
 				since = Date.now();
 				await this.ctx.storage.put("closing", since);
-				await recordUsage(this.env.RUNS, job.runId, { wallMs: since - job.startedAt });
+				await recordUsage(this.env.RUNS, job, { wallMs: since - job.startedAt });
 			}
 			if (!(await this.closeCommands(job)) && Date.now() - since < CLOSE_RETRY_MS) {
 				await this.ctx.storage.setAlarm(Date.now() + 60_000);
@@ -358,7 +358,7 @@ export class TestBox {
 	private async publish(job: BoxJob, results: BoxResults, report: TestReport | undefined, usage: BoxUsage): Promise<void> {
 		// Closing the job claims the run: a newer push or the sweep closing it first means it was already reported.
 		const closed = await d1JobStore(this.env.RUNS).close(job.runId);
-		await recordUsage(this.env.RUNS, job.runId, usage);
+		await recordUsage(this.env.RUNS, job, usage);
 		if (!closed) return this.abandon(job, usage);
 		const github = await this.github(job);
 		await github.completeCheckRun(job.repo, job.checkRunId, results.tests);
@@ -375,7 +375,7 @@ export class TestBox {
 
 	/** The run was cancelled or swept, which reported the Container tests check run; the commands' are still open. */
 	private async abandon(job: BoxJob, usage: BoxUsage): Promise<void> {
-		await recordUsage(this.env.RUNS, job.runId, usage);
+		await recordUsage(this.env.RUNS, job, usage);
 		const finished = await this.finished();
 		const open = job.commands.filter((_, i) => !finished.has(i));
 		if (!open.length) return;
@@ -520,6 +520,8 @@ function hash(text: string): string {
 export interface BoxUsage {
 	wallMs: number;
 	cpuUs?: number;
+	/** The instance type it ran on; DEFAULT_INSTANCE when missing. */
+	instance?: string;
 }
 
 export interface BoxResults {
@@ -778,20 +780,21 @@ export function parseVitestReport(json: string, root = "/work/repo/"): TestRepor
 }
 
 /** Estimated price of a run's container. Memory and disk count for as long as it ran, CPU only as used. */
-export function boxCost({ wallMs, cpuUs }: BoxUsage): number {
+export function boxCost({ wallMs, cpuUs, instance }: BoxUsage): number {
 	const seconds = wallMs / 1000;
+	const size = instanceSize(instance);
 	return (
-		INSTANCE.memoryGiB * seconds * CONTAINER_PRICES.memoryGiBs +
-		INSTANCE.diskGB * seconds * CONTAINER_PRICES.diskGBs +
+		size.memoryGiB * seconds * CONTAINER_PRICES.memoryGiBs +
+		size.diskGB * seconds * CONTAINER_PRICES.diskGBs +
 		((cpuUs ?? 0) / 1_000_000) * CONTAINER_PRICES.vcpuS
 	);
 }
 
 /** Usage goes in the run's test_container_runs row, created with the run (src/runs.ts). */
-async function recordUsage(db: D1Database, runId: number, usage: BoxUsage): Promise<void> {
+async function recordUsage(db: D1Database, job: BoxJob, usage: BoxUsage): Promise<void> {
 	await db
 		.prepare("UPDATE test_container_runs SET instance = ?, wall_ms = ?, cpu_us = ? WHERE run_id = ?")
-		.bind(INSTANCE.name, usage.wallMs, usage.cpuUs ?? null, runId)
+		.bind(job.instance ?? DEFAULT_INSTANCE, usage.wallMs, usage.cpuUs ?? null, job.runId)
 		.run()
 		.catch(logError);
 }
@@ -799,10 +802,10 @@ async function recordUsage(db: D1Database, runId: number, usage: BoxUsage): Prom
 /** A run's container usage, for the admin; undefined for runs that didn't use a container or are still going. */
 export async function containerUsage(db: D1Database, runId: number): Promise<BoxUsage | undefined> {
 	const row = await db
-		.prepare("SELECT wall_ms, cpu_us FROM test_container_runs WHERE run_id = ? AND wall_ms IS NOT NULL")
+		.prepare("SELECT instance, wall_ms, cpu_us FROM test_container_runs WHERE run_id = ? AND wall_ms IS NOT NULL")
 		.bind(runId)
-		.first<{ wall_ms: number; cpu_us: number | null }>();
-	return row ? { wallMs: row.wall_ms, cpuUs: row.cpu_us ?? undefined } : undefined;
+		.first<{ instance: string | null; wall_ms: number; cpu_us: number | null }>();
+	return row ? { wallMs: row.wall_ms, cpuUs: row.cpu_us ?? undefined, instance: row.instance ?? DEFAULT_INSTANCE } : undefined;
 }
 
 const COMMAND_CANCELLED: CheckResult = {

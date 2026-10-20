@@ -1,6 +1,7 @@
 import { RUN_SORTS, RUN_STATES, runState, type RunQuery, type RunSort, type TestRun, type TestRunDetail } from "../runs.ts";
 import type { AttemptRow, ContainerUsage, Usage } from "../metrics.ts";
-import { boxCost, INSTANCE, type BoxUsage } from "../checks/tests/container.ts";
+import { boxCost, type BoxUsage } from "../checks/tests/container.ts";
+import { DEFAULT_INSTANCE, instanceSize } from "../checks/tests/instances.ts";
 import { cpu, money, renderRunUsage, usageCells } from "./costs-page.ts";
 import { esc, layout, renderHeader, select } from "./page.ts";
 
@@ -163,9 +164,10 @@ function when(at: number, now: number): string {
 
 /** The run page's usage section for a run on the "Container" runner. */
 function renderContainerUsage(u: BoxUsage): string {
+	const size = instanceSize(u.instance);
 	const items: [string, string][] = [
 		["Custo estimado", money(boxCost(u))],
-		["Container", `${INSTANCE.name} (${INSTANCE.vcpu} vCPU, ${INSTANCE.memoryGiB} GiB)`],
+		["Container", `${u.instance ?? DEFAULT_INSTANCE} (${size.vcpu} vCPU, ${size.memoryGiB} GiB)`],
 		["Tempo ligado", cpu(u.wallMs)],
 		["CPU usada", u.cpuUs === undefined ? "—" : cpu(Math.round(u.cpuUs / 1000))],
 	];

@@ -1,3 +1,5 @@
+import { INSTANCES, type InstanceType } from "./instances.ts";
+
 /**
  * Optional `quality-flare.json` at the repository root: which test files the Tests check runs
  * and how, mirroring the vitest config they come from. Without it, the convention in
@@ -99,6 +101,8 @@ export interface ContainerConfig {
 	 * clone and node_modules already there, so a run on that lockfile skips the install (src/checks/tests/container.ts).
 	 */
 	snapshot?: boolean;
+	/** The container's instance type (INSTANCES in instances.ts); DEFAULT_INSTANCE, standard-4, by default. */
+	instance?: InstanceType;
 }
 
 /** A command of the container section, and the check run it reports as. */
@@ -120,6 +124,9 @@ export function readContainerConfig(source: string | undefined): ContainerConfig
 		throw new Error(`${CONFIG_FILE} não é um JSON válido: ${error instanceof Error ? error.message : String(error)}`);
 	}
 	const container = json.container ?? {};
+	if (container.instance !== undefined && !Object.hasOwn(INSTANCES, container.instance)) {
+		throw new Error(`${CONFIG_FILE}: "container.instance" deve ser um destes tipos de instância: ${Object.keys(INSTANCES).join(", ")}.`);
+	}
 	for (const key of ["install", "typecheck"] as const) {
 		if (container[key] !== undefined && typeof container[key] !== "string") throw new Error(`${CONFIG_FILE}: "container.${key}" deve ser um texto.`);
 	}

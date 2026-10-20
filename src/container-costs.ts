@@ -1,4 +1,5 @@
-import { CONTAINER_PRICES, INSTANCE } from "./checks/tests/container.ts";
+import { CONTAINER_PRICES } from "./checks/tests/container.ts";
+import type { ContainerUsage } from "./metrics.ts";
 
 /** What containers use, in the units Containers is billed in (https://developers.cloudflare.com/containers/pricing/). */
 export interface ContainerResources {
@@ -24,8 +25,7 @@ export function containerOverage(r: ContainerResources): number {
 	return containerCost({ memoryGiBs: over("memoryGiBs"), vcpuS: over("vcpuS"), diskGBs: over("diskGBs") });
 }
 
-/** The resources of Container tests runs that kept a container on `wallMs` in total and used `cpuUs` of CPU. */
-export function boxResources(wallMs: number, cpuUs: number): ContainerResources {
-	const seconds = wallMs / 1000;
-	return { memoryGiBs: INSTANCE.memoryGiB * seconds, vcpuS: cpuUs / 1_000_000, diskGBs: INSTANCE.diskGB * seconds };
+/** The resources of Container tests runs, summed. */
+export function boxResources(u: Pick<ContainerUsage, "memoryGiBs" | "diskGBs" | "cpuUs">): ContainerResources {
+	return { memoryGiBs: u.memoryGiBs, vcpuS: u.cpuUs / 1_000_000, diskGBs: u.diskGBs };
 }

@@ -37,7 +37,8 @@ const runs: RunStore = {
 };
 
 const usage: Usage = { attempts: 12, retries: 2, crashes: 1, splits: 2, dynamicWorkers: 10, cpuMs: 45_000, wallMs: 600_000 };
-const box = { runs: 1, wallMs: 600_000, cpuUs: 1_200_000_000, unmeasured: 0 };
+// 10 minutes on a standard-4 (12 GiB, 20 GB).
+const box = { runs: 1, wallMs: 600_000, memoryGiBs: 7_200, diskGBs: 12_000, cpuUs: 1_200_000_000, unmeasured: 0 };
 const metrics: MetricsStore = {
 	start: async () => {},
 	finish: async () => {},

@@ -1,5 +1,5 @@
 import { dayCost, monthOverage, type AccountUsage } from "../account-usage.ts";
-import { INSTANCE } from "../checks/tests/container.ts";
+import { DEFAULT_INSTANCE } from "../checks/tests/instances.ts";
 import { boxResources, CONTAINER_INCLUDED, containerCost, containerOverage, type ContainerResources } from "../container-costs.ts";
 import { cost, INCLUDED, LOST_AFTER_MS, monthCost, PRICES, type AttemptRow, type ContainerRow, type ContainerUsage, type ShardOutcome, type Usage, type UsageRow } from "../metrics.ts";
 import { esc, layout, renderHeader, select } from "./page.ts";
@@ -17,7 +17,7 @@ export function cpu(ms: number): string {
 const n = (value: number) => value.toLocaleString("pt-BR");
 
 /** A container's estimated gross cost: memory and disk for the time it was on, CPU as used. */
-export const boxesCost = (c: ContainerUsage) => containerCost(boxResources(c.wallMs, c.cpuUs));
+export const boxesCost = (c: ContainerUsage) => containerCost(boxResources(c));
 
 /** Cells for a run in the runs list: Dynamic Workers and estimated cost, Dynamic Workers and container together. */
 export function usageCells(u: Usage | undefined, box?: ContainerUsage): string {
@@ -153,7 +153,7 @@ function renderContainers(days: ContainerRow[], months: ContainerRow[]): string 
 		<td class="num">${cpu(r.wallMs)}</td>
 		<td class="num${r.unmeasured ? " failure" : ""}" ${r.unmeasured ? `title="${r.unmeasured} sem CPU medida"` : ""}>${cpu(Math.round(r.cpuUs / 1000))}</td>
 		<td class="num">${money(boxesCost(r))}</td>
-		${month ? `<td class="num">${money(containerOverage(boxResources(r.wallMs, r.cpuUs)))}</td>` : ""}
+		${month ? `<td class="num">${money(containerOverage(boxResources(r)))}</td>` : ""}
 	</tr>`;
 	const table = (rows: ContainerRow[], month: boolean) =>
 		rows.length
@@ -164,17 +164,17 @@ function renderContainers(days: ContainerRow[], months: ContainerRow[]): string 
 		? `<h3>Containers, mês ${esc(current.period)}</h3><dl class="stats">${(
 				[
 					["Custo estimado", money(boxesCost(current))],
-					["Após franquia", money(containerOverage(boxResources(current.wallMs, current.cpuUs)))],
+					["Após franquia", money(containerOverage(boxResources(current)))],
 					["Execuções", n(current.runs)],
 					["Tempo ligado", cpu(current.wallMs)],
-					...containerItems(boxResources(current.wallMs, current.cpuUs)),
+					...containerItems(boxResources(current)),
 				] as [string, string][]
 			)
 				.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`)
 				.join("")}</dl>`
 		: "";
 	return `<h3>Estimativa dos Container tests</h3>
-		<p class="hint">Cada execução sobe um container ${esc(INSTANCE.name)} (${INSTANCE.vcpu} vCPU, ${INSTANCE.memoryGiB} GiB, ${INSTANCE.diskGB} GB). Memória (US$ 0,0000025 por GiB-s) e disco (US$ 0,00000007 por GB-s) contam pelo tempo ligado; CPU (US$ 0,00002 por vCPU-s) pelo que foi usado. A conta inclui por mês ${hours(CONTAINER_INCLUDED.memoryGiBs)} GiB-h de memória, ${n(CONTAINER_INCLUDED.vcpuS / 60)} vCPU-min e ${hours(CONTAINER_INCLUDED.diskGBs)} GB-h de disco.</p>
+		<p class="hint">Cada execução sobe um container do tipo de instância que o <code>container.instance</code> do quality-flare.json escolhe (${esc(DEFAULT_INSTANCE)} por padrão). Memória (US$ 0,0000025 por GiB-s) e disco (US$ 0,00000007 por GB-s) contam pelo tempo ligado; CPU (US$ 0,00002 por vCPU-s) pelo que foi usado. A conta inclui por mês ${hours(CONTAINER_INCLUDED.memoryGiBs)} GiB-h de memória, ${n(CONTAINER_INCLUDED.vcpuS / 60)} vCPU-min e ${hours(CONTAINER_INCLUDED.diskGBs)} GB-h de disco.</p>
 		${summary}
 		<h3>Containers por dia (últimos 30 dias, UTC)</h3>
 		${table(days, false)}

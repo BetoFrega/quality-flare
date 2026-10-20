@@ -298,6 +298,8 @@ describe("Container tests", () => {
 		for (const root of [".", "./", ".git", "./.git/objects"]) expect(invalid({ cache: [root] })).toThrow(/fora da .git e abaixo da raiz/);
 		expect(readContainerConfig(JSON.stringify({ container: { cache: ["node_modules/.cache/eslint"] } }))).toEqual({ cache: ["node_modules/.cache/eslint"] });
 		expect(readContainerConfig(JSON.stringify({ container: { changed: true, turboCache: true } }))).toEqual({ changed: true, turboCache: true });
+		expect(readContainerConfig(JSON.stringify({ container: { instance: "standard-2" } }))).toEqual({ instance: "standard-2" });
+		expect(invalid({ instance: "huge" })).toThrow(/"container.instance"/);
 		expect(invalid({ commands: ["npm run lint"] })).toThrow(/"container.commands" deve ligar/);
 		expect(invalid({ commands: { Lint: 1 } })).toThrow(/"container.commands" deve ligar/);
 		expect(invalid({ commands: { " ": "x" } })).toThrow(/não serve de nome/);
@@ -305,9 +307,11 @@ describe("Container tests", () => {
 		expect(invalid({ commands: Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`c${i}`, "x"])) })).toThrow(/até 8/);
 	});
 
-	it("estimates about two cents for the run measured on macae", () => {
+	it("estimates about two cents for a large monorepo's run", () => {
 		// npm ci + vitest + typecheck: 225 s on a standard-4, 635 vCPU-seconds.
 		expect(boxCost({ wallMs: 225_000, cpuUs: 635_000_000 })).toBeCloseTo(0.0198, 3);
+		// The same CPU on a standard-2 (6 GiB, 12 GB), twice as long.
+		expect(boxCost({ wallMs: 450_000, cpuUs: 635_000_000, instance: "standard-2" })).toBeCloseTo(0.0198, 3);
 	});
 
 	describe.skipIf(inWorkers)("with D1", () => {
