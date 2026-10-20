@@ -110,14 +110,20 @@ export function renderAdminPage({ email, checks, rows, open, query = {}, install
 	);
 }
 
-/** The admin's top bar: name, its sections, links to the docs and the project's site, and who is signed in. */
-export function renderHeader(email: string | undefined, current: "repos" | "runs" | "costs"): string {
+/**
+ * The admin's top bar: name, its sections, and, apart and quieter, links that leave the
+ * admin (the docs and the project's site), then who is signed in. Without `current`, as on
+ * error pages, no section is marked.
+ */
+export function renderHeader(email: string | undefined, current?: "repos" | "runs" | "costs"): string {
 	const link = (href: string, id: typeof current, text: string) =>
 		`<a href="${href}"${id === current ? ' aria-current="page"' : ""}>${text}</a>`;
+	const external = (href: string, text: string) => `<a href="${href}">${text}<span aria-hidden="true"> ↗</span></a>`;
 	return `<header>
 			<h1>quality-flare</h1>
-			<nav>${link("/admin", "repos", "Repositórios")}${link("/admin/runs", "runs", "Execuções de testes")}${link("/admin/costs", "costs", "Custos")}<a href="${DOCS_PATH}">Docs</a><a href="${OFFICIAL_URL}">Site</a></nav>
-			${email ? `<span class="who">${esc(email)}</span>` : ""}
+			<nav class="sections" aria-label="Seções">${link("/admin", "repos", "Repositórios")}${link("/admin/runs", "runs", "Execuções")}${link("/admin/costs", "costs", "Custos")}</nav>
+			<nav class="external" aria-label="Links externos">${external(DOCS_PATH, "Docs")}${external(OFFICIAL_URL, "Site")}</nav>
+			${email ? `<span class="who" title="${esc(email)}">${esc(email)}</span>` : ""}
 		</header>`;
 }
 
@@ -142,9 +148,13 @@ function renderRepo(repo: InstalledRepo, settings: RepoSettings, checks: Check[]
 			<div class="body">
 				${settings.enabled ? "" : '<p class="note">Os checks só rodam depois que o repositório é ativado.</p>'}
 				<div class="bulk">
-					${button("/admin/checks/all", fields({ enabled: "true" }), "Ativar todos")}
-					${button("/admin/checks/all", fields({ enabled: "false" }), "Desativar todos")}
-					<a href="${esc(repo.html_url)}">Abrir no GitHub</a>
+					${button("/admin/checks/all", fields({ enabled: "true" }), "Ativar todos", `Ativar todos os checks em ${repo.full_name}`)}
+					${button("/admin/checks/all", fields({ enabled: "false" }), "Desativar todos", `Desativar todos os checks em ${repo.full_name}`)}
+					<span class="links">
+						<a href="/admin/runs?repo=${esc(encodeURIComponent(repo.full_name))}" aria-label="${esc(`Execuções de ${repo.full_name}`)}">Execuções</a>
+						<a href="/admin/costs?repo=${esc(encodeURIComponent(repo.full_name))}" aria-label="${esc(`Custos de ${repo.full_name}`)}">Custos</a>
+						<a href="${esc(repo.html_url)}" aria-label="${esc(`Abrir ${repo.full_name} no GitHub`)}">Abrir no GitHub</a>
+					</span>
 				</div>
 				<ul class="checks">${items}</ul>
 				${onDemandToggle(settings.onDemand, fields({}), checks, repo.full_name)}
@@ -179,8 +189,8 @@ function toggle(action: string, fields: Record<string, string>, on: boolean, lab
 	</form>`;
 }
 
-function button(action: string, fields: Record<string, string>, text: string): string {
-	return `<form method="post" action="${action}">${hidden(fields)}<button type="submit" class="secondary">${esc(text)}</button></form>`;
+function button(action: string, fields: Record<string, string>, text: string, label: string): string {
+	return `<form method="post" action="${action}">${hidden(fields)}<button type="submit" class="secondary" aria-label="${esc(label)}">${esc(text)}</button></form>`;
 }
 
 function hidden(fields: Record<string, string>): string {
@@ -196,8 +206,16 @@ export function select(name: string, label: string, value: string, options: [str
 		.join("")}</select></label>`;
 }
 
-export function renderMessage(title: string, detail: string): string {
-	return layout(title, `<main><h2>${esc(title)}</h2>${detail ? `<p>${esc(detail)}</p>` : ""}</main>`);
+/**
+ * A page with only a title and a short explanation. With `shell`, for someone already signed
+ * in, it keeps the admin's header so the page isn't a dead end; `back` adds a way out to the
+ * repository list. Without it, as before Access lets the person in, no admin navigation shows.
+ */
+export function renderMessage(title: string, detail: string, shell?: { email?: string; back?: boolean }): string {
+	const text = `<h2>${esc(title)}</h2>${detail ? `<p>${esc(detail)}</p>` : ""}`;
+	if (!shell) return layout(title, `<main>${text}</main>`);
+	const back = shell.back ? '<p><a href="/admin">Voltar para Repositórios</a></p>' : "";
+	return layout(title, `${renderHeader(shell.email)}<main>${text}${back}</main>`);
 }
 
 export function layout(title: string, body: string, head = ""): string {
@@ -213,11 +231,14 @@ ${head}
 	@media (prefers-color-scheme: dark) { :root { --bg: #0d1117; --fg: #f0f6fc; --muted: #9198a1; --line: #3d444d; --panel: #151b23; --on: #3fb950; --off: #656c76; --link: #4493f8; --failure: #f85149; --running: #d29922; } }
 	* { box-sizing: border-box; }
 	body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
-	header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+	header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
 	h1 { font-size: 16px; margin: 0; }
-	nav { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-right: auto; font-size: 14px; }
-	nav a { color: var(--muted); text-decoration: none; }
-	nav a[aria-current] { color: var(--fg); font-weight: 600; }
+	nav { display: flex; gap: 16px; font-size: 14px; }
+	nav a { color: var(--muted); text-decoration: none; text-underline-offset: 6px; text-decoration-thickness: 2px; }
+	nav a:hover { color: var(--fg); text-decoration-line: underline; }
+	.sections { margin-right: auto; }
+	.sections a[aria-current] { color: var(--fg); font-weight: 600; text-decoration-line: underline; }
+	.external { gap: 12px; font-size: 13px; }
 	table { width: 100%; border-collapse: collapse; font-size: 14px; }
 	th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
 	th { color: var(--muted); font-weight: 500; font-size: 13px; }
@@ -234,7 +255,7 @@ ${head}
 	main { max-width: 860px; margin: 0 auto; padding: 24px 16px; }
 	a { color: var(--link); }
 	.who, .hint, .count, .note { color: var(--muted); font-size: 13px; }
-	.who { overflow-wrap: anywhere; text-align: right; }
+	.who { max-width: 24ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.hint { margin: 0 0 16px; }
 	ul { list-style: none; margin: 0; padding: 0; }
 	.repos { border-top: 1px solid var(--line); margin-bottom: 16px; }
@@ -252,7 +273,7 @@ ${head}
 	.body { margin: 0 0 14px 22px; padding: 12px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
 	.note { margin: 0 0 8px; }
 	.bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 8px; font-size: 13px; }
-	.bulk a { margin-left: auto; }
+	.bulk .links { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-left: auto; }
 	.checks li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 6px 0; border-top: 1px solid var(--line); }
 	.repo.off .checks { opacity: .6; }
 	form { margin: 0; }
@@ -283,6 +304,9 @@ ${head}
 	.filters input { width: 180px; }
 	.filters a, .filters .count { align-self: center; }
 	@media (max-width: 560px) {
+		header { justify-content: space-between; }
+		.sections { order: 1; flex-basis: 100%; }
+		.who { display: none; }
 		summary { padding-right: 56px; }
 		.count { margin-left: 0; flex-basis: 100%; }
 		.repo-toggle .label { display: none; }
