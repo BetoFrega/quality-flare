@@ -59,7 +59,7 @@ function reset(window: Window) {
 
 async function createWindow(environment: string): Promise<Window> {
 	if (environment !== "jsdom" && environment !== "happy-dom") {
-		throw new Error(`O ambiente de teste "${environment}" não é suportado no quality-flare (use node, jsdom ou happy-dom).`);
+		throw new Error(`The test environment "${environment}" is not supported in quality-flare (use node, jsdom or happy-dom).`);
 	}
 	const ns = (await import(environmentModule(environment))) as { default: Record<string, any> };
 	const pkg = ns.default;

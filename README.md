@@ -133,7 +133,15 @@ Vincular uma issue pela barra lateral não gera webhook. Depois de vincular, cli
 
 Qualquer pessoa pode rodar o próprio quality-flare, na própria conta Cloudflare e com a própria GitHub App. Não precisa instalar nada no computador: o build roda no [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/).
 
-**Precisa de:** uma conta Cloudflare no plano **Workers Paid** (US$ 5/mês; Containers e Dynamic Workers não existem no plano grátis) e uma conta GitHub.
+**Precisa de:** uma conta Cloudflare e uma conta GitHub. O plano grátis da Cloudflare basta para tudo, menos os testes:
+
+| | Workers Free | Workers Paid (US$ 5/mês) |
+| --- | --- | --- |
+| Closes an issue, Codex review, Dependabot auto-merge | ✅ | ✅ |
+| Admin, `/setup`, docs | ✅ | ✅ |
+| Tests e Container tests | ❌ | ✅ |
+
+Os dois checks de testes rodam em Dynamic Workers e Containers, que a Cloudflare só oferece no Workers Paid. Você não escolhe nada: numa conta grátis a Cloudflare recusa o deploy completo, e o `pnpm run deploy` publica de novo sem esses dois checks e avisa no log do build. Eles somem do admin, e o admin e o `/setup` explicam o motivo. Para ligá-los depois, assine o [Workers Paid](https://dash.cloudflare.com/?to=/:account/workers/plans) e rode o build de novo (**Deployments → Retry build**, ou um push na `main`). No Workers Paid, se o token de API do deploy não puder usar Containers, o build falha e pede a permissão **Containers Edit** para o token, em vez de publicar sem os testes.
 
 1. **Clique no botão:**
 
@@ -151,13 +159,13 @@ Qualquer pessoa pode rodar o próprio quality-flare, na própria conta Cloudflar
    Depois de mudar variáveis ou secrets de build, rode o build de novo (**Deployments → Retry build**, ou um push na `main`).
 4. **Instale a App** nos repositórios (o link aparece em `/setup` e no admin) e **ative-os** em `/admin`. Tudo começa desligado.
 
-Cada push na `main` do fork publica de novo. O `pnpm run deploy` ([`scripts/deploy.mjs`](scripts/deploy.mjs)) é o `cf deploy` que também envia os secrets da App guardados no build; sem eles, é o `cf deploy` puro.
+Cada push na `main` do fork publica de novo. O `pnpm run deploy` ([`scripts/deploy.mjs`](scripts/deploy.mjs)) é o `cf deploy` que também envia os secrets da App guardados no build e, numa conta grátis, deixa os testes de fora; no Workers Paid e sem esses secrets, é o `cf deploy` puro.
 
 Opcional:
 
 - **Cache do Container tests:** o bucket R2 `quality-flare-turbo-cache` guarda o cache das execuções. Para ele não crescer para sempre, apague o que tem mais de 14 dias: `cf r2 buckets lifecycle update quality-flare-turbo-cache -f --rules '[{"id":"expire-14-days","enabled":true,"conditions":{"prefix":""},"deleteObjectsTransition":{"condition":{"type":"Age","maxAge":1209600}}}]'`.
 - **Uso real da conta no admin** ([`/admin/costs`](#admin)): crie um API token com *Account Analytics: Read*, guarde-o no Secrets Store como `quality-flare-analytics-token` e defina as variáveis de build `SECRETS_STORE_ID` e `CLOUDFLARE_ACCOUNT_ID`. Sem elas, a página mostra só as estimativas.
-- **Domínio próprio:** adicione um Custom Domain ao Worker, use-o em `PUBLIC_URL`, na aplicação do Access e na Webhook URL da App.
+- **Domínio próprio:** adicione um Custom Domain ao Worker, use-o em `PUBLIC_URL`, na aplicação do Access e na Webhook URL da App (em Settings → Developer settings → GitHub Apps → a sua App → Webhook URL). Para desligar o endereço `workers.dev` depois disso, defina a variável de build `WORKERS_DEV` = `false`; antes de trocar a Webhook URL, isso derruba os webhooks. Desligar o `workers.dev` só pelo painel não dura: o próximo deploy o religa.
 
 ### Variáveis de build
 
@@ -168,6 +176,7 @@ Ficam em Settings → Build → Variables and secrets do Worker; o [`cloudflare.
 | `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET` | Secrets da GitHub App, criados em `/setup` | O Worker recusa webhooks e espera a App |
 | `PUBLIC_URL` | Endereço onde se abre o admin (links dos check runs; o container usa para o cache) | Links quebrados |
 | `ACCESS_AUD` | Audience (AUD) da aplicação do Cloudflare Access que protege `/admin` | Admin fechado |
+| `WORKERS_DEV` | `false` desliga o endereço `workers.dev` (só com domínio próprio na Webhook URL) | O `workers.dev` fica ligado |
 | `SETTINGS_KV_ID` | ID do KV com as configurações | O deploy cria um, ou mantém o que o Worker já usa |
 | `RUNS_D1_ID` | ID do D1 com o histórico | O deploy usa (ou cria) o D1 `quality-flare-runs` |
 | `SECRETS_STORE_ID`, `CLOUDFLARE_ACCOUNT_ID` | Secrets Store do token `quality-flare-analytics-token` e conta cujo uso o admin mostra | `/admin/costs` só com estimativas |
@@ -206,15 +215,15 @@ A App criada em `/setup` já vem assim; para criar à mão, em **Settings → De
 
 ## Admin
 
-Em [`/admin`](https://quality-flare.frega.dev/admin) ficam os repositórios onde a App está instalada. Tudo começa desativado:
+Em `/admin`, no endereço da sua instância, ficam os repositórios onde a App está instalada. Tudo começa desativado:
 
 - O interruptor **Ativar checks** de cada repositório liga o quality-flare nele. Enquanto estiver desligado, o Worker ignora os webhooks desse repositório e não cria check runs.
 - Clicar no repositório abre a lista dos checks, cada um com seu interruptor, e os botões **Ativar todos** e **Desativar todos**.
 - Num repositório ativo, um check desativado não roda e é publicado com conclusão `neutral` ("Desativado"), para que um check exigido pela proteção de branch não trave o merge.
-- **Execuções de testes** ([`/admin/runs`](https://quality-flare.frega.dev/admin/runs)) lista as 50 execuções mais recentes do check Tests: rodando, passou, falhou, neutro ou interrompida (ficou "rodando" por mais de 30 minutos). As páginas acompanham ao vivo: cada teste aparece assim que termina, com a contagem ("12 de 40 · 1 falhou"). Cada execução abre com os arquivos, cada teste e a mensagem de cada falha.
-- **Custos** ([`/admin/costs`](https://quality-flare.frega.dev/admin/costs)) mostra o uso medido da conta Cloudflare no mês e por dia (Dynamic Workers, CPU, erros; GraphQL Analytics com o token `quality-flare-analytics-token` do Secrets Store) e a estimativa por execução, repositório, dia e mês. A estimativa vem da tabela `test_shard_attempts` do D1: cada entrega de lote da fila registra arquivos, tamanho do código, resultado, tempo e se criou um Dynamic Worker; o Tail Worker `ShardTail` acrescenta o CPU do Dynamic Worker e se ele caiu por memória. Os Container tests entram nas duas partes: o uso real traz memória, CPU e disco dos containers da conta (`containersUsageAdaptiveGroups`) contra a franquia do mês, e a estimativa soma a tabela `test_container_runs` (tempo ligado e CPU de cada container). A lista e a página de cada execução mostram os Dynamic Workers, as quedas e o custo estimado, inclusive o do container.
+- **Execuções de testes** (`/admin/runs`) lista as 50 execuções mais recentes do check Tests: rodando, passou, falhou, neutro ou interrompida (ficou "rodando" por mais de 30 minutos). As páginas acompanham ao vivo: cada teste aparece assim que termina, com a contagem ("12 de 40 · 1 falhou"). Cada execução abre com os arquivos, cada teste e a mensagem de cada falha.
+- **Custos** (`/admin/costs`) mostra o uso medido da conta Cloudflare no mês e por dia (Dynamic Workers, CPU, erros; GraphQL Analytics com o token `quality-flare-analytics-token` do Secrets Store) e a estimativa por execução, repositório, dia e mês. A estimativa vem da tabela `test_shard_attempts` do D1: cada entrega de lote da fila registra arquivos, tamanho do código, resultado, tempo e se criou um Dynamic Worker; o Tail Worker `ShardTail` acrescenta o CPU do Dynamic Worker e se ele caiu por memória. Os Container tests entram nas duas partes: o uso real traz memória, CPU e disco dos containers da conta (`containersUsageAdaptiveGroups`) contra a franquia do mês, e a estimativa soma a tabela `test_container_runs` (tempo ligado e CPU de cada container). A lista e a página de cada execução mostram os Dynamic Workers, as quedas e o custo estimado, inclusive o do container.
 
-- **Login:** uma aplicação self-hosted do Cloudflare Access cobre `/admin` e `/admin/*` em `quality-flare.frega.dev` e no endereço `workers.dev` do Worker. O Worker ainda confere `ctx.access` e exige que o `aud` seja o dessa aplicação (`ACCESS_AUD`), então o admin recusa qualquer pedido que não passou pelo Access.
+- **Login:** uma aplicação self-hosted do Cloudflare Access cobre `/admin` e `/admin/*` em cada endereço do Worker (o seu domínio e/ou o `workers.dev`). O Worker ainda confere `ctx.access` e exige que o `aud` seja o dessa aplicação (`ACCESS_AUD`), então o admin recusa qualquer pedido que não passou pelo Access.
 - **Ao vivo:** o Dynamic Worker transmite cada teste que termina (NDJSON) para o check, que repassa em lotes ao Durable Object `RunsHub` (binding `LIVE`). As páginas do admin abrem um WebSocket em `/admin/live` (atrás do Access, só da mesma origem) e recebem os eventos; quem abre no meio de uma execução recebe o progresso até ali. Sem JavaScript, a página recarrega a cada 5 s.
 - **Histórico de testes:** D1 `quality-flare-runs` (binding `RUNS`), tabela `test_runs`, criada pelo próprio Worker no primeiro uso (não há migração para rodar).
 - **Armazenamento:** o KV do binding `SETTINGS`, chave `repo:<owner/repo>` com `{ "enabled": true, "enabledChecks": ["closes-issue"] }`.

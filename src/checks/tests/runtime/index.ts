@@ -138,7 +138,7 @@ let resets = 0;
 const env = () => (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env ?? {};
 
 const unsupported = (name: string) => () => {
-	throw new Error(`vi.${name}() não é suportado ao rodar testes no quality-flare.`);
+	throw new Error(`vi.${name}() is not supported when running tests in quality-flare.`);
 };
 
 /** The subset of `vi` that works without vitest's module graph: spies and global stubs. */
@@ -196,13 +196,13 @@ export const vi = {
 	async waitUntil<T>(callback: () => T | Promise<T>, options: number | { timeout?: number; interval?: number } = {}) {
 		return vi.waitFor(async () => {
 			const value = await callback();
-			if (!value) throw new Error("vi.waitUntil: a condição não ficou verdadeira a tempo.");
+			if (!value) throw new Error("vi.waitUntil: the condition did not become true in time.");
 			return value;
 		}, options);
 	},
 	mock,
 	hoisted: <T>(factory: () => T): T => factory(),
-	importActual: unsupported("importActual com especificador que não é um texto literal"),
+	importActual: unsupported("importActual with a specifier that is not a string literal"),
 	doMock: unsupported("doMock"),
 	unmock: unsupported("unmock"),
 	resetModules() {

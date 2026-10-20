@@ -29,8 +29,8 @@ export const CODE_ACTIONS = new Set(["opened", "reopened", "synchronize", "ready
 
 /**
  * A shard's limits. Each Dynamic Worker is billed, so a run packs its files into as few shards as
- * fit (`packFiles`), by the bytes of code each file loaded when it last ran (on macae, UI tests
- * load ~30 MB each, mostly the same packages). maxConcurrency shards build at once in one
+ * fit (`packFiles`), by the bytes of code each file loaded when it last ran (in a large monorepo, UI
+ * tests load ~30 MB each, mostly the same packages). maxConcurrency shards build at once in one
  * consumer's 128 MB. Files never measured count as SHARD_BYTES / SHARD_SIZE each. Files in one
  * shard share the state of modules they both import, which vitest would give each file fresh: a
  * file that fails in a shard runs again alone (MAX_RECHECKS). A shard whose code is too big, or
@@ -84,7 +84,7 @@ export const tests: Check = {
 		live.send({ type: "started", runId: runId!, repo, pr: pr.number, sha });
 		let checkRunId: number | undefined;
 		try {
-			if (runId === undefined) throw new Error("O D1 (quality-flare-runs) não respondeu; ele coordena os lotes de testes.");
+			if (runId === undefined) throw new Error("D1 (quality-flare-runs) did not respond. It coordinates the test batches.");
 			// A newer push supersedes the PR's runs still going: their queued shards drop themselves.
 			await cancelRuns(github, repo, await runs.running(repo, pr.number, runId), d1JobStore(env.RUNS), runs, live);
 			const read = (path: string) => github.getFileText(repo, sha, path);
@@ -100,11 +100,11 @@ export const tests: Check = {
 			const shards = packed.map(
 				(files, i): TestShard => ({ runId, shard: String(i), repo, installationId, sha, files, config }),
 			);
-			const title = `Rodando ${count(testFiles.length, "arquivo")} de teste`;
+			const title = `Running ${count(testFiles.length, "test file")}`;
 			checkRunId = await github.startCheckRun(repo, sha, NAME, title, `${env.PUBLIC_URL}/admin/runs/${runId}`);
 			await d1JobStore(env.RUNS).create(runId, { shards: shards.length, checkRunId, installationId });
 			await enqueue(env.TESTS_QUEUE, shards);
-			live.send({ type: "status", runId, text: `${count(testFiles.length, "arquivo")} de teste na fila, em ${count(shards.length, "lote")}` });
+			live.send({ type: "status", runId, text: `${count(testFiles.length, "test file")} queued in ${count(shards.length, "batch", "batches")}` });
 			await live.flush();
 			return null;
 		} catch (error) {
@@ -177,10 +177,10 @@ export async function processShard(shard: TestShard, attempts: number, deps: Sha
 	let ran = false;
 	let outcome: ShardOutcome;
 	if (expired) {
-		result = failed(shard.files, `A execução passou de ${RUN_DEADLINE_MS / 60_000} minutos e parou antes de chegar a este arquivo.`);
+		result = failed(shard.files, `The run went past ${RUN_DEADLINE_MS / 60_000} minutes and stopped before it reached this file.`);
 		outcome = "expired";
 	} else if (attempts >= MAX_ATTEMPTS) {
-		result = failed(shard.files, `O arquivo derrubou o Worker ${attempts - 1} vezes (provavelmente faltou memória: o limite é 128 MB).`);
+		result = failed(shard.files, `This file crashed the Worker ${attempts - 1} times (probably out of memory: the limit is 128 MB).`);
 		outcome = "gave-up";
 	} else {
 		try {
@@ -243,10 +243,10 @@ export async function expireRuns(deps: SweepDeps): Promise<void> {
 
 function overdue(report: TestReport, unresolved: ShardResult["unresolved"]): CheckResult {
 	const n = report.files.length;
-	const done = `${count(n, "arquivo")} ${n === 1 ? "terminou" : "terminaram"} antes disso; os outros não rodaram.`;
+	const done = `${count(n, "file")} finished before that. The others did not run.`;
 	return {
 		conclusion: "failure",
-		title: `A execução passou de ${RUN_DEADLINE_MS / 60_000} minutos`,
+		title: `The run went past ${RUN_DEADLINE_MS / 60_000} minutes`,
 		summary: n ? `${done}\n\n${toCheckResult(report, unresolved).summary}` : done,
 	};
 }
@@ -277,14 +277,14 @@ async function split(shard: TestShard, deps: ShardDeps): Promise<void> {
 /** Thrown when a shard's code doesn't fit in one Dynamic Worker. */
 export class TooLarge extends Error {
 	constructor(bytes: number) {
-		super(`Os testes importam ${(bytes / 1024 / 1024).toFixed(0)} MB de código; um Dynamic Worker aceita até 64 MB.`);
+		super(`The tests import ${(bytes / 1024 / 1024).toFixed(0)} MB of code. A Dynamic Worker accepts up to 64 MB.`);
 	}
 }
 
 /** Thrown when the Dynamic Worker died while running a shard's files. */
 export class Crashed extends Error {
 	constructor(cause: unknown) {
-		super(`O Dynamic Worker caiu ao rodar este arquivo: ${cause instanceof Error ? cause.message : String(cause)}`);
+		super(`The Dynamic Worker crashed while running this file: ${cause instanceof Error ? cause.message : String(cause)}`);
 	}
 }
 
@@ -307,10 +307,10 @@ async function runShard(
 	onProgress: (event: ProgressEvent) => void,
 	meter: ShardMeter = {},
 ): Promise<ShardResult> {
-	const label = `Lote ${shard.shard}`;
-	onProgress({ type: "status", text: `${label}: baixando o código` });
+	const label = `Batch ${shard.shard}`;
+	onProgress({ type: "status", text: `${label}: downloading the code` });
 	const files = await readTarball(await github.getTarball(shard.repo, shard.sha), (p, size) => isLoadable(p) || LOCKFILES.has(p) || isAsset(p, size));
-	onProgress({ type: "status", text: `${label}: montando ${count(shard.files.length, "arquivo")} de teste e as dependências` });
+	onProgress({ type: "status", text: `${label}: building ${count(shard.files.length, "test file")} and their dependencies` });
 	// Imported lazily: the bundled runtime is only needed when tests actually run.
 	const { default: runtimeSource } = await import("virtual:test-runtime");
 	const inTurn = turns();
@@ -334,7 +334,7 @@ async function runShard(
 	meter.codeBytes = size;
 	meter.weights = bundle.weights;
 	if (size > MAX_CODE_BYTES) throw new TooLarge(size);
-	onProgress({ type: "status", text: `${label}: rodando` });
+	onProgress({ type: "status", text: `${label}: running` });
 	meter.loaded = true;
 	try {
 		return { report: await runInDynamicWorker(loader, bundle, onProgress, config, SHARD_DEADLINE_MS, meter.tails), unresolved };
@@ -351,8 +351,8 @@ function failed(files: string[], message: string): ShardResult {
 
 const CANCELLED: CheckResult = {
 	conclusion: "cancelled",
-	title: "Cancelada por um push mais novo",
-	summary: "A PR recebeu commits novos enquanto os testes rodavam; os testes rodam de novo no commit novo.",
+	title: "Canceled by a newer push",
+	summary: "The PR got new commits while the tests were running. The tests run again on the new commit.",
 };
 
 /** Completes the given runs as cancelled, in the history and on GitHub, and stops their shards. */
@@ -394,12 +394,12 @@ function chunk<T>(items: T[], size: number): T[][] {
 	return chunks;
 }
 
-const count = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const count = (n: number, word: string, plural = `${word}s`) => `${n} ${n === 1 ? word : plural}`;
 
 export function cannotRun(error: unknown): CheckResult {
 	return {
 		conclusion: "failure",
-		title: "Não foi possível rodar os testes",
+		title: "Could not run the tests",
 		summary: `\`\`\`\n${error instanceof Error ? error.message : String(error)}\n\`\`\``,
 	};
 }
@@ -411,8 +411,8 @@ function logError(error: unknown): undefined {
 
 const NO_TESTS: CheckResult = {
 	conclusion: "neutral",
-	title: "Nenhum teste encontrado",
-	summary: "Nenhum arquivo `*.test.ts`, `*.test.js`, `*.spec.ts` ou `*.spec.js` (nem `.mts`/`.mjs`) fora de `node_modules`, `dist`, `build`, `coverage` e pastas ocultas.",
+	title: "No tests found",
+	summary: "No `*.test.ts`, `*.test.js`, `*.spec.ts` or `*.spec.js` files (or `.mts`/`.mjs`) outside `node_modules`, `dist`, `build`, `coverage` and hidden folders.",
 };
 
 /** Downloads a package from the npm registry. Tarballs never change, so Cloudflare's cache keeps them. */
@@ -452,10 +452,10 @@ export async function runInDynamicWorker(
 	const signal = AbortSignal.timeout(deadlineMs);
 	try {
 		const res = await worker.getEntrypoint().fetch("http://tests/", { method: "POST", body: JSON.stringify(run), signal });
-		if (!res.ok) throw new Error(`O Dynamic Worker respondeu ${res.status}: ${await res.text()}`);
+		if (!res.ok) throw new Error(`The Dynamic Worker responded ${res.status}: ${await res.text()}`);
 		return await readRun(res, onProgress);
 	} catch (error) {
-		if (signal.aborted) throw new Error(`Os testes passaram de ${deadlineMs / 60_000} minutos rodando e foram interrompidos.`);
+		if (signal.aborted) throw new Error(`The tests ran for more than ${deadlineMs / 60_000} minutes and were stopped.`);
 		throw error;
 	}
 }

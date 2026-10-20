@@ -8,11 +8,9 @@ import { containerTests, startRun, type RunTarget } from "./container.ts";
  * The daily full run. A repository whose config sets `container.changed` runs, on each PR, only the
  * tests that depend on what the PR changed; once a day its default branch runs everything, so what
  * that left out (a test that reads a file it doesn't import, say) still fails somewhere. A failure
- * opens an issue (alertFullRun).
+ * opens an issue (alertFullRun). It starts at 09:00 UTC unless the build variable DAILY_RUN_CRON says otherwise
+ * (cloudflare.config.ts).
  */
-
-/** 09:00 UTC, 06:00 in Brasília: before the day's PRs. */
-export const DAILY_CRON = "0 9 * * *";
 
 export interface DailyDeps {
 	repos(): Promise<InstallationRepo[]>;

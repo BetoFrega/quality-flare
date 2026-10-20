@@ -34,15 +34,15 @@ export function runsOnPush(onDemand: boolean, pr: PullRequest): boolean {
 /** The check run a push leaves while it waits for a run command. */
 export const WAITING_RESULT: CheckResult = {
 	conclusion: "waiting",
-	title: `Aguardando "${RUN_COMMAND}"`,
+	title: `Waiting for "${RUN_COMMAND}"`,
 	summary: [
-		`Este check ainda não rodou: ele só roda quando alguém com acesso ao repositório comenta \`${RUN_COMMAND}\` nesta PR. ` +
-			"Ele trava o merge até lá. O comentário roda o commit atual uma vez; um push novo volta a esperar.",
+		`This check has not run yet. It runs only when someone with access to the repository comments \`${RUN_COMMAND}\` on this PR. ` +
+			"It blocks the merge until then. The comment runs the current commit once. A new push makes it wait again.",
 		"",
-		"**Agente:** este check é seu para destravar. rode os testes localmente o tempo todo, como sempre. Os testes remotos vêm por último: " +
-			"monte tudo, abra a PR para review, corrija as reviews e deixe a PR pronta para o merge. Só então comente " +
-			`\`${RUN_COMMAND}\`, quando achar que os testes vão passar. Depois que a suíte ficar verde, não faça mais push: ` +
-			"cada push volta a esperar e cada execução custa dinheiro.",
+		"**Agent:** this check is yours to unblock. Run the tests locally all the time, as usual. The remote tests come last: " +
+			"build everything, open the PR for review, fix the review comments and get the PR ready to merge. Only then comment " +
+			`\`${RUN_COMMAND}\`, when you think the tests will pass. Once the suite is green, do not push again: ` +
+			"each push makes it wait again, and each run costs money.",
 	].join("\n"),
 };
 
@@ -87,14 +87,14 @@ export async function inheritedRuns(
 	if (onBase.status !== "ahead" && onBase.status !== "identical") return undefined;
 	if (!sameFiles(fromBase, changed)) return undefined;
 	const summary =
-		`O commit \`${short(pr.head.sha)}\` só junta \`${pr.base.ref}\` ao commit \`${short(tested)}\`, sem mexer em nenhum arquivo da PR, ` +
-		"então o resultado de lá vale aqui. A run diária na base pega o que a junção quebrar fora desses arquivos.";
+		`Commit \`${short(pr.head.sha)}\` only merges \`${pr.base.ref}\` into commit \`${short(tested)}\` and touches none of the PR's files, ` +
+		"so the result from there holds here. The daily run on the base catches anything the merge breaks outside those files.";
 	return runs.map((r) => ({
 		name: r.name,
 		result: {
 			conclusion: r.conclusion as "success" | "neutral" | "skipped",
-			title: `Reaproveitado de ${short(tested)}${r.output.title ? `: ${r.output.title}` : ""}`,
-			summary: `${summary}\n\n[Execução original](${r.html_url})`,
+			title: `Reused from ${short(tested)}${r.output.title ? `: ${r.output.title}` : ""}`,
+			summary: `${summary}\n\n[Original run](${r.html_url})`,
 		},
 	}));
 }
@@ -113,7 +113,7 @@ const STATUS_MARKER = "<!-- quality-flare:on-demand";
 const STATUS_PATTERN = /<!-- quality-flare:on-demand(?: (\{.*?\}))? -->/;
 
 /** Where a PR's on-demand checks stand on one commit. */
-export type StatusKind = "waiting" | "running" | "passed" | "failed";
+export type StatusKind = "waiting" | "running" | "passed" | "failed" | "unavailable";
 
 /** What the status comment says, kept in its marker so the next update knows what came before. */
 export interface StatusMark {
@@ -131,6 +131,8 @@ export interface StatusInput {
 	codexBlock?: string;
 	/** A run command came while the Codex review held the PR back. */
 	ignoredCommand?: boolean;
+	/** The deploy left the test checks out (no Workers Paid): they report neutral without running. */
+	unavailable?: boolean;
 	previous?: StatusMark;
 }
 
@@ -146,17 +148,17 @@ function kindOf(runs: StatusInput["runs"]): StatusKind {
 }
 
 function runLabel(run: CheckRunState | undefined): string {
-	if (run?.status === "in_progress") return "🏃 rodando";
-	if (isWaiting(run)) return "⏳ esperando";
-	if (run?.conclusion === "success") return "✅ passou";
-	return PASSING.has(run?.conclusion ?? "") ? `➖ ${run?.conclusion}` : `❌ ${run?.conclusion ?? "falhou"}`;
+	if (run?.status === "in_progress") return "🏃 running";
+	if (isWaiting(run)) return "⏳ waiting";
+	if (run?.conclusion === "success") return "✅ passed";
+	return PASSING.has(run?.conclusion ?? "") ? `➖ ${run?.conclusion}` : `❌ ${run?.conclusion ?? "failed"}`;
 }
 
 const short = (sha: string) => sha.slice(0, 7);
 
 /** The status comment for a PR's on-demand checks, and the mark it carries. */
 export function renderStatus(input: StatusInput): { body: string; mark: StatusMark } {
-	const kind = kindOf(input.runs);
+	const kind = input.unavailable ? "unavailable" : kindOf(input.runs);
 	const { previous } = input;
 	const staleFrom =
 		kind !== "waiting" || !previous ? undefined : previous.sha !== input.sha && previous.kind !== "waiting" ? previous.sha : previous.staleFrom;
@@ -164,49 +166,56 @@ export function renderStatus(input: StatusInput): { body: string; mark: StatusMa
 	const commit = `\`${short(input.sha)}\``;
 	const lines: string[] = [];
 	if (kind === "waiting") {
-		lines.push(input.codexBlock ? `### ⏸️ Testes: esperando o Codex review (${commit})` : `### ⏳ Testes: esperando \`${RUN_COMMAND}\` (${commit})`, "");
+		lines.push(input.codexBlock ? `### ⏸️ Tests: waiting for the Codex review (${commit})` : `### ⏳ Tests: waiting for \`${RUN_COMMAND}\` (${commit})`, "");
 		if (staleFrom) {
 			lines.push(
-				`Um push trouxe o commit ${commit}: a execução no commit \`${short(staleFrom)}\` não vale para ele. Os testes precisam de outro \`${RUN_COMMAND}\`.`,
+				`A push brought commit ${commit}. The run on commit \`${short(staleFrom)}\` does not count for it. The tests need another \`${RUN_COMMAND}\`.`,
 				"",
 			);
 		}
 		if (input.codexBlock) {
-			if (input.ignoredCommand) lines.push(`O último \`${RUN_COMMAND}\` não rodou nada.`, "");
+			if (input.ignoredCommand) lines.push(`The last \`${RUN_COMMAND}\` did not run anything.`, "");
 			lines.push(
-				`O **Codex review** ainda bloqueia esta PR (${input.codexBlock}). Espere a review do Codex terminar e resolva as sugestões dela; ` +
-					`só então comente \`${RUN_COMMAND}\`. Este comentário avisa quando os testes puderem rodar.`,
+				`The **Codex review** still blocks this PR (${input.codexBlock}). Wait for the Codex review to finish and resolve its suggestions. ` +
+					`Only then comment \`${RUN_COMMAND}\`. This comment will say when the tests can run.`,
 			);
 		} else {
 			lines.push(
-				"Os checks abaixo não rodam sozinhos. Rode os testes localmente enquanto trabalha. Quando a PR estiver pronta para o merge " +
-					`(reviews corrigidas, nada mais a enviar), comente \`${RUN_COMMAND}\` como primeira linha de um comentário. ` +
-					"Isso testa o commit atual uma vez; cada push novo volta a esperar outro comentário, então não faça mais push " +
-					"depois que a suíte ficar verde.",
+				"The checks below do not run on their own. Run the tests locally while you work. When the PR is ready to merge " +
+					`(review comments fixed, nothing more to push), comment \`${RUN_COMMAND}\` as the first line of a comment. ` +
+					"That tests the current commit once. Each new push waits for another comment, so do not push again " +
+					"after the suite is green.",
 			);
 		}
 	} else if (kind === "running") {
 		lines.push(
-			`### 🏃 Testes: rodando no commit ${commit}`,
+			`### 🏃 Tests: running on commit ${commit}`,
 			"",
-			"Espere o resultado sem fazer push: um push novo deixa esta execução desatualizada e volta a esperar outro " +
+			"Wait for the result without pushing. A new push makes this run out of date and waits for another " +
 				`\`${RUN_COMMAND}\`.`,
+		);
+	} else if (kind === "unavailable") {
+		lines.push(
+			`### ➖ Tests: unavailable (${commit})`,
+			"",
+			"This quality-flare runs on a Cloudflare account without Workers Paid, which the test checks need. They do not run " +
+				`and show as neutral. Run the tests locally. \`${RUN_COMMAND}\` changes nothing here.`,
 		);
 	} else if (kind === "passed") {
 		lines.push(
-			`### ✅ Testes: passaram no commit ${commit}`,
+			`### ✅ Tests: passed on commit ${commit}`,
 			"",
-			`Não faça mais push: cada push volta a esperar outro \`${RUN_COMMAND}\` e cada execução custa dinheiro.`,
+			`Do not push again. Each push waits for another \`${RUN_COMMAND}\`, and each run costs money.`,
 		);
 	} else {
 		lines.push(
-			`### ❌ Testes: falharam no commit ${commit}`,
+			`### ❌ Tests: failed on commit ${commit}`,
 			"",
-			"Abra os checks com falha, corrija, rode os testes localmente e faça push. Depois comente " +
-				`\`${RUN_COMMAND}\` de novo para testar o commit novo.`,
+			"Open the failed checks, fix them, run the tests locally and push. Then comment " +
+				`\`${RUN_COMMAND}\` again to test the new commit.`,
 		);
 	}
-	lines.push("", "| Check | Estado |", "| --- | --- |", ...input.runs.map((r) => `| ${r.name} | ${runLabel(r.run)} |`));
+	lines.push("", "| Check | Status |", "| --- | --- |", ...input.runs.map((r) => `| ${r.name} | ${runLabel(r.run)} |`));
 	return { body: [`${STATUS_MARKER} ${JSON.stringify(mark)} -->`, ...lines].join("\n"), mark };
 }
 
@@ -228,6 +237,8 @@ export interface StatusUpdate {
 	/** Why the Codex review holds the PR back, or undefined when it doesn't; absent when the repository doesn't run it. */
 	codexBlock?: () => Promise<string | undefined>;
 	ignoredCommand?: boolean;
+	/** The test checks are unavailable (see StatusInput). */
+	unavailable?: boolean;
 	/** Create the comment when the PR has none; otherwise only an existing comment is updated. */
 	create: boolean;
 }
@@ -251,6 +262,7 @@ export async function updateStatus(github: GitHubClient, repo: string, pr: PullR
 		runs,
 		codexBlock,
 		ignoredCommand: update.ignoredCommand,
+		unavailable: update.unavailable,
 		previous: existing?.body ? parseStatusMark(existing.body) : undefined,
 	});
 	if (!existing) await github.commentOnPullRequest(repo, pr.number, body);

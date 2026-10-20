@@ -1,3 +1,5 @@
+import { DEFAULT_INSTANCE, INSTANCES, instanceSize } from "./checks/tests/instances.ts";
+
 /**
  * What each Tests shard attempt cost, kept in D1 next to the run history for the admin: one row
  * per queue delivery of a shard. The consumer writes the row when the attempt starts and fills in
@@ -94,6 +96,9 @@ export interface ContainerUsage {
 	runs: number;
 	/** How long the containers were on: memory and disk are billed for all of it. */
 	wallMs: number;
+	/** Memory × time on, and disk × time on, by each run's instance type. */
+	memoryGiBs: number;
+	diskGBs: number;
 	/** CPU the containers used, where it was measured. */
 	cpuUs: number;
 	/** Runs whose CPU wasn't measured (the container died before reporting it). */
@@ -121,16 +126,32 @@ export interface MetricsStore {
 }
 
 /** Sums over test_container_runs `c` that make up a ContainerUsage. */
-const CONTAINER_USAGE = `COUNT(*) AS runs, SUM(c.wall_ms) AS wall_ms, COALESCE(SUM(c.cpu_us), 0) AS cpu_us, SUM(c.cpu_us IS NULL) AS unmeasured`;
+const CONTAINER_USAGE = `COUNT(*) AS runs, SUM(c.wall_ms) AS wall_ms, COALESCE(SUM(c.cpu_us), 0) AS cpu_us, SUM(c.cpu_us IS NULL) AS unmeasured,
+	SUM(c.wall_ms / 1000.0 * ${bySize("memoryGiB")}) AS memory_gib_s, SUM(c.wall_ms / 1000.0 * ${bySize("diskGB")}) AS disk_gb_s`;
+
+/** A SQL expression for the size of row `c`'s instance type; rows without one ran on DEFAULT_INSTANCE. */
+function bySize(key: "memoryGiB" | "diskGB"): string {
+	const cases = Object.entries(INSTANCES).map(([name, size]) => `WHEN '${name}' THEN ${size[key]}`);
+	return `CASE c.instance ${cases.join(" ")} ELSE ${instanceSize(DEFAULT_INSTANCE)[key]} END`;
+}
 
 interface ContainerSql {
 	runs: number;
 	wall_ms: number;
+	memory_gib_s: number;
+	disk_gb_s: number;
 	cpu_us: number;
 	unmeasured: number;
 }
 
-const containerUsage = (r: ContainerSql): ContainerUsage => ({ runs: r.runs, wallMs: r.wall_ms, cpuUs: r.cpu_us, unmeasured: r.unmeasured });
+const containerUsage = (r: ContainerSql): ContainerUsage => ({
+	runs: r.runs,
+	wallMs: r.wall_ms,
+	memoryGiBs: r.memory_gib_s,
+	diskGBs: r.disk_gb_s,
+	cpuUs: r.cpu_us,
+	unmeasured: r.unmeasured,
+});
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS test_shard_attempts (
 	run_id INTEGER NOT NULL,
