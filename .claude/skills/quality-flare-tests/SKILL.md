@@ -10,7 +10,7 @@ O check **Tests** do quality-flare baixa o commit `head` da PR, monta os módulo
 ## Ligar o check
 
 1. A GitHub App do quality-flare precisa da permissão **Contents: Read-only** (é por ela que o código é baixado) e estar instalada no repositório.
-2. No admin (`https://quality-flare.frega.workers.dev/admin`), ative o repositório e o check **Tests**. Todo check começa desligado; um check desligado aparece como `neutral` ("Desativado").
+2. No admin (`https://quality-flare.frega.dev/admin`), ative o repositório e o check **Tests**. Todo check começa desligado; um check desligado aparece como `neutral` ("Desativado").
 3. Opcional: exija o status check **Tests** na proteção de branch.
 
 O check roda quando a PR é aberta, reaberta, recebe commits ou sai de draft, e no botão **Re-run**. Mudar label ou descrição não roda os testes de novo. Uma execução nova cancela a anterior da mesma PR que ainda estiver rodando: o check run antigo termina como `cancelled` e os lotes dela que ainda estão na fila são descartados.
