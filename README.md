@@ -141,7 +141,7 @@ Qualquer pessoa pode rodar o próprio quality-flare, na própria conta Cloudflar
 | Admin, `/setup`, docs | ✅ | ✅ |
 | Tests e Container tests | ❌ | ✅ |
 
-Os dois checks de testes rodam em Dynamic Workers e Containers, que a Cloudflare só oferece no Workers Paid. Você não escolhe nada: numa conta grátis a Cloudflare recusa o deploy completo, e o `pnpm run deploy` publica de novo sem esses dois checks e avisa no log do build. Eles somem do admin, e o admin e o `/setup` explicam o motivo. Para ligá-los depois, assine o [Workers Paid](https://dash.cloudflare.com/?to=/:account/workers/plans) e rode o build de novo (**Deployments → Retry build**, ou um push na `main`).
+Os dois checks de testes rodam em Dynamic Workers e Containers, que a Cloudflare só oferece no Workers Paid. Você não escolhe nada: numa conta grátis a Cloudflare recusa o deploy completo, e o `pnpm run deploy` publica de novo sem esses dois checks e avisa no log do build. Eles somem do admin, e o admin e o `/setup` explicam o motivo. Para ligá-los depois, assine o [Workers Paid](https://dash.cloudflare.com/?to=/:account/workers/plans) e rode o build de novo (**Deployments → Retry build**, ou um push na `main`). No Workers Paid, se o token de API do deploy não puder usar Containers, o build falha e pede a permissão **Containers Edit** para o token, em vez de publicar sem os testes.
 
 1. **Clique no botão:**
 

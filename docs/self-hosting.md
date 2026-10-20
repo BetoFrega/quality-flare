@@ -16,6 +16,8 @@ The two Tests checks run on [Dynamic Workers](https://developers.cloudflare.com/
 
 To turn them on later, subscribe to [Workers Paid](https://dash.cloudflare.com/?to=/:account/workers/plans) and build again (**Deployments → Retry build**, or a push to `main`): the full deploy now goes through.
 
+On Workers Paid, if the deploy's API token can't use Containers, the build fails and says to give the token the **Containers Edit** permission, instead of deploying without the tests.
+
 The free plan has its own limits, such as 10 ms of CPU per request and 100,000 requests a day ([limits](https://developers.cloudflare.com/workers/platform/limits/)). The other checks mostly wait on GitHub, which doesn't count as CPU.
 
 ## Install

@@ -23,7 +23,9 @@ const MISSING_SECRETS = "required secrets have not been set";
  * How Cloudflare refuses each Paid-only part on a Workers Free account: Dynamic Workers (10195), the CPU limit
  * (100328), and Containers, whose registry answers a Free account's token with a bare 403 on /containers/me.
  */
-const FREE_PLAN = [/code"?:? ?10195\b/i, /code"?:? ?100328\b/i, /\/containers\/me\b[\s\S]{0,400}\b(403|Forbidden|Authentication error)/];
+const FREE_PLAN = [/code"?:? ?10195\b/i, /code"?:? ?100328\b/i];
+/** A token without the Containers permission gets the same 403 on a Workers Paid account. */
+const CONTAINERS_403 = /\/containers\/me\b[\s\S]{0,400}\b(403|Forbidden|Authentication error)/;
 
 const args = process.argv.slice(2);
 const given = Object.fromEntries(SECRETS.filter((name) => process.env[name]).map((name) => [name, process.env[name]]));
@@ -33,7 +35,7 @@ let noTests = false;
 let result = await deploy(secrets, noTests);
 for (;;) {
 	if (result.code === 0) break;
-	if (!noTests && FREE_PLAN.some((error) => error.test(result.output))) {
+	if (!noTests && (FREE_PLAN.some((error) => error.test(result.output)) || (CONTAINERS_403.test(result.output) && !(await containersEnabled())))) {
 		noTests = true;
 		console.log(
 			"\n⚠️  This Cloudflare account has no Workers Paid plan, which the Tests and Container tests checks need: deploying without them." +
@@ -45,7 +47,31 @@ for (;;) {
 	} else break;
 	result = await deploy(secrets, noTests);
 }
+if (result.code !== 0 && !noTests && CONTAINERS_403.test(result.output)) {
+	console.log(
+		"\n⚠️  This account has Containers, but the deploy's API token can't use them. Give the token the Containers Edit permission" +
+			" (Settings → Build → API token), or build again once it has it.\n",
+	);
+}
 process.exit(result.code);
+
+/**
+ * Whether the account's plan includes Containers, from its entitlements (Account Settings Read, which the Workers
+ * Builds token has). When it can't tell, the 403 is taken as the plan's, as before.
+ */
+async function containersEnabled() {
+	const account = process.env.CLOUDFLARE_ACCOUNT_ID;
+	const token = process.env.CLOUDFLARE_API_TOKEN;
+	if (!account || !token) return false;
+	try {
+		const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${account}/entitlements`, { headers: { Authorization: `Bearer ${token}` } });
+		if (!res.ok) return false;
+		const { result } = await res.json();
+		return Array.isArray(result) && result.some((e) => e.id === "containers.enabled" && e.allocation?.value === true);
+	} catch {
+		return false;
+	}
+}
 
 /** Runs `cf deploy`, showing its output as it comes and keeping it to look for the errors above. */
 async function deploy(secrets, noTests) {
