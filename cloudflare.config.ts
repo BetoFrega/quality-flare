@@ -25,6 +25,8 @@ const noTests = process.env.QF_NO_TESTS === "1";
 // When the daily full run starts (src/checks/tests/daily.ts), as a cron expression in UTC. The build variable
 // DAILY_RUN_CRON changes it.
 const dailyCron = process.env.DAILY_RUN_CRON || "0 9 * * *";
+// The Worker tells its two crons apart by expression (SWEEP_CRON in src/index.ts), so they can't be the same.
+if (dailyCron.trim() === "*/5 * * * *") throw new Error("DAILY_RUN_CRON can't be */5 * * * *, the schedule of the sweep of overdue runs.");
 
 // The Tests check's "Container" runner (src/checks/tests/container.ts): one container per run,
 // started by the TestBox Durable Object, which picks the instance type.
