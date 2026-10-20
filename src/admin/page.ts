@@ -2,7 +2,7 @@ import type { Check } from "../checks/types.ts";
 import type { InstalledRepo } from "../github.ts";
 import type { RepoSettings } from "../settings.ts";
 import { RUN_COMMAND } from "../on-demand.ts";
-import { DOCS_PATH, OFFICIAL_URL } from "../site.ts";
+import { DOCS_PATH, FAVICON, MARK, OFFICIAL_URL } from "../site.ts";
 
 export interface AdminPageData {
 	email?: string;
@@ -115,7 +115,7 @@ export function renderHeader(email: string | undefined, current: "repos" | "runs
 	const link = (href: string, id: typeof current, text: string) =>
 		`<a href="${href}"${id === current ? ' aria-current="page"' : ""}>${text}</a>`;
 	return `<header>
-			<h1>quality-flare</h1>
+			<h1>${MARK}quality-flare</h1>
 			<nav>${link("/admin", "repos", "Repositories")}${link("/admin/runs", "runs", "Test runs")}${link("/admin/costs", "costs", "Costs")}<a href="${DOCS_PATH}">Docs</a><a href="${OFFICIAL_URL}">Site</a></nav>
 			${email ? `<span class="who">${esc(email)}</span>` : ""}
 		</header>`;
@@ -207,6 +207,7 @@ export function layout(title: string, body: string, head = ""): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · quality-flare</title>
+${FAVICON}
 ${head}
 <style>
 	:root { --bg: #fff; --fg: #1f2328; --muted: #59636e; --line: #d1d9e0; --panel: #f6f8fa; --on: #1a7f37; --off: #818b98; --link: #0969da; color-scheme: light dark; }
@@ -214,7 +215,10 @@ ${head}
 	* { box-sizing: border-box; }
 	body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
 	header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
-	h1 { font-size: 16px; margin: 0; }
+	h1 { display: flex; align-items: center; gap: 10px; flex-shrink: 0; white-space: nowrap; font-size: 16px; margin: 0; }
+	.mark { width: 24px; height: 24px; }
+	.mark-flare { fill: #c2410c; }
+	@media (prefers-color-scheme: dark) { .mark-flare { fill: #fb8c4a; } }
 	nav { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-right: auto; font-size: 14px; }
 	nav a { color: var(--muted); text-decoration: none; }
 	nav a[aria-current] { color: var(--fg); font-weight: 600; }
