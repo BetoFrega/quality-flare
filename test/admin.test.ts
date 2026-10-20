@@ -17,7 +17,7 @@ const access = { aud: "aud", getIdentity: async () => ({ email: "me@example.com"
 const NOW = 10 * 60_000;
 const history: TestRunDetail[] = [
 	{
-		id: 2, repo: "octo/app", pr: 4, sha: "bbbbbbbbbb", status: "completed", conclusion: "failure", title: "1 falha em 2 testes",
+		id: 2, repo: "octo/app", pr: 4, sha: "bbbbbbbbbb", status: "completed", conclusion: "failure", title: "1 of 2 tests failed",
 		startedAt: NOW - 90_000, finishedAt: NOW - 87_500, summary: "",
 		report: {
 			files: [{
@@ -37,7 +37,8 @@ const runs: RunStore = {
 };
 
 const usage: Usage = { attempts: 12, retries: 2, crashes: 1, splits: 2, dynamicWorkers: 10, cpuMs: 45_000, wallMs: 600_000 };
-const box = { runs: 1, wallMs: 600_000, cpuUs: 1_200_000_000, unmeasured: 0 };
+// 10 minutes on a standard-4 (12 GiB, 20 GB).
+const box = { runs: 1, wallMs: 600_000, memoryGiBs: 7_200, diskGBs: 12_000, cpuUs: 1_200_000_000, unmeasured: 0 };
 const metrics: MetricsStore = {
 	start: async () => {},
 	finish: async () => {},
@@ -123,11 +124,11 @@ describe("admin", () => {
 		const html = await res.text();
 		expect(res.status).toBe(200);
 		expect(html).toContain("me@example.com");
-		expect(html).toContain("1 de 2 checks ativos");
-		expect(html).toContain("0 de 2 checks ativos");
-		expect(html).toContain('aria-label="Ativar checks em octo/app"');
-		expect(html).toMatch(/aria-checked="true" aria-label="Ativar checks em octo\/app"/);
-		expect(html).toMatch(/aria-checked="false" aria-label="Ativar checks em octo\/&#60;secret&#62;"/);
+		expect(html).toContain("1 of 2 checks enabled");
+		expect(html).toContain("0 of 2 checks enabled");
+		expect(html).toContain('aria-label="Enable checks on octo/app"');
+		expect(html).toMatch(/aria-checked="true" aria-label="Enable checks on octo\/app"/);
+		expect(html).toMatch(/aria-checked="false" aria-label="Enable checks on octo\/&#60;secret&#62;"/);
 		expect(html).not.toContain("<details open");
 		expect(html).not.toContain("<secret>");
 	});
@@ -149,10 +150,10 @@ describe("admin", () => {
 		expect(names(await (await call(new Request("https://worker.example/admin?q=APP"))).text())).toEqual(["octo/app"]);
 		const disabled = await (await call(new Request("https://worker.example/admin?status=disabled&sort=bogus"))).text();
 		expect(names(disabled)).toEqual(["octo/app"]);
-		expect(disabled).toContain("1 de 2");
+		expect(disabled).toContain("1 of 2");
 		expect(disabled).toContain('<option value="disabled" selected>');
 		expect(disabled).toContain('<option value="name" selected>');
-		expect(await (await call(new Request("https://worker.example/admin?q=nothing"))).text()).toContain("Nenhum repositório com esses filtros");
+		expect(await (await call(new Request("https://worker.example/admin?q=nothing"))).text()).toContain("No repositories match these filters");
 	});
 
 	it("keeps the filters after a change", async () => {
@@ -211,10 +212,10 @@ describe("admin", () => {
 	it("lists test runs, flagging runs that never finished", async () => {
 		const { call } = setup();
 		const page = await (await call(new Request("https://worker.example/admin/runs"))).text();
-		expect(page).toContain('<a href="/admin/runs/2">✗ Falhou</a>');
-		expect(page).toContain("1 falha em 2 testes");
+		expect(page).toContain('<a href="/admin/runs/2">✗ Failed</a>');
+		expect(page).toContain("1 of 2 tests failed");
 		expect(page).toContain("2.5 s");
-		expect(page).toContain('<a href="/admin/runs/1">! Interrompida</a>');
+		expect(page).toContain('<a href="/admin/runs/1">! Interrupted</a>');
 		// No ever-growing duration for a run that died.
 		expect(page).not.toContain("90 min 0 s");
 		expect(page).toContain(`<td class="num">—</td>`);
@@ -229,9 +230,9 @@ describe("admin", () => {
 		const page = await (await call("/admin/runs?repo=octo%2Fapp&state=failure&sort=longest")).text();
 		expect(queries[0]).toEqual({ repo: "octo/app", state: "failure", sort: "longest" });
 		expect(page).toContain('<option value="octo/app" selected>');
-		expect(page).toContain('<option value="failure" selected>Falhou</option>');
+		expect(page).toContain('<option value="failure" selected>Failed</option>');
 		expect(page).toContain('<option value="longest" selected>');
-		expect(page).toContain("Nenhuma execução com esses filtros");
+		expect(page).toContain("No runs match these filters");
 		await call("/admin/runs?state=whatever&sort=x");
 		expect(queries[1]).toEqual({ repo: undefined, state: undefined, sort: undefined });
 	});
@@ -242,7 +243,7 @@ describe("admin", () => {
 		const store = { ...runs, list: async () => [fresh] };
 		const res = await handleAdmin(new Request("https://worker.example/admin/runs"), env, access, { checks, runs: () => store, now: () => NOW });
 		const page = await res.text();
-		expect(page).toContain("● Rodando");
+		expect(page).toContain("● Running");
 		expect(page).toContain('<meta http-equiv="refresh" content="5">');
 	});
 
@@ -277,16 +278,16 @@ describe("admin", () => {
 	it("shows what each run used and an estimated cost", async () => {
 		const { call } = setup();
 		const list = await (await call(new Request("https://worker.example/admin/runs"))).text();
-		// 10 Dynamic Workers × US$ 0.002 + 45,000 ms of CPU + requests and queue operations
-		expect(list).toContain('<td class="num">10 <span class="failure" title="quedas">1✗</span></td><td class="num">US$ 0.02</td>');
+		// 10 Dynamic Workers × $0.002 + 45,000 ms of CPU + requests and queue operations
+		expect(list).toContain('<td class="num">10 <span class="failure" title="crashes">1✗</span></td><td class="num">$0.02</td>');
 		// A container run: 12 GiB and 20 GB for 600 s, plus 1,200 vCPU-s.
-		expect(list).toContain('<td class="num"><span title="Rodou num container">—</span></td><td class="num">US$ 0.04</td>');
+		expect(list).toContain('<td class="num"><span title="Ran in a container">—</span></td><td class="num">$0.04</td>');
 		const page = await (await call(new Request("https://worker.example/admin/runs/2"))).text();
-		expect(page).toContain("Uso e custo");
-		expect(page).toContain("<dt>Quedas (memória)</dt><dd>1</dd>");
-		expect(page).toContain("Caiu (consumer sem memória?)");
+		expect(page).toContain("Usage and cost");
+		expect(page).toContain("<dt>Crashes (memory)</dt><dd>1</dd>");
+		expect(page).toContain("Crashed (consumer out of memory?)");
 		expect(page).toContain('<span class="failure">exceededMemory</span>');
-		expect(page).toContain("Dividido (queda antes)");
+		expect(page).toContain("Split (after a crash)");
 	});
 
 	it("leaves the usage out of a run that has none recorded, or when it can't be read", async () => {
@@ -295,27 +296,27 @@ describe("admin", () => {
 		const res = await handleAdmin(new Request("https://worker.example/admin/runs"), env, access, { checks, runs: () => runs, metrics: () => broken, now: () => NOW });
 		expect(res.status).toBe(200);
 		const { call } = setup();
-		expect(await (await call(new Request("https://worker.example/admin/runs/1"))).text()).not.toContain("Uso e custo");
+		expect(await (await call(new Request("https://worker.example/admin/runs/1"))).text()).not.toContain("Usage and cost");
 	});
 
 	it("totals usage and cost per day and month, per repository", async () => {
 		const { call } = setup();
 		const page = await (await call(new Request("https://worker.example/admin/costs?repo=octo%2Fapp"))).text();
-		expect(page).toContain('<a href="/admin/costs" aria-current="page">Custos</a>');
+		expect(page).toContain('<a href="/admin/costs" aria-current="page">Costs</a>');
 		expect(page).toContain('<option value="octo/app" selected>');
 		expect(page).toContain('<td class="mono">1970-01-01</td>');
-		expect(page).toContain("<h3>Testes, mês 1970-01</h3>");
+		expect(page).toContain("<h3>Tests, month 1970-01</h3>");
 		// Under the monthly allowances, a month costs nothing.
-		expect(page).toContain("<dt>Após franquia</dt><dd>US$ 0</dd>");
+		expect(page).toContain("<dt>Past allowance</dt><dd>$0</dd>");
 		// The account's measured usage: 500 Dynamic Workers past the 1,000 included, and 40,000 GiB-s of container memory.
-		expect(page).toContain("<dt>Cobrança estimada do mês</dt><dd>US$ 1.10</dd>");
-		expect(page).toContain("<dt>Dynamic Workers</dt><dd>1.500 de 1.000</dd>");
-		expect(page).toContain("<dt>Memória dos containers</dt><dd>36,1 de 25 GiB-h</dd>");
-		expect(page).toContain("<dt>Containers após franquia</dt><dd>US$ 0.10</dd>");
+		expect(page).toContain("<dt>Estimated charge this month</dt><dd>$1.10</dd>");
+		expect(page).toContain("<dt>Dynamic Workers</dt><dd>1,500 of 1,000</dd>");
+		expect(page).toContain("<dt>Container memory</dt><dd>36.1 of 25 GiB-h</dd>");
+		expect(page).toContain("<dt>Containers past the allowance</dt><dd>$0.10</dd>");
 		// The Container tests estimate.
-		expect(page).toContain("<h3>Containers, mês 1970-01</h3>");
-		expect(page).toContain("<dt>Custo estimado</dt><dd>US$ 0.04</dd>");
-		expect(page).toContain("<dt>CPU dos containers</dt><dd>20 de 375 vCPU-min</dd>");
+		expect(page).toContain("<h3>Containers, month 1970-01</h3>");
+		expect(page).toContain("<dt>Estimated cost</dt><dd>$0.04</dd>");
+		expect(page).toContain("<dt>Container CPU</dt><dd>20 of 375 vCPU-min</dd>");
 	});
 
 	it("says why the account's usage is missing", async () => {
@@ -327,6 +328,6 @@ describe("admin", () => {
 			account: async () => Promise.reject(new Error("GraphQL Analytics: 403")),
 			now: () => NOW,
 		});
-		expect(await res.text()).toContain("Não deu para ler o uso real da conta: GraphQL Analytics: 403");
+		expect(await res.text()).toContain("Could not read the account's real usage: GraphQL Analytics: 403");
 	});
 });

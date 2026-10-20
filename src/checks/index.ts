@@ -11,8 +11,8 @@ export const checks: Check[] = [closesIssue, tests, containerTests, dependabotAu
 /** What the Tests checks report when the deploy left them out (cloudflare.config.ts). */
 export const UNAVAILABLE_RESULT: CheckResult = {
 	conclusion: "neutral",
-	title: "Indisponível sem Workers Paid",
-	summary: "Este check precisa do Workers Paid da Cloudflare, e a conta deste quality-flare não o tem. Depois de assinar, rode o build de novo para ligá-lo.",
+	title: "Unavailable without Workers Paid",
+	summary: "This check needs Cloudflare's Workers Paid plan, and this quality-flare's account does not have it. After you subscribe, run the build again to turn it on.",
 };
 
 /**

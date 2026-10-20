@@ -7,7 +7,7 @@ describe("toCheckResult", () => {
 		const result = toCheckResult({
 			files: [{ path: "test/a.test.ts", state: "pass", tests: [{ name: "a › works", state: "pass" }, { name: "b", state: "skip" }] }],
 		});
-		expect(result).toMatchObject({ conclusion: "success", title: "1 teste passaram" });
+		expect(result).toMatchObject({ conclusion: "success", title: "1 test passed" });
 		expect(result.summary).toContain("| ✅ | `test/a.test.ts` | 1/2 |");
 	});
 
@@ -21,10 +21,10 @@ describe("toCheckResult", () => {
 			},
 			[{ specifier: "left-pad", from: "test/b.test.ts" }],
 		);
-		expect(result).toMatchObject({ conclusion: "failure", title: "2 falhas em 1 teste" });
+		expect(result).toMatchObject({ conclusion: "failure", title: "2 failures in 1 test" });
 		expect(result.summary).toContain("### a › adds\n`test/a.test.ts`\n\n```\nAssertionError: expected 3 to be 4\n```");
 		expect(result.summary).toContain("### `test/b.test.ts`\n\n```\nError: boom\n```");
-		expect(result.summary).toContain("- `left-pad` em `test/b.test.ts`");
+		expect(result.summary).toContain("- `left-pad` in `test/b.test.ts`");
 	});
 });
 
@@ -44,6 +44,6 @@ describe("readRun", () => {
 
 	it("fails when the worker reports an error or stops early", async () => {
 		await expect(readRun(stream('{"type":"error","message":"boom"}\n'), () => {})).rejects.toThrow("boom");
-		await expect(readRun(stream('{"type":"collected","total":1}\n'), () => {})).rejects.toThrow("sem mandar o relatório");
+		await expect(readRun(stream('{"type":"collected","total":1}\n'), () => {})).rejects.toThrow("without sending the report");
 	});
 });

@@ -24,28 +24,28 @@ describe("evaluate", () => {
 	it("fails while a Codex thread is unresolved, listing it", () => {
 		const r = evaluate(activity({ threads: [thread(false), thread(true), thread(false, "octocat")], reviewers: [`${CODEX}`] }));
 		expect(r.conclusion).toBe("failure");
-		expect(r.title).toBe("1 sugestão do Codex sem resolver");
+		expect(r.title).toBe("1 unresolved Codex suggestion");
 		expect(r.summary).toContain("**P1** [Add a timeout](https://github.com/o/r/pull/1#discussion_r1)");
 	});
 
 	it("counts outdated threads until they are resolved", () => {
 		const r = evaluate(activity({ threads: [thread(false, CODEX, true)] }));
 		expect(r.conclusion).toBe("failure");
-		expect(r.summary).toContain("código já mudou");
+		expect(r.summary).toContain("code already changed");
 	});
 
 	it("passes once every Codex thread is resolved", () => {
 		const r = evaluate(activity({ threads: [thread(true), thread(true)], comments: [{ author: CODEX, body: summary("completed") }] }));
-		expect(r).toMatchObject({ conclusion: "success", title: "Todas as sugestões do Codex foram resolvidas (2)" });
+		expect(r).toMatchObject({ conclusion: "success", title: "All Codex suggestions were resolved (2)" });
 	});
 
 	it("passes when Codex reviewed and found nothing", () => {
 		const r = evaluate(activity({ comments: [{ author: CODEX, body: "Codex Review: Didn't find any major issues. Swish!" }] }));
-		expect(r).toMatchObject({ conclusion: "success", title: "O Codex não encontrou problemas" });
+		expect(r).toMatchObject({ conclusion: "success", title: "Codex found no problems" });
 	});
 
 	it("stays pending while Codex is still reviewing", () => {
-		expect(evaluate(activity({ eyesFrom: [CODEX] }))).toMatchObject({ conclusion: "pending", title: "O Codex está revisando a PR" });
+		expect(evaluate(activity({ eyesFrom: [CODEX] }))).toMatchObject({ conclusion: "pending", title: "Codex is reviewing the PR" });
 	});
 
 	it("is neutral before Codex shows up", () => {
@@ -61,7 +61,7 @@ describe("isReviewing", () => {
 	});
 
 	it("reads the per-review state Codex nests in codex-review-state", () => {
-		// Copied from macae-classificados #2156, trimmed.
+		// Copied from a real Codex review, trimmed.
 		const state = (code: string, security: string) =>
 			`<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {"code_review":{"commit_sha":"de0fac6","has_any_findings":null,"status":"${code}"},"security_review":{"commit_sha":"86d17e8","has_any_findings":false,"status":"${security}"}} -->\n<!-- codex-security-review:v1 {"headSha":"86d17e8","mergeGateEnabled":false,"status":"${security}"} -->\n## Codex Review Summary`;
 		const reviewing = (body: string) => isReviewing(activity({ comments: [{ author: CODEX, body }] }));

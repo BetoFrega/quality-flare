@@ -271,7 +271,7 @@ describe("buildModules", () => {
 	it("gives a package that needs a native binary as a module that fails when used", async () => {
 		const { modules } = await build({ "test/a.test.ts": `import sharp from "sharp"; export const s = sharp;` });
 		expect(modules["test/a.test.ts"].js).toContain(`from "/__qf/native/sharp.js"`);
-		expect(modules["__qf/native/sharp.js"].js).toContain("binário nativo");
+		expect(modules["__qf/native/sharp.js"].js).toContain("native binary");
 	});
 
 	it("assigns a getter defined on module.exports, which workerd ignores", async () => {

@@ -1,7 +1,7 @@
 import { ADMIN_PATH, handleAdmin } from "./admin/index.ts";
 import { codexReview } from "./checks/codex-review/index.ts";
 import { checksFor, testsOff } from "./checks/index.ts";
-import { DAILY_CRON, runDailyFullRuns } from "./checks/tests/daily.ts";
+import { runDailyFullRuns } from "./checks/tests/daily.ts";
 import { runTestShards, sweepOverdueRuns } from "./checks/tests/index.ts";
 import type { TestShard } from "./checks/tests/jobs.ts";
 import type { Check, CheckResult } from "./checks/types.ts";
@@ -24,6 +24,9 @@ const PULL_REQUEST_ACTIONS = new Set([
 ]);
 
 /** Events about a PR's reviews whose payload carries the PR, for checks that list them in `events`. */
+/** The cron that sweeps overdue Tests runs (cloudflare.config.ts); the other one starts the daily full run. */
+const SWEEP_CRON = "*/5 * * * *";
+
 const REVIEW_EVENTS = new Set(["pull_request_review", "pull_request_review_comment", "pull_request_review_thread"]);
 
 interface WebhookPayload {
@@ -43,8 +46,8 @@ interface WebhookPayload {
  */
 export const DISABLED_RESULT: CheckResult = {
 	conclusion: "neutral",
-	title: "Desativado",
-	summary: "Este check está desativado para este repositório no admin do quality-flare.",
+	title: "Disabled",
+	summary: "This check is disabled for this repository in the quality-flare admin.",
 };
 
 export interface Plan {
@@ -105,7 +108,7 @@ export default {
 	async scheduled(controller, env) {
 		if (!appConfigured(env)) return;
 		// Without the Tests checks there is no daily run, but runs started before still need to expire.
-		if (controller.cron !== DAILY_CRON) await sweepOverdueRuns(env);
+		if (controller.cron === SWEEP_CRON) await sweepOverdueRuns(env);
 		else if (!testsOff(env)) await runDailyFullRuns(env);
 	},
 } satisfies ExportedHandler<Env, TestShard>;

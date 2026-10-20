@@ -175,8 +175,8 @@ export class GitHubClient {
 		if (res.status === 403 || res.status === 404) {
 			// Public repositories download without it, so this only shows up on private ones.
 			throw new Error(
-				`O GitHub respondeu ${res.status} ao baixar o código de ${repo}. A GitHub App precisa da permissão ` +
-					`"Contents: Read-only", e a instalação precisa aceitar essa permissão (GitHub → Settings → Applications → quality-flare).`,
+				`GitHub answered ${res.status} when downloading the code of ${repo}. The GitHub App needs the ` +
+					`"Contents: Read-only" permission, and the installation must accept it (GitHub → Settings → Applications → quality-flare).`,
 			);
 		}
 		if (!res.ok || !res.body) throw new Error(`GitHub GET tarball of ${repo}@${ref} failed: ${res.status}`);
@@ -200,7 +200,7 @@ export class GitHubClient {
 			"GET",
 			`/repos/${repo}/git/trees/${ref}?recursive=1`,
 		);
-		if (tree.truncated) throw new Error(`O repositório ${repo} tem arquivos demais para listar pela API do GitHub.`);
+		if (tree.truncated) throw new Error(`The repository ${repo} has too many files to list through the GitHub API.`);
 		return tree.tree.filter((e) => e.type === "blob").map((e) => e.path);
 	}
 
