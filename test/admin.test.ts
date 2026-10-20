@@ -65,7 +65,7 @@ const account = {
 function setup() {
 	const env = { ACCESS_AUD: "aud", SETTINGS: fakeKv() } as Env;
 	const callAs = (ctxAccess: CloudflareAccessContext | undefined, req: Request) =>
-		handleAdmin(req, env, ctxAccess, { checks, listRepos: async () => repos, runs: () => runs, metrics: () => metrics, account: async () => account, now: () => NOW });
+		handleAdmin(req, env, ctxAccess, { checks, listRepos: async () => repos, runs: () => runs, metrics: () => metrics, account: async () => account, installUrl: async () => "https://github.com/apps/qf-test/installations/new", now: () => NOW });
 	return { env, callAs, call: (req: Request) => callAs(access, req) };
 }
 
@@ -86,6 +86,19 @@ describe("admin", () => {
 		const { callAs } = setup();
 		const other = { ...access, aud: "other" } as CloudflareAccessContext;
 		expect((await callAs(other, new Request("https://worker.example/admin"))).status).toBe(403);
+	});
+
+	it("stays closed, pointing to /setup, until an Access application is configured", async () => {
+		const { env, call } = setup();
+		env.ACCESS_AUD = "";
+		const res = await call(new Request("https://worker.example/admin"));
+		expect(res.status).toBe(403);
+		expect(await res.text()).toContain("/setup");
+	});
+
+	it("links to this installation's own App for installing on more repositories", async () => {
+		const { call } = setup();
+		expect(await (await call(new Request("https://worker.example/admin"))).text()).toContain("https://github.com/apps/qf-test/installations/new");
 	});
 
 	it("lists installed repositories, off by default, with their checks collapsed", async () => {

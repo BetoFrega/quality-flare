@@ -3,18 +3,22 @@ import type { TestShard } from "./src/checks/tests/jobs.ts";
 import * as entrypoint from "./src/index.ts" with { type: "cf-worker" };
 
 // This deployment's account and resource IDs stay out of the repository: Workers Builds sets them as build
-// variables (see README). In Workers Builds (WORKERS_CI) a missing one fails the build before anything deploys;
-// elsewhere (types, dev, tests) a placeholder stands in.
+// variables (see README). Each one is optional when deploying, so a new installation deploys with none: the deploy
+// creates the KV namespace, the D1 database, the R2 bucket and the Queue (and, once the Worker exists, keeps
+// using the ones it is bound to), and /setup says what else to set. Elsewhere (types, dev, tests) a placeholder
+// stands in, so the Worker's types always carry every binding.
 // This file runs in Node; tsconfig checks it without Node's types.
 declare const process: { argv: string[]; env: Record<string, string | undefined> };
 
-const deploying = Boolean(process.env.WORKERS_CI) || process.argv.includes("deploy");
-function fromEnv(name: string): string {
-	const value = process.env[name];
-	if (value) return value;
-	if (deploying) throw new Error(`Set ${name} to deploy (a Workers Builds build variable).`);
-	return `<${name}>`;
+// `cf deploy` builds in a child process without "deploy" in its arguments; scripts/deploy.mjs sets QF_DEPLOY for it.
+const deploying = (Boolean(process.env.WORKERS_CI || process.env.QF_DEPLOY) || process.argv.includes("deploy")) && !process.argv.includes("types");
+function fromEnv(name: string): string | undefined {
+	return process.env[name] || (deploying ? undefined : `<${name}>`);
 }
+const kvId = fromEnv("SETTINGS_KV_ID");
+const d1Id = fromEnv("RUNS_D1_ID");
+const secretsStoreId = fromEnv("SECRETS_STORE_ID");
+const accountId = fromEnv("CLOUDFLARE_ACCOUNT_ID");
 
 // The Tests check's "Container" runner (src/checks/tests/container.ts): one container per run,
 // started by the TestBox Durable Object, which picks the instance type.
@@ -63,13 +67,14 @@ export default defineConfig({
 			// The webhook secret configured on the GitHub App.
 			GITHUB_WEBHOOK_SECRET: bindings.secret(),
 			// Where people open the admin; check runs link to their run there.
-			PUBLIC_URL: bindings.text(fromEnv("PUBLIC_URL")),
+			// Empty until set: /setup shows the value.
+			PUBLIC_URL: bindings.text(fromEnv("PUBLIC_URL") ?? ""),
 			// Label that exempts a PR from the "Closes an issue" check.
 			NO_ISSUE_LABEL: bindings.text("no-issue"),
 			// Per-repository check settings, edited in the admin UI.
-			SETTINGS: bindings.kv({ id: fromEnv("SETTINGS_KV_ID") }),
+			SETTINGS: bindings.kv(kvId ? { id: kvId } : {}),
 			// History of Tests check runs, shown in the admin.
-			RUNS: bindings.d1({ id: fromEnv("RUNS_D1_ID") }),
+			RUNS: bindings.d1(d1Id ? { id: d1Id } : { name: "quality-flare-runs" }),
 			// Turborepo artifacts of Container tests runs (src/turbo-cache.ts); a lifecycle rule expires them.
 			TURBO_CACHE: bindings.r2({ name: "quality-flare-turbo-cache" }),
 			// The RunsHub Durable Object (see exports).
@@ -78,12 +83,17 @@ export default defineConfig({
 			LOADER: bindings.workerLoader(),
 			// Shards of Tests runs, consumed by this same Worker (see triggers).
 			TESTS_QUEUE: bindings.queue<TestShard>({ name: "quality-flare-tests" }),
-			// API token with Account Analytics: Read, for the admin's real account usage (src/account-usage.ts).
-			ANALYTICS_TOKEN: bindings.secretsStoreSecret({ storeId: fromEnv("SECRETS_STORE_ID"), secretName: "quality-flare-analytics-token" }),
-			// The account whose usage the admin shows.
-			CLOUDFLARE_ACCOUNT_ID: bindings.text(fromEnv("CLOUDFLARE_ACCOUNT_ID")),
+			// API token with Account Analytics: Read, for the admin's real account usage (src/account-usage.ts), and the
+			// account whose usage the admin shows. Optional: without them the costs page shows only the estimates.
+			...(secretsStoreId && accountId
+				? {
+						ANALYTICS_TOKEN: bindings.secretsStoreSecret({ storeId: secretsStoreId, secretName: "quality-flare-analytics-token" }),
+						CLOUDFLARE_ACCOUNT_ID: bindings.text(accountId),
+					}
+				: {}),
 			// Audience tag of the Cloudflare Access application that protects /admin.
-			ACCESS_AUD: bindings.text(fromEnv("ACCESS_AUD")),
+			// Empty until set, which keeps the admin closed.
+			ACCESS_AUD: bindings.text(fromEnv("ACCESS_AUD") ?? ""),
 		},
 	},
 });

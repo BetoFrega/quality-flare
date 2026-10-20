@@ -10,6 +10,8 @@ export interface AdminPageData {
 	/** Repository whose checks start expanded, after a change made inside it. */
 	open?: string | null;
 	query?: RepoQuery;
+	/** The App's page for installing it on more repositories. */
+	installUrl?: string;
 }
 
 export type RepoStatus = "enabled" | "disabled";
@@ -65,9 +67,10 @@ function filterRows(rows: Row[], checks: Check[], { q, status, sort = "name" }: 
 		.sort(order[sort]);
 }
 
-const INSTALL_URL = "https://github.com/apps/quality-flare/installations/new";
+/** Without the App's own link: the Apps installed on the person's account. */
+const INSTALLATIONS_URL = "https://github.com/settings/installations";
 
-export function renderAdminPage({ email, checks, rows, open, query = {} }: AdminPageData): string {
+export function renderAdminPage({ email, checks, rows, open, query = {}, installUrl = INSTALLATIONS_URL }: AdminPageData): string {
 	const shown = filterRows(rows, checks, query);
 	const back = repoSearch(query).slice(1);
 	const filtered = Boolean(query.q || query.status);
@@ -75,7 +78,7 @@ export function renderAdminPage({ email, checks, rows, open, query = {} }: Admin
 		? `<ul class="repos">${shown.map(({ repo, settings }) => renderRepo(repo, settings, checks, repo.full_name === open, back)).join("")}</ul>`
 		: rows.length
 			? `<p class="empty">Nenhum repositório com esses filtros. <a href="/admin">Limpar filtros</a></p>`
-			: `<p class="empty">A App ainda não está instalada em nenhum repositório. <a href="${INSTALL_URL}">Instalar</a></p>`;
+			: `<p class="empty">A App ainda não está instalada em nenhum repositório. <a href="${esc(installUrl)}">Instalar</a></p>`;
 	const filters = rows.length
 		? `<form class="filters" method="get" action="/admin">
 				<label>Nome <input type="search" name="q" value="${esc(query.q ?? "")}" placeholder="owner/repo"></label>
@@ -94,7 +97,7 @@ export function renderAdminPage({ email, checks, rows, open, query = {} }: Admin
 			<p class="hint">Repositórios e checks começam desativados. Ative o repositório e depois os checks que ele deve rodar. Um check desativado num repositório ativo aparece na PR como <em>neutral</em>, para não travar branches que o exigem.</p>
 			${filters}
 			${list}
-			<p class="hint"><a href="${INSTALL_URL}">Conectar outros repositórios</a></p>
+			<p class="hint"><a href="${esc(installUrl)}">Conectar outros repositórios</a></p>
 		</main>`,
 	);
 }

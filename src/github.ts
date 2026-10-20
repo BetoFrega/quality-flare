@@ -28,6 +28,12 @@ export class GitHubClient {
 		return res.token;
 	}
 
+	/** Where people install the App on more repositories. */
+	static async installUrl(creds: AppCredentials): Promise<string> {
+		const app = await request<{ html_url: string }>(await createAppJwt(creds.appId, creds.privateKey), "GET", "/app");
+		return `${app.html_url}/installations/new`;
+	}
+
 	/** Every repository the App is installed on, across all installations, sorted by name. */
 	static async listInstalledRepos(creds: AppCredentials): Promise<InstalledRepo[]> {
 		const jwt = await createAppJwt(creds.appId, creds.privateKey);

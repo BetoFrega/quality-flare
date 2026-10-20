@@ -2,7 +2,7 @@
 
 Continuous Integration rodando inteiramente na Cloudflare, entregue como uma GitHub App. Cada check vira um check run na pull request.
 
-Toda a infraestrutura é Cloudflare: um único Worker, um namespace KV com as configurações de cada repositório e o Cloudflare Access protegendo o admin. O projeto foi criado e é publicado com o novo CLI da Cloudflare, [`cf`](https://www.npmjs.com/package/cf).
+Toda a infraestrutura é Cloudflare: um único Worker, um namespace KV com as configurações de cada repositório e o Cloudflare Access protegendo o admin. O projeto foi criado e é publicado com o novo CLI da Cloudflare, [`cf`](https://www.npmjs.com/package/cf). Para rodar o seu, veja [Instale o seu](#instale-o-seu).
 
 ## Checks
 
@@ -127,61 +127,79 @@ Eventos tratados:
 
 Vincular uma issue pela barra lateral não gera webhook. Depois de vincular, clique em **Re-run** no check (ou edite a descrição) para reavaliar.
 
-## Configuração
+## Instale o seu
 
-### 1. Publicar o Worker
+Qualquer pessoa pode rodar o próprio quality-flare, na própria conta Cloudflare e com a própria GitHub App. Não precisa instalar nada no computador: o build roda no [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/).
 
-O deploy é automático: o Worker está conectado a este repositório pelo [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/), e cada push na `main` roda `pnpm typecheck && pnpm test` e depois `pnpm exec cf deploy`. Pushes em outras branches não publicam.
+**Precisa de:** uma conta Cloudflare no plano **Workers Paid** (US$ 5/mês; Containers e Dynamic Workers não existem no plano grátis) e uma conta GitHub.
 
-Requisitos para o deploy automático funcionar:
+1. **Faça um fork** deste repositório.
+2. **Conecte o fork à Cloudflare:** em [Workers & Pages → Create → Import a repository](https://dash.cloudflare.com/?to=/:account/workers-and-pages/create), escolha o fork e use:
+   - **Nome do Worker** (Project name): `quality-flare`, o mesmo do `cloudflare.config.ts`
+   - **Build command:** `pnpm typecheck && pnpm test`
+   - **Deploy command:** `pnpm run deploy`
 
-- A app **Cloudflare Workers and Pages** precisa ter acesso a este repositório no GitHub (Settings → Applications → Configure → Repository access). Sem isso, a Cloudflare não recebe os pushes e nenhum build é disparado.
-- As variáveis de build abaixo precisam estar no Workers Builds (Settings → Build → Variables and secrets do Worker). O `cloudflare.config.ts` lê os IDs da conta e dos recursos delas, para que não fiquem no repositório; sem uma delas, o build falha antes de publicar.
+   O primeiro deploy cria sozinho o KV, o D1, o bucket R2 e a Queue. O Worker sobe ainda sem GitHub App: até ela existir, ele recusa webhooks e manda quem abre o endereço para `/setup`.
+3. **Abra `https://quality-flare.<seu-subdomínio>.workers.dev/setup`.** A página mostra o que falta e faz o resto com você:
+   - **Criar a GitHub App:** um clique cria a App no GitHub (na sua conta ou numa organização) com as permissões, os eventos e o webhook certos. Na volta, a página mostra o `GITHUB_APP_ID`, o `GITHUB_WEBHOOK_SECRET` e o `GITHUB_PRIVATE_KEY` uma única vez; adicione os três como **Secret** em Settings → Build → Variables and secrets do Worker.
+   - **`PUBLIC_URL`:** a página mostra o valor (o próprio endereço, ou o seu domínio); adicione como variável de build.
+   - **Login do admin:** crie uma aplicação self-hosted do Cloudflare Access para `/admin` e `/admin/*` com uma política que permita o seu e-mail, e copie o AUD para a variável de build `ACCESS_AUD`. Até lá o admin fica fechado.
+
+   Depois de mudar variáveis ou secrets de build, rode o build de novo (**Deployments → Retry build**, ou um push na `main`).
+4. **Instale a App** nos repositórios (o link aparece em `/setup` e no admin) e **ative-os** em `/admin`. Tudo começa desligado.
+
+Cada push na `main` do fork publica de novo. O `pnpm run deploy` ([`scripts/deploy.mjs`](scripts/deploy.mjs)) é o `cf deploy` que também envia os secrets da App guardados no build; sem eles, é o `cf deploy` puro.
+
+Opcional:
+
+- **Cache do Container tests:** o bucket R2 `quality-flare-turbo-cache` guarda o cache das execuções. Para ele não crescer para sempre, apague o que tem mais de 14 dias: `cf r2 buckets lifecycle update quality-flare-turbo-cache -f --rules '[{"id":"expire-14-days","enabled":true,"conditions":{"prefix":""},"deleteObjectsTransition":{"condition":{"type":"Age","maxAge":1209600}}}]'`.
+- **Uso real da conta no admin** ([`/admin/costs`](#admin)): crie um API token com *Account Analytics: Read*, guarde-o no Secrets Store como `quality-flare-analytics-token` e defina as variáveis de build `SECRETS_STORE_ID` e `CLOUDFLARE_ACCOUNT_ID`. Sem elas, a página mostra só as estimativas.
+- **Domínio próprio:** adicione um Custom Domain ao Worker, use-o em `PUBLIC_URL`, na aplicação do Access e na Webhook URL da App.
+
+### Variáveis de build
+
+Ficam em Settings → Build → Variables and secrets do Worker; o [`cloudflare.config.ts`](cloudflare.config.ts) lê os IDs da conta e dos recursos delas, para que não fiquem no repositório. Todas são opcionais para o deploy, e `/setup` diz quais ainda faltam.
+
+| Variável | O que é | Sem ela |
+| --- | --- | --- |
+| `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET` | Secrets da GitHub App, criados em `/setup` | O Worker recusa webhooks e espera a App |
+| `PUBLIC_URL` | Endereço onde se abre o admin (links dos check runs; o container usa para o cache) | Links quebrados |
+| `ACCESS_AUD` | Audience (AUD) da aplicação do Cloudflare Access que protege `/admin` | Admin fechado |
+| `SETTINGS_KV_ID` | ID do KV com as configurações | O deploy cria um, ou mantém o que o Worker já usa |
+| `RUNS_D1_ID` | ID do D1 com o histórico | O deploy usa (ou cria) o D1 `quality-flare-runs` |
+| `SECRETS_STORE_ID`, `CLOUDFLARE_ACCOUNT_ID` | Secrets Store do token `quality-flare-analytics-token` e conta cujo uso o admin mostra | `/admin/costs` só com estimativas |
+
+Fora do Workers Builds (`cf dev`, `pnpm typecheck`, testes), o que faltar vira um valor de exemplo.
+
+### Instância oficial
+
+A instância do projeto, em [`https://quality-flare.frega.dev`](https://quality-flare.frega.dev), é publicada do mesmo jeito, a partir deste repositório, com o deploy command `pnpm exec cf deploy`: os secrets da App ficam no próprio Worker, e as variáveis de build trazem os IDs dos recursos que já existiam.
+
+- A app **Cloudflare Workers and Pages** precisa ter acesso ao repositório no GitHub (Settings → Applications → Configure → Repository access). Sem isso, a Cloudflare não recebe os pushes e nenhum build é disparado.
 - Não altere o código do Worker direto pela API ou pelo painel da Cloudflare. O `cf deploy` em CI se recusa a publicar quando o Worker foi modificado fora dele; nesse caso, um deploy único com `wrangler deploy` destrava.
 
-| Variável de build | O que é |
-| --- | --- |
-| `CLOUDFLARE_ACCOUNT_ID` | Conta Cloudflare cujo uso o admin mostra |
-| `PUBLIC_URL` | URL onde se abre o admin (links dos check runs), `https://quality-flare.frega.dev` (endereço oficial) |
-| `SETTINGS_KV_ID` | ID do KV `quality-flare-settings` |
-| `RUNS_D1_ID` | ID do D1 `quality-flare-runs` |
-| `SECRETS_STORE_ID` | ID do Secrets Store que guarda `quality-flare-analytics-token` |
-| `ACCESS_AUD` | Audience (AUD) da aplicação do Cloudflare Access que protege `/admin` |
+### Publicar do seu computador
 
-Fora do Workers Builds (`cf dev`, `pnpm typecheck`, testes), o que faltar vira um valor de exemplo; `cf deploy` exige todas.
-
-Para publicar manualmente:
+Precisa do Docker (para a imagem do container):
 
 ```sh
-pnpm add --global cf
 pnpm install
-cp .dev.vars.example .dev.vars   # preencha depois de criar a App (passo 2)
-export CLOUDFLARE_API_TOKEN=...  # token com permissão "Workers Scripts: Edit"
-export CLOUDFLARE_ACCOUNT_ID=... PUBLIC_URL=... SETTINGS_KV_ID=... RUNS_D1_ID=... SECRETS_STORE_ID=... ACCESS_AUD=...
-cf deploy --secrets-file .dev.vars
+cp .dev.vars.example .dev.vars   # os secrets da App, para o cf dev
+pnpm exec cf auth login          # ou CLOUDFLARE_API_TOKEN
+pnpm run deploy                  # com as variáveis acima no ambiente, se tiver
 ```
 
-O endereço oficial, [`https://quality-flare.frega.dev`](https://quality-flare.frega.dev), é a URL do webhook. Os secrets (`GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`) ficam no Worker e são mantidos entre deploys.
+### Exigir os checks
 
-### 2. Criar a GitHub App
+Em cada repositório: **Settings → Rules** (ou Branch protection) → exigir os status checks que devem travar o merge, como **Closes an issue**.
 
-Em **Settings → Developer settings → GitHub Apps → New GitHub App**:
+### Permissões da GitHub App
 
-- **Webhook URL:** a URL do Worker.
-- **Webhook secret:** um valor aleatório; o mesmo vai em `GITHUB_WEBHOOK_SECRET`.
-- **Permissões do repositório:**
-  - Checks: **Read and write**
-  - Contents: **Read and write** (o check Tests baixa o código da PR; o Dependabot auto-merge precisa de escrita para mergear)
-  - Pull requests: **Read and write** (o Dependabot auto-merge habilita o auto-merge)
-  - Issues: **Read-only**
-  - Metadata: **Read-only**
+A App criada em `/setup` já vem assim; para criar à mão, em **Settings → Developer settings → GitHub Apps → New GitHub App**:
+
+- **Webhook URL:** o endereço do Worker; **Webhook secret:** um valor aleatório, o mesmo de `GITHUB_WEBHOOK_SECRET`.
+- **Permissões do repositório:** Checks, Contents, Pull requests e Issues em **Read and write** (o Tests baixa o código da PR; o Dependabot auto-merge mergeia; o comentário de status vai na PR; a execução diária abre uma issue quando falha); Metadata **Read-only**.
 - **Eventos:** Pull request, Check run, Check suite, Pull request review, Pull request review comment, Pull request review thread, Issue comment.
-
-Depois de criar, anote o **App ID**, gere uma **private key** e instale a App nos repositórios desejados. Coloque os três valores no `.dev.vars` e rode `cf deploy --secrets-file .dev.vars` de novo.
-
-### 3. Exigir o check
-
-Em cada repositório: **Settings → Rules** (ou Branch protection) → exigir o status check **Closes an issue**.
 
 ## Admin
 
@@ -196,7 +214,7 @@ Em [`/admin`](https://quality-flare.frega.dev/admin) ficam os repositórios onde
 - **Login:** uma aplicação self-hosted do Cloudflare Access cobre `/admin` e `/admin/*` em `quality-flare.frega.dev` e no endereço `workers.dev` do Worker. O Worker ainda confere `ctx.access` e exige que o `aud` seja o dessa aplicação (`ACCESS_AUD`), então o admin recusa qualquer pedido que não passou pelo Access.
 - **Ao vivo:** o Dynamic Worker transmite cada teste que termina (NDJSON) para o check, que repassa em lotes ao Durable Object `RunsHub` (binding `LIVE`). As páginas do admin abrem um WebSocket em `/admin/live` (atrás do Access, só da mesma origem) e recebem os eventos; quem abre no meio de uma execução recebe o progresso até ali. Sem JavaScript, a página recarrega a cada 5 s.
 - **Histórico de testes:** D1 `quality-flare-runs` (binding `RUNS`), tabela `test_runs`, criada pelo próprio Worker no primeiro uso (não há migração para rodar).
-- **Armazenamento:** KV `quality-flare-settings` (binding `SETTINGS`), chave `repo:<owner/repo>` com `{ "enabled": true, "enabledChecks": ["closes-issue"] }`.
+- **Armazenamento:** o KV do binding `SETTINGS`, chave `repo:<owner/repo>` com `{ "enabled": true, "enabledChecks": ["closes-issue"] }`.
 
 Cada check tem um `id` estável (por exemplo `closes-issue`) que é o que fica salvo; não mude o `id` de um check já publicado.
 
