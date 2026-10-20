@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { Marked } from "marked";
 import type { Plugin } from "vite";
@@ -70,8 +71,10 @@ export function renderDoc(slug: string, markdown: string): DocPage {
 					if (!PAGES.includes(page[1])) throw new Error(`docs/${slug}.md links to ${href}, which is not in PAGES`);
 					target = `${page[1] === "index" ? "/docs" : `/docs/${page[1]}`}${page[2] ?? ""}`;
 				} else if (href.startsWith("../")) {
-					// Repository files, which the Worker doesn't serve.
-					target = `https://github.com/BetoFrega/quality-flare/blob/main/${href.slice(3)}`;
+					// Repository files and folders, which the Worker doesn't serve. Throws when the path doesn't exist.
+					const path = href.slice(3).replace(/#.*$/, "");
+					const kind = statSync(new URL(`../${path}`, import.meta.url)).isDirectory() ? "tree" : "blob";
+					target = `https://github.com/BetoFrega/quality-flare/${kind}/main/${href.slice(3)}`;
 				}
 				const external = /^https?:/.test(target) ? ' rel="noopener"' : "";
 				return `<a href="${target}"${title ? ` title="${title}"` : ""}${external}>${text}</a>`;

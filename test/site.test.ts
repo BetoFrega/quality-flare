@@ -43,12 +43,14 @@ describe("site", () => {
 
 	it.skipIf(inWorkers)("turns links between Markdown files into links between pages, with GitHub's anchors", async () => {
 		const { renderDoc } = await build();
-		const { title, html } = renderDoc("x", "# Title\n\n## Only the tests that changed\n\nSee [tests](checks.md#tests), [home](index.md), [code](../src/index.ts).");
+		const { title, html } = renderDoc("x", "# Title\n\n## Only the tests that changed\n\nSee [tests](checks.md#tests), [home](index.md), [code](../src/index.ts), [folder](../containers/tests).");
 		expect(title).toBe("Title");
 		expect(html).toContain('id="only-the-tests-that-changed"');
 		expect(html).toContain('href="/docs/checks#tests"');
 		expect(html).toContain('href="/docs"');
 		expect(html).toContain('href="https://github.com/BetoFrega/quality-flare/blob/main/src/index.ts"');
+		expect(html).toContain('href="https://github.com/BetoFrega/quality-flare/tree/main/containers/tests"');
+		expect(() => renderDoc("x", "# T\n\n[x](../nope.ts)")).toThrow(/no such file/);
 		expect(() => renderDoc("x", "# T\n\n[x](missing.md)")).toThrow(/not in PAGES/);
 	});
 
