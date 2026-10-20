@@ -1,4 +1,3 @@
-import pages from "virtual:docs";
 import { esc } from "./admin/page.ts";
 import { SETUP_PATH } from "./setup.ts";
 
@@ -11,12 +10,16 @@ import { SETUP_PATH } from "./setup.ts";
 export const DOCS_PATH = "/docs";
 const REPO_URL = "https://github.com/BetoFrega/quality-flare";
 
+type DocPage = { slug: string; title: string; html: string };
+
 /** The documentation page at `pathname`, or a 404 page. */
-export function handleDocs(pathname: string): Response {
+export async function handleDocs(pathname: string): Promise<Response> {
+	// Imported on first use, like virtual:test-runtime, so code that imports the Worker without serving docs
+	// (the Tests check running this repository's own tests) doesn't need the build's virtual module.
+	const { default: pages } = await import("virtual:docs");
 	const slug = pathname.replace(/\/+$/, "").slice(DOCS_PATH.length + 1) || "index";
 	const page = pages.find((p) => p.slug === slug);
-	if (!page) return html(renderDocsPage(undefined), 404);
-	return html(renderDocsPage(page));
+	return html(renderDocsPage(pages, page), page ? 200 : 404);
 }
 
 /** The home page. `pending` adds a note that this installation's /setup isn't finished. */
@@ -114,7 +117,7 @@ function renderHome(pending: boolean): string {
 	);
 }
 
-function renderDocsPage(page: { slug: string; title: string; html: string } | undefined): string {
+function renderDocsPage(pages: DocPage[], page: DocPage | undefined): string {
 	const nav = pages
 		.map((p) => {
 			const href = p.slug === "index" ? DOCS_PATH : `${DOCS_PATH}/${p.slug}`;
