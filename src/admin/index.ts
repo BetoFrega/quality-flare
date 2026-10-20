@@ -9,7 +9,7 @@ import { d1MetricsStore, type ContainerUsage, type MetricsStore, type Usage } fr
 import { d1RunStore, type RunStore } from "../runs.ts";
 import { renderCostsPage } from "./costs-page.ts";
 import { LIVE_SCRIPT } from "./live-script.ts";
-import { renderAdminPage, renderMessage, repoQuery, repoSearch } from "./page.ts";
+import { controlId, renderAdminPage, renderMessage, repoQuery, repoSearch } from "./page.ts";
 import { renderRunPage, renderRunsPage, runQuery } from "./runs-page.ts";
 import { SETUP_PATH } from "../setup.ts";
 
@@ -78,7 +78,7 @@ export async function handleAdmin(
 			repos.map(async (repo) => ({ repo, settings: await getRepoSettings(env.SETTINGS, repo.full_name) })),
 		);
 		const identity = await access.getIdentity();
-		return html(renderAdminPage({ email: identity?.email, checks, rows, open: url.searchParams.get("open"), query: repoQuery(url.searchParams), installUrl: install, testsOff: testsOff(env) }));
+		return html(renderAdminPage({ email: identity?.email, checks, rows, open: url.searchParams.get("open"), changed: url.searchParams.get("changed"), query: repoQuery(url.searchParams), installUrl: install, testsOff: testsOff(env) }));
 	}
 
 	if (request.method === "GET" && path === `${ADMIN_PATH}/live.js`) {
@@ -154,30 +154,37 @@ export async function handleAdmin(
 		const repo = (await listRepos(env)).find((r) => r.full_name === form.get("repo"))?.full_name;
 		if (!repo) return invalid();
 
+		// The control the change was made through, which the page focuses and confirms.
+		let control: string;
 		switch (path) {
 			case `${ADMIN_PATH}/repos`:
 				await setRepoEnabled(env.SETTINGS, repo, enabled);
+				control = "repo";
 				break;
 			case `${ADMIN_PATH}/checks`: {
 				const check = checks.find((c) => c.id === form.get("check"));
 				if (!check) return invalid();
 				await setChecksEnabled(env.SETTINGS, repo, [check.id], enabled);
+				control = `check:${check.id}`;
 				break;
 			}
 			case `${ADMIN_PATH}/on-demand`:
 				await setOnDemand(env.SETTINGS, repo, enabled);
+				control = "on-demand";
 				break;
 			case `${ADMIN_PATH}/checks/all`:
 				await setChecksEnabled(env.SETTINGS, repo, checks.map((c) => c.id), enabled);
+				control = "checks";
 				break;
 			default:
 				return notFound();
 		}
-		// Return to the same filtered view. Changes to checks happen inside the repository's
-		// collapsible, so keep it open.
+		// Return to the same filtered view, with focus back on the control that was used. Changes
+		// to checks happen inside the repository's collapsible, so keep it open.
 		const back = repoQuery(new URLSearchParams(String(form.get("back") ?? "")));
-		const search = repoSearch(back, path === `${ADMIN_PATH}/repos` ? {} : { open: repo });
-		return Response.redirect(`${url.origin}${ADMIN_PATH}${search}#${encodeURIComponent(repo)}`, 303);
+		const id = controlId(repo, control);
+		const search = repoSearch(back, { ...(path === `${ADMIN_PATH}/repos` ? {} : { open: repo }), changed: id });
+		return Response.redirect(`${url.origin}${ADMIN_PATH}${search}#${encodeURIComponent(id)}`, 303);
 	}
 
 	return notFound();
