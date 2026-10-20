@@ -124,11 +124,22 @@ describe("admin", () => {
 		expect(res.status).toBe(200);
 		expect(html).toContain("me@example.com");
 		expect(html).toContain("1 de 2 checks ativos");
-		expect(html).toContain("0 de 2 checks ativos");
-		expect(html).toContain('aria-label="Ativar checks em octo/app"');
-		expect(html).toMatch(/aria-checked="true" aria-label="Ativar checks em octo\/app"/);
-		expect(html).toMatch(/aria-checked="false" aria-label="Ativar checks em octo\/&#60;secret&#62;"/);
+		expect(html).toContain("nenhum check roda: repositório desativado");
+		expect(html).toMatch(/id="octo\/app:repo" role="switch" aria-checked="true" aria-label="Checks do quality-flare em octo\/app"/);
+		expect(html).toMatch(/aria-checked="false" aria-label="Checks do quality-flare em octo\/&#60;secret&#62;">\s*<span class="track"><span class="thumb"><\/span><\/span><span class="label">Desativado</);
 		expect(html).not.toContain("<details open");
+		expect(html).not.toContain('role="status"');
+	});
+
+	it("warns that turning an enabled repository off blocks the checks branch protection requires", async () => {
+		const { env, call } = setup();
+		await setRepoEnabled(env.SETTINGS, "octo/app", true);
+		const html = await (await call(new Request("https://worker.example/admin"))).text();
+		const warning = /<p class="note warn" id="octo\/app:warning">([^<]+)<\/p>/.exec(html)?.[1];
+		expect(warning).toContain("trava o merge");
+		expect(warning).toContain("Desativar todos");
+		expect(html).toMatch(new RegExp(`id="octo/app:repo"[^>]*aria-describedby="octo/app:warning" title="${warning}"`));
+		expect(html.match(/class="note warn"/g)).toHaveLength(1);
 		expect(html).not.toContain("<secret>");
 	});
 
@@ -149,7 +160,7 @@ describe("admin", () => {
 		expect(names(await (await call(new Request("https://worker.example/admin?q=APP"))).text())).toEqual(["octo/app"]);
 		const disabled = await (await call(new Request("https://worker.example/admin?status=disabled&sort=bogus"))).text();
 		expect(names(disabled)).toEqual(["octo/app"]);
-		expect(disabled).toContain("1 de 2");
+		expect(disabled).toContain("nenhum check roda");
 		expect(disabled).toContain('<option value="disabled" selected>');
 		expect(disabled).toContain('<option value="name" selected>');
 		expect(await (await call(new Request("https://worker.example/admin?q=nothing"))).text()).toContain("Nenhum repositório com esses filtros");
@@ -160,28 +171,43 @@ describe("admin", () => {
 		const page = await (await call(new Request("https://worker.example/admin?q=app&sort=enabled"))).text();
 		expect(page).toContain('<input type="hidden" name="back" value="q=app&#38;sort=enabled">');
 		const res = await call(post("/admin/checks", { repo: "octo/app", check: "other", enabled: "true", back: "q=app&sort=enabled&evil=1" }));
-		expect(res.headers.get("Location")).toBe("https://worker.example/admin?q=app&sort=enabled&open=octo%2Fapp#octo%2Fapp");
+		expect(res.headers.get("Location")).toBe("https://worker.example/admin?q=app&sort=enabled&open=octo%2Fapp&changed=octo%2Fapp%3Acheck%3Aother#octo%2Fapp%3Acheck%3Aother");
 	});
 
 	it("enables a repository", async () => {
 		const { env, call } = setup();
 		const res = await call(post("/admin/repos", { repo: "octo/app", enabled: "true" }));
 		expect(res.status).toBe(303);
-		expect(res.headers.get("Location")).toBe("https://worker.example/admin#octo%2Fapp");
+		expect(res.headers.get("Location")).toBe("https://worker.example/admin?changed=octo%2Fapp%3Arepo#octo%2Fapp%3Arepo");
 		expect((await getRepoSettings(env.SETTINGS, "octo/app")).enabled).toBe(true);
 	});
 
 	it("toggles one check and keeps the repository expanded", async () => {
 		const { env, call } = setup();
 		const res = await call(post("/admin/checks", { repo: "octo/app", check: "other", enabled: "true" }));
-		expect(res.headers.get("Location")).toBe("https://worker.example/admin?open=octo%2Fapp#octo%2Fapp");
+		expect(res.headers.get("Location")).toBe("https://worker.example/admin?open=octo%2Fapp&changed=octo%2Fapp%3Acheck%3Aother#octo%2Fapp%3Acheck%3Aother");
 		expect((await getRepoSettings(env.SETTINGS, "octo/app")).enabledChecks).toEqual(new Set(["other"]));
+	});
+
+	it("returns focus to the switch that was used and confirms the change there", async () => {
+		const { env, call } = setup();
+		await setChecksEnabled(env.SETTINGS, "octo/app", ["other"], true);
+		const html = await (await call(new Request("https://worker.example/admin?open=octo%2Fapp&changed=octo%2Fapp%3Acheck%3Aother"))).text();
+		expect(html).toMatch(/id="octo\/app:check:other" role="switch" aria-checked="true" aria-label="Other em octo\/app" aria-describedby="octo\/app:check:other-status">/);
+		expect(html).toContain('<span class="saved" role="status" id="octo/app:check:other-status">Salvo</span>');
+		expect(html.match(/role="status"/g)).toHaveLength(1);
+		// The confirmation is not carried into the forms' filter round-trip.
+		expect(html).not.toContain('name="back"');
 	});
 
 	it("enables and disables every check of a repository at once", async () => {
 		const { env, call } = setup();
-		await call(post("/admin/checks/all", { repo: "octo/app", enabled: "true" }));
+		const res = await call(post("/admin/checks/all", { repo: "octo/app", enabled: "true" }));
+		expect(res.headers.get("Location")).toBe("https://worker.example/admin?open=octo%2Fapp&changed=octo%2Fapp%3Achecks#octo%2Fapp%3Achecks");
 		expect((await getRepoSettings(env.SETTINGS, "octo/app")).enabledChecks).toEqual(new Set(["closes-issue", "other"]));
+		const page = await (await call(new Request("https://worker.example/admin?open=octo%2Fapp&changed=octo%2Fapp%3Achecks"))).text();
+		expect(page).toContain('<p class="saved" role="status" id="octo/app:checks-status">Salvo: 2 de 2 checks ativos.</p>');
+		expect(page).toContain('<ul class="checks" id="octo/app:checks" tabindex="-1" aria-describedby="octo/app:checks-status">');
 		await call(post("/admin/checks/all", { repo: "octo/app", enabled: "false" }));
 		expect((await getRepoSettings(env.SETTINGS, "octo/app")).enabledChecks).toEqual(new Set());
 	});
@@ -189,7 +215,7 @@ describe("admin", () => {
 	it("turns tests on demand on for a repository", async () => {
 		const { env, call } = setup();
 		const res = await call(post("/admin/on-demand", { repo: "octo/app", enabled: "true" }));
-		expect(res.headers.get("Location")).toBe("https://worker.example/admin?open=octo%2Fapp#octo%2Fapp");
+		expect(res.headers.get("Location")).toBe("https://worker.example/admin?open=octo%2Fapp&changed=octo%2Fapp%3Aon-demand#octo%2Fapp%3Aon-demand");
 		expect((await getRepoSettings(env.SETTINGS, "octo/app")).onDemand).toBe(true);
 	});
 

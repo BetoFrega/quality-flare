@@ -10,6 +10,8 @@ export interface AdminPageData {
 	rows: { repo: InstalledRepo; settings: RepoSettings }[];
 	/** Repository whose checks start expanded, after a change made inside it. */
 	open?: string | null;
+	/** The control a change was just made through (see controlId), to confirm it next to that control. */
+	changed?: string | null;
 	query?: RepoQuery;
 	/** The App's page for installing it on more repositories. */
 	installUrl?: string;
@@ -77,12 +79,12 @@ const INSTALLATIONS_URL = "https://github.com/settings/installations";
 export const TESTS_OFF_NOTE =
 	'Os checks Tests e Container tests estão desligados: a conta Cloudflare não tem o Workers Paid, que eles exigem. Depois de assinar o <a href="https://dash.cloudflare.com/?to=/:account/workers/plans">Workers Paid</a>, rode o build de novo (Deployments → Retry build) para ligá-los.';
 
-export function renderAdminPage({ email, checks, rows, open, query = {}, installUrl = INSTALLATIONS_URL, testsOff = false }: AdminPageData): string {
+export function renderAdminPage({ email, checks, rows, open, changed, query = {}, installUrl = INSTALLATIONS_URL, testsOff = false }: AdminPageData): string {
 	const shown = filterRows(rows, checks, query);
 	const back = repoSearch(query).slice(1);
 	const filtered = Boolean(query.q || query.status);
 	const list = shown.length
-		? `<ul class="repos">${shown.map(({ repo, settings }) => renderRepo(repo, settings, checks, repo.full_name === open, back)).join("")}</ul>`
+		? `<ul class="repos">${shown.map(({ repo, settings }) => renderRepo(repo, settings, checks, repo.full_name === open, back, changed)).join("")}</ul>`
 		: rows.length
 			? `<p class="empty">Nenhum repositório com esses filtros. <a href="/admin">Limpar filtros</a></p>`
 			: `<p class="empty">A App ainda não está instalada em nenhum repositório. <a href="${esc(installUrl)}">Instalar</a></p>`;
@@ -121,61 +123,103 @@ export function renderHeader(email: string | undefined, current: "repos" | "runs
 		</header>`;
 }
 
-/** `back` is the list's filter and sort, so a change made through a form returns to the same view. */
-function renderRepo(repo: InstalledRepo, settings: RepoSettings, checks: Check[], open: boolean, back: string): string {
+/**
+ * The id of a control on the admin page, which a change made through it redirects back to.
+ * `control` is "repo", "check:<id>", "on-demand", or "checks" (the list, after "Ativar/Desativar todos").
+ */
+export function controlId(repo: string, control: string): string {
+	return `${repo}:${control}`;
+}
+
+/** Turning a whole repository off makes the Worker ignore its webhooks, so no check run is created at all. */
+const REPO_OFF_WARNING =
+	"Desativar o repositório interrompe todos os check runs dele: um check exigido pela proteção de branch fica pendente e trava o merge das PRs. Para pausar sem travar, use “Desativar todos”: os checks passam a responder neutral.";
+
+/**
+ * `back` is the list's filter and sort, so a change made through a form returns to the same view.
+ * `changed` is the control a change was just made through, confirmed next to it.
+ */
+function renderRepo(repo: InstalledRepo, settings: RepoSettings, checks: Check[], open: boolean, back: string, changed?: string | null): string {
 	const fields = (extra: Record<string, string>) => ({ repo: repo.full_name, ...extra, ...(back ? { back } : {}) });
+	const id = (control: string) => controlId(repo.full_name, control);
 	const active = checks.filter((c) => settings.enabledChecks.has(c.id)).length;
+	const count = settings.enabled
+		? `${active} de ${checks.length} ${checks.length === 1 ? "check ativo" : "checks ativos"}`
+		: "nenhum check roda: repositório desativado";
+	const warningId = id("warning");
+	const listId = id("checks");
 	const items = checks
 		.map(
 			(check) => `<li>
 				<span>${esc(check.name)}</span>
-				${toggle("/admin/checks", fields({ check: check.id }), settings.enabledChecks.has(check.id), `${check.name} em ${repo.full_name}`)}
+				${toggle("/admin/checks", fields({ check: check.id }), settings.enabledChecks.has(check.id), `${check.name} em ${repo.full_name}`, id(`check:${check.id}`), changed)}
 			</li>`,
 		)
 		.join("");
+	const listSaved = changed === listId
+		? `<p class="saved" role="status" id="${esc(listId)}-status">Salvo: ${active} de ${checks.length} checks ativos.</p>`
+		: "";
 	return `<li class="repo${settings.enabled ? "" : " off"}" id="${esc(repo.full_name)}">
 		<details${open ? " open" : ""}>
 			<summary>
 				<span class="name">${esc(repo.full_name)}</span>${repo.private ? ' <span class="badge">privado</span>' : ""}
-				<span class="count">${active} de ${checks.length} ${checks.length === 1 ? "check ativo" : "checks ativos"}</span>
+				<span class="count">${count}</span>
 			</summary>
 			<div class="body">
-				${settings.enabled ? "" : '<p class="note">Os checks só rodam depois que o repositório é ativado.</p>'}
+				${settings.enabled
+					? `<p class="note warn" id="${esc(warningId)}">${REPO_OFF_WARNING}</p>`
+					: '<p class="note">Os checks só rodam depois que o repositório é ativado.</p>'}
 				<div class="bulk">
 					${button("/admin/checks/all", fields({ enabled: "true" }), "Ativar todos")}
 					${button("/admin/checks/all", fields({ enabled: "false" }), "Desativar todos")}
 					<a href="${esc(repo.html_url)}">Abrir no GitHub</a>
 				</div>
-				<ul class="checks">${items}</ul>
-				${onDemandToggle(settings.onDemand, fields({}), checks, repo.full_name)}
+				${listSaved}
+				<ul class="checks" id="${esc(listId)}" tabindex="-1"${listSaved ? ` aria-describedby="${esc(listId)}-status"` : ""}>${items}</ul>
+				${onDemandToggle(settings.onDemand, fields({}), checks, repo.full_name, id("on-demand"), changed)}
 			</div>
 		</details>
 		<div class="repo-toggle">
-			${toggle("/admin/repos", fields({}), settings.enabled, `Ativar checks em ${repo.full_name}`, "Ativar checks")}
+			${toggle("/admin/repos", fields({}), settings.enabled, `Checks do quality-flare em ${repo.full_name}`, id("repo"), changed, settings.enabled ? { title: REPO_OFF_WARNING, describedBy: warningId } : {})}
 		</div>
 	</li>`;
 }
 
 /** Turns on or off whether the test checks wait for a run command on this repository. */
-function onDemandToggle(on: boolean, fields: Record<string, string>, checks: Check[], repo: string): string {
+function onDemandToggle(on: boolean, fields: Record<string, string>, checks: Check[], repo: string, id: string, changed?: string | null): string {
 	const names = checks.filter((c) => c.onDemand).map((c) => c.name);
 	if (!names.length) return "";
 	return `<div class="on-demand">
 		<div class="row">
 			<span>Testes sob demanda</span>
-			${toggle("/admin/on-demand", fields, on, `Testes sob demanda em ${repo}`)}
+			${toggle("/admin/on-demand", fields, on, `Testes sob demanda em ${repo}`, id, changed)}
 		</div>
 		<p class="note">Ligado, ${esc(names.join(" e "))} ficam em espera em cada push até alguém do repositório comentar <code>${esc(RUN_COMMAND)}</code> na PR, que roda o commit atual. PRs de bots, como o Dependabot, rodam direto.</p>
 	</div>`;
 }
 
-/** A switch that posts the opposite of its current state. */
-function toggle(action: string, fields: Record<string, string>, on: boolean, label: string, text = on ? "Ativo" : "Desativado"): string {
+/**
+ * A switch that posts the opposite of its current state. The change redirects to `#id`, which
+ * focuses the switch again; when `changed` names it, a status line confirms the new state.
+ */
+function toggle(
+	action: string,
+	fields: Record<string, string>,
+	on: boolean,
+	label: string,
+	id: string,
+	changed?: string | null,
+	{ title, describedBy }: { title?: string; describedBy?: string } = {},
+): string {
+	const saved = changed === id;
+	const statusId = `${id}-status`;
+	const described = [describedBy, saved ? statusId : undefined].filter(Boolean).join(" ");
 	return `<form method="post" action="${action}">
 		${hidden({ ...fields, enabled: on ? "false" : "true" })}
-		<button type="submit" class="switch" role="switch" aria-checked="${on}" aria-label="${esc(label)}">
-			<span class="track"><span class="thumb"></span></span><span class="label">${esc(text)}</span>
+		<button type="submit" class="switch" id="${esc(id)}" role="switch" aria-checked="${on}" aria-label="${esc(label)}"${described ? ` aria-describedby="${esc(described)}"` : ""}${title ? ` title="${esc(title)}"` : ""}>
+			<span class="track"><span class="thumb"></span></span><span class="label">${on ? "Ativo" : "Desativado"}</span>
 		</button>
+		${saved ? `<span class="saved" role="status" id="${esc(statusId)}">Salvo</span>` : ""}
 	</form>`;
 }
 
@@ -247,19 +291,23 @@ ${head}
 	.repo.off .name { color: var(--muted); }
 	.badge { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 6px; }
 	.count { margin-left: auto; }
-	.repo-toggle { position: absolute; top: 9px; right: 0; }
+	.repo-toggle { position: absolute; top: 7px; right: 0; }
 	.body { margin: 0 0 14px 22px; padding: 12px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
 	.note { margin: 0 0 8px; }
+	.warn { border-left: 3px solid #9a6700; padding-left: 8px; }
 	.bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 8px; font-size: 13px; }
 	.bulk a { margin-left: auto; }
-	.checks li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 6px 0; border-top: 1px solid var(--line); }
+	.checks li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 2px 0; border-top: 1px solid var(--line); }
 	.repo.off .checks { opacity: .6; }
 	form { margin: 0; }
 	button { font: inherit; color: var(--fg); cursor: pointer; }
 	button:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
-	.secondary { font-size: 13px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+	.secondary { font-size: 13px; min-height: 36px; padding: 3px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
 	.secondary:hover { border-color: var(--muted); }
-	.switch { display: inline-flex; align-items: center; gap: 8px; background: none; border: 0; padding: 4px 0; border-radius: 4px; }
+	.switch { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; background: none; border: 0; padding: 0 4px; border-radius: 4px; }
+	.repo-toggle form, .checks form, .on-demand form { display: flex; align-items: center; gap: 8px; }
+	.saved { color: var(--on); font-size: 13px; }
+	.checks:focus { outline: none; }
 	.track { flex: none; width: 34px; height: 20px; border-radius: 999px; background: var(--off); position: relative; transition: background .15s; }
 	.thumb { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
 	.switch[aria-checked="true"] .track { background: var(--on); }
@@ -284,7 +332,9 @@ ${head}
 	@media (max-width: 560px) {
 		summary { padding-right: 56px; }
 		.count { margin-left: 0; flex-basis: 100%; }
-		.repo-toggle .label { display: none; }
+		.repo-toggle { top: 3px; }
+		.repo-toggle .label, .repo-toggle .saved { display: none; }
+		.switch, .secondary { min-height: 44px; }
 		.body { margin-left: 0; }
 	}
 </style>
