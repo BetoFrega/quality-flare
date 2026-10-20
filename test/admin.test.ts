@@ -347,13 +347,13 @@ describe("admin", () => {
 		const { call } = setup();
 		const list = await (await call(new Request("https://worker.example/admin/runs"))).text();
 		// 10 Dynamic Workers × US$ 0.002 + 45,000 ms of CPU + requests and queue operations
-		expect(list).toContain('<td class="num">10 <span class="failure" title="quedas">1✗</span></td><td class="num">US$ 0.02</td>');
+		expect(list).toContain('<td class="num">10 <span class="failure" title="Dynamic Workers que caíram">1✗</span></td><td class="num">US$ 0,02</td>');
 		// A container run: 12 GiB and 20 GB for 600 s, plus 1,200 vCPU-s.
-		expect(list).toContain('<td class="num"><span title="Rodou num container">—</span></td><td class="num">US$ 0.04</td>');
+		expect(list).toContain('<td class="num"><span title="Rodou num container">—</span></td><td class="num">US$ 0,04</td>');
 		const page = await (await call(new Request("https://worker.example/admin/runs/2"))).text();
 		expect(page).toContain("Uso e custo");
-		expect(page).toContain("<dt>Quedas (memória)</dt><dd>1</dd>");
-		expect(page).toContain("Caiu (consumer sem memória?)");
+		expect(page).toContain(">Dynamic Workers que caíram</dt><dd>1</dd>");
+		expect(page).toContain("Caiu (Worker da fila sem memória?)");
 		expect(page).toContain('<span class="failure">exceededMemory</span>');
 		expect(page).toContain("Dividido (queda antes)");
 	});
@@ -391,18 +391,29 @@ describe("admin", () => {
 		expect(page).toContain('<a href="/admin/costs" aria-current="page">Custos</a>');
 		expect(page).toContain('<option value="octo/app" selected>');
 		expect(page).toContain('<td class="mono">1970-01-01</td>');
-		expect(page).toContain("<h3>Testes, mês 1970-01</h3>");
+		expect(page).toContain("<h4>Tests em Dynamic Workers, mês 1970-01</h4>");
 		// Under the monthly allowances, a month costs nothing.
 		expect(page).toContain("<dt>Após franquia</dt><dd>US$ 0</dd>");
-		// The account's measured usage: 500 Dynamic Workers past the 1,000 included, and 40,000 GiB-s of container memory.
-		expect(page).toContain("<dt>Cobrança estimada do mês</dt><dd>US$ 1.10</dd>");
-		expect(page).toContain("<dt>Dynamic Workers</dt><dd>1.500 de 1.000</dd>");
-		expect(page).toContain("<dt>Memória dos containers</dt><dd>36,1 de 25 GiB-h</dd>");
-		expect(page).toContain("<dt>Containers após franquia</dt><dd>US$ 0.10</dd>");
 		// The Container tests estimate.
-		expect(page).toContain("<h3>Containers, mês 1970-01</h3>");
-		expect(page).toContain("<dt>Custo estimado</dt><dd>US$ 0.04</dd>");
-		expect(page).toContain("<dt>CPU dos containers</dt><dd>20 de 375 vCPU-min</dd>");
+		expect(page).toContain("<h4>Container tests, mês 1970-01</h4>");
+		expect(page).toContain("<dt>Custo estimado</dt><dd>US$ 0,04</dd>");
+		expect(page).toContain("<dt>CPU dos containers</dt><dd>20 vCPU-min de 375 vCPU-min <span class=\"pct\">5%</span>");
+	});
+
+	it("leads with whether the account's measured month is inside the allowance", async () => {
+		const { call } = setup();
+		const page = await (await call(new Request("https://worker.example/admin/costs"))).text();
+		// 500 Dynamic Workers past the 1,000 included, and 40,000 GiB-s of container memory.
+		expect(page).toContain('<div class="lead over"><p class="verdict">Acima da franquia em 1970-01: US$ 1,10 a pagar até agora</p>');
+		expect(page).toContain("Maior uso: Dynamic Workers, 150% da franquia.");
+		expect(page).toContain('<dt>Dynamic Workers</dt><dd>1.500 de 1.000 <span class="pct failure">150%</span><meter min="0" max="1000" value="1500"');
+		expect(page).toContain("<dt>CPU da conta</dt><dd>35,0 min de 8,3 h <span class=\"pct\">7%</span>");
+		expect(page).toContain("<dt>Memória dos containers</dt><dd>36,1 GiB-h de 25 GiB-h <span class=\"pct failure\">144%</span>");
+		expect(page).toContain("<dt>Containers após franquia</dt><dd>US$ 0,10</dd>");
+		// The filter comes after the measured usage it doesn't change, and says so.
+		expect(page.indexOf('<section id="conta">')).toBeLessThan(page.indexOf('<form class="filters"'));
+		expect(page).toContain("O filtro vale só para as estimativas; o uso medido acima é da conta inteira.");
+		expect(page).toContain('<nav class="toc" aria-label="Nesta página"><a href="#conta">');
 	});
 
 	it("says why the account's usage is missing", async () => {
@@ -414,6 +425,9 @@ describe("admin", () => {
 			account: async () => Promise.reject(new Error("GraphQL Analytics: 403")),
 			now: () => NOW,
 		});
-		expect(await res.text()).toContain("Não deu para ler o uso real da conta: GraphQL Analytics: 403");
+		const page = await res.text();
+		expect(page).toContain("Não deu para ler o uso real da conta: GraphQL Analytics: 403");
+		// The lead falls back to the estimates, which are under the allowance.
+		expect(page).toContain('<div class="lead"><p class="verdict">Estimativa: dentro da franquia em 1970-01: US$ 0 a pagar até agora</p>');
 	});
 });
