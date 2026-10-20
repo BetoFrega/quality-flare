@@ -9,7 +9,7 @@ import { d1MetricsStore, type ContainerUsage, type MetricsStore, type Usage } fr
 import { d1RunStore, type RunStore } from "../runs.ts";
 import { renderCostsPage } from "./costs-page.ts";
 import { LIVE_SCRIPT } from "./live-script.ts";
-import { renderAdminPage, renderMessage, repoQuery, repoSearch } from "./page.ts";
+import { controlId, renderAdminPage, renderMessage, repoQuery, repoSearch } from "./page.ts";
 import { renderRunPage, renderRunsPage, runQuery } from "./runs-page.ts";
 import { SETUP_PATH } from "../setup.ts";
 
@@ -60,6 +60,11 @@ export async function handleAdmin(
 	}
 	const url = new URL(request.url);
 	const path = url.pathname.replace(/\/+$/, "") || "/";
+	// Past this point the person is signed in: messages keep the admin's header and navigation.
+	const message = async (status: number, title: string, detail = "", back = false) =>
+		html(renderMessage(title, detail, { email: (await access.getIdentity())?.email, back }), status);
+	const notFound = (title = "Page not found") => message(404, title, "", true);
+	const invalid = () => message(400, "Invalid request", "Unknown repository or check.", true);
 
 	if (request.method === "GET" && path === ADMIN_PATH) {
 		const [repos, install] = await Promise.all([
@@ -73,7 +78,7 @@ export async function handleAdmin(
 			repos.map(async (repo) => ({ repo, settings: await getRepoSettings(env.SETTINGS, repo.full_name) })),
 		);
 		const identity = await access.getIdentity();
-		return html(renderAdminPage({ email: identity?.email, checks, rows, open: url.searchParams.get("open"), query: repoQuery(url.searchParams), installUrl: install, testsOff: testsOff(env) }));
+		return html(renderAdminPage({ email: identity?.email, checks, rows, open: url.searchParams.get("open"), changed: url.searchParams.get("changed"), query: repoQuery(url.searchParams), installUrl: install, testsOff: testsOff(env) }));
 	}
 
 	if (request.method === "GET" && path === `${ADMIN_PATH}/live.js`) {
@@ -81,9 +86,9 @@ export async function handleAdmin(
 	}
 
 	if (request.method === "GET" && path === `${ADMIN_PATH}/live`) {
-		if (request.headers.get("Upgrade") !== "websocket") return html(renderMessage("Expected a WebSocket", ""), 426);
+		if (request.headers.get("Upgrade") !== "websocket") return message(426, "Expected a WebSocket");
 		// The browser sends Origin on WebSocket handshakes; refuse other sites.
-		if (request.headers.get("Origin") !== url.origin) return html(renderMessage("Invalid origin", ""), 403);
+		if (request.headers.get("Origin") !== url.origin) return message(403, "Invalid origin");
 		return hub(env.LIVE).fetch(request);
 	}
 
@@ -105,7 +110,7 @@ export async function handleAdmin(
 	const runMatch = request.method === "GET" ? new RegExp(`^${ADMIN_PATH}/runs/(\\d+)$`).exec(path) : null;
 	if (runMatch) {
 		const run = await runs(env).get(Number(runMatch[1]));
-		if (!run) return html(renderMessage("Run not found", ""), 404);
+		if (!run) return notFound("Run not found");
 		const identity = await access.getIdentity();
 		const store = metrics(env);
 		const [usage, attempts, container] = await Promise.all([
@@ -143,39 +148,46 @@ export async function handleAdmin(
 
 	if (request.method === "POST" && path.startsWith(`${ADMIN_PATH}/`)) {
 		// Forms post from the admin page itself; anything else is a cross-site request.
-		if (request.headers.get("Origin") !== url.origin) return html(renderMessage("Invalid origin", ""), 403);
+		if (request.headers.get("Origin") !== url.origin) return message(403, "Invalid origin");
 		const form = await request.formData();
 		const enabled = form.get("enabled") === "true";
 		const repo = (await listRepos(env)).find((r) => r.full_name === form.get("repo"))?.full_name;
 		if (!repo) return invalid();
 
+		// The control the change was made through, which the page focuses and confirms.
+		let control: string;
 		switch (path) {
 			case `${ADMIN_PATH}/repos`:
 				await setRepoEnabled(env.SETTINGS, repo, enabled);
+				control = "repo";
 				break;
 			case `${ADMIN_PATH}/checks`: {
 				const check = checks.find((c) => c.id === form.get("check"));
 				if (!check) return invalid();
 				await setChecksEnabled(env.SETTINGS, repo, [check.id], enabled);
+				control = `check:${check.id}`;
 				break;
 			}
 			case `${ADMIN_PATH}/on-demand`:
 				await setOnDemand(env.SETTINGS, repo, enabled);
+				control = "on-demand";
 				break;
 			case `${ADMIN_PATH}/checks/all`:
 				await setChecksEnabled(env.SETTINGS, repo, checks.map((c) => c.id), enabled);
+				control = "checks";
 				break;
 			default:
-				return html(renderMessage("Page not found", ""), 404);
+				return notFound();
 		}
-		// Return to the same filtered view. Changes to checks happen inside the repository's
-		// collapsible, so keep it open.
+		// Return to the same filtered view, with focus back on the control that was used. Changes
+		// to checks happen inside the repository's collapsible, so keep it open.
 		const back = repoQuery(new URLSearchParams(String(form.get("back") ?? "")));
-		const search = repoSearch(back, path === `${ADMIN_PATH}/repos` ? {} : { open: repo });
-		return Response.redirect(`${url.origin}${ADMIN_PATH}${search}#${encodeURIComponent(repo)}`, 303);
+		const id = controlId(repo, control);
+		const search = repoSearch(back, { ...(path === `${ADMIN_PATH}/repos` ? {} : { open: repo }), changed: id });
+		return Response.redirect(`${url.origin}${ADMIN_PATH}${search}#${encodeURIComponent(id)}`, 303);
 	}
 
-	return html(renderMessage("Page not found", ""), 404);
+	return notFound();
 }
 
 function logMetricsError<T>(fallback: T): (error: unknown) => T {
@@ -184,8 +196,6 @@ function logMetricsError<T>(fallback: T): (error: unknown) => T {
 		return fallback;
 	};
 }
-
-const invalid = () => html(renderMessage("Invalid request", "Unknown repository or check."), 400);
 
 function html(body: string, status = 200): Response {
 	return new Response(body, {

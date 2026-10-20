@@ -1,7 +1,8 @@
 /**
  * Served as /admin/live.js. Pages with `data-live` (the run list, or a running run) open a
  * WebSocket to /admin/live and update in place as tests finish; when a run starts or ends,
- * the page reloads to show what D1 recorded. Without the socket, it falls back to reloading.
+ * the page reloads to show what D1 recorded, keeping where the reader was scrolled. Without the
+ * socket, it falls back to reloading.
  */
 export const LIVE_SCRIPT = `(() => {
 	const root = document.querySelector("[data-live]");
@@ -10,6 +11,20 @@ export const LIVE_SCRIPT = `(() => {
 	const counts = new Map();
 	const icon = (s) => (s === "pass" ? "✓" : s === "fail" ? "✗" : "–");
 	const css = (s) => (s === "pass" ? "success" : s === "fail" ? "failure" : "skip");
+	const said = (s) => (s === "pass" ? "passed" : s === "fail" ? "failed" : "skipped");
+	// Storage can be unavailable (private windows, blocked site data): then the reload starts at the top.
+	const scrollKey = "scroll:" + location.pathname + location.search;
+	try {
+		const y = sessionStorage.getItem(scrollKey);
+		sessionStorage.removeItem(scrollKey);
+		if (y) scrollTo(0, Number(y));
+	} catch {}
+	function reload() {
+		try {
+			sessionStorage.setItem(scrollKey, String(scrollY));
+		} catch {}
+		location.reload();
+	}
 
 	function progress(runId) {
 		let c = counts.get(runId);
@@ -38,8 +53,10 @@ export const LIVE_SCRIPT = `(() => {
 			const li = document.createElement("li");
 			const state = document.createElement("span");
 			state.className = "state " + css(event.state);
-			state.textContent = icon(event.state) + " ";
-			li.append(state, event.file + " › " + event.name);
+			state.setAttribute("role", "img");
+			state.setAttribute("aria-label", said(event.state));
+			state.textContent = icon(event.state);
+			li.append(state, " " + event.file + " › " + event.name);
 			for (const error of event.errors || []) {
 				const pre = document.createElement("pre");
 				pre.textContent = error;
@@ -55,7 +72,7 @@ export const LIVE_SCRIPT = `(() => {
 	}
 
 	function handle(event) {
-		if (event.type === "started" || event.type === "finished") return location.reload();
+		if (event.type === "started" || event.type === "finished") return reload();
 		if (event.type === "snapshot") {
 			progress(event.runId).total = event.total;
 			progress(event.runId).status = event.status;
@@ -74,7 +91,7 @@ export const LIVE_SCRIPT = `(() => {
 		const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/admin/live?run=" + watching);
 		ws.onopen = () => (failures = 0);
 		ws.onmessage = (message) => handle(JSON.parse(message.data));
-		ws.onclose = () => (++failures > 3 ? setTimeout(() => location.reload(), 5000) : setTimeout(connect, 1000 * failures));
+		ws.onclose = () => (++failures > 3 ? setTimeout(reload, 5000) : setTimeout(connect, 1000 * failures));
 	}
 	connect();
 })();

@@ -17,6 +17,8 @@ export interface TestRun {
 	/** Epoch milliseconds. */
 	startedAt: number;
 	finishedAt: number | null;
+	/** A run of the Container tests check (it has a test_container_runs row); otherwise of Tests. */
+	container?: boolean;
 }
 
 export interface TestRunDetail extends TestRun {
@@ -84,7 +86,7 @@ CREATE TABLE IF NOT EXISTS test_container_runs (
 	cpu_us INTEGER
 );`;
 
-const COLUMNS = "id, repo, pr, sha, status, conclusion, title, started_at, finished_at";
+const COLUMNS = "id, repo, pr, sha, status, conclusion, title, started_at, finished_at, id IN (SELECT run_id FROM test_container_runs) AS container";
 
 interface Row {
 	id: number;
@@ -96,6 +98,7 @@ interface Row {
 	title: string | null;
 	started_at: number;
 	finished_at: number | null;
+	container: number;
 	summary?: string | null;
 	report?: string | null;
 }
@@ -203,5 +206,6 @@ function fromRow(row: Row): TestRun {
 		title: row.title,
 		startedAt: row.started_at,
 		finishedAt: row.finished_at,
+		container: Boolean(row.container),
 	};
 }
