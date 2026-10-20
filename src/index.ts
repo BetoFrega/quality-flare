@@ -1,6 +1,6 @@
 import { ADMIN_PATH, handleAdmin } from "./admin/index.ts";
 import { codexReview } from "./checks/codex-review/index.ts";
-import { checks as allChecks } from "./checks/index.ts";
+import { checksFor, testsOff } from "./checks/index.ts";
 import { DAILY_CRON, runDailyFullRuns } from "./checks/tests/daily.ts";
 import { runTestShards, sweepOverdueRuns } from "./checks/tests/index.ts";
 import type { TestShard } from "./checks/tests/jobs.ts";
@@ -82,7 +82,7 @@ export default {
 		}
 
 		const payload = JSON.parse(body) as WebhookPayload;
-		const plan = planDelivery(request.headers.get("X-GitHub-Event"), payload, allChecks);
+		const plan = planDelivery(request.headers.get("X-GitHub-Event"), payload, checksFor(env));
 		if (!plan || !payload.installation || !payload.repository) return new Response("Ignored\n", { status: 202 });
 
 		const repo = payload.repository.full_name;
@@ -99,7 +99,7 @@ export default {
 	},
 	// Fails Tests runs past their deadline, and once a day runs every test on default branches (see cloudflare.config.ts triggers).
 	async scheduled(controller, env) {
-		if (!appConfigured(env)) return;
+		if (!appConfigured(env) || testsOff(env)) return;
 		if (controller.cron === DAILY_CRON) await runDailyFullRuns(env);
 		else await sweepOverdueRuns(env);
 	},
@@ -107,6 +107,7 @@ export default {
 
 export async function runPlan(plan: Plan, repo: string, installationId: number, settings: RepoSettings, env: Env): Promise<void> {
 	const github = await GitHubClient.forInstallation({ appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY }, installationId);
+	const allChecks = checksFor(env);
 	// With the on-demand setting off, a run command is just a comment.
 	const checks = plan.command && !settings.onDemand ? plan.checks.filter((c) => !c.onDemand) : plan.checks;
 	// What the run command got: 🚀 when it started a run, 👀 when every run it asked for was already going,
@@ -126,7 +127,7 @@ export async function runPlan(plan: Plan, repo: string, installationId: number, 
 		if (blocked) commanded = "confused";
 		// A push that only merges the base into a head that passed keeps its runs instead of waiting (see inheritedRuns).
 		let inherited: Promise<boolean> | undefined;
-		const inherit = () => (inherited ??= inheritRuns(github, repo, pr, settings, env.GITHUB_APP_ID));
+		const inherit = () => (inherited ??= inheritRuns(github, repo, pr, settings, env.GITHUB_APP_ID, allChecks));
 		for (const check of checks) {
 			// The Codex review comes first: a command while it blocks runs no tests.
 			if (blocked && check.onDemand) continue;
@@ -173,7 +174,7 @@ export async function runPlan(plan: Plan, repo: string, installationId: number, 
 }
 
 /** Copies the runs a clean merge of the base inherits onto the PR's head; false when it inherits none, or GitHub can't say. */
-async function inheritRuns(github: GitHubClient, repo: string, pr: PullRequest, settings: RepoSettings, appId: string): Promise<boolean> {
+async function inheritRuns(github: GitHubClient, repo: string, pr: PullRequest, settings: RepoSettings, appId: string, allChecks: Check[]): Promise<boolean> {
 	const enabled = allChecks.filter((c) => c.onDemand && settings.enabledChecks.has(c.id)).map((c) => c.name);
 	const others = allChecks.map((c) => c.name).filter((name) => !enabled.includes(name));
 	try {

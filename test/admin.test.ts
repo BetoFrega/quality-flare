@@ -96,6 +96,13 @@ describe("admin", () => {
 		expect(await res.text()).toContain("/setup");
 	});
 
+	it("says why the Tests checks are missing when the deploy left them out", async () => {
+		const { env, call } = setup();
+		expect(await (await call(new Request("https://worker.example/admin"))).text()).not.toContain("Workers Paid");
+		env.TESTS_OFF = "free-plan";
+		expect(await (await call(new Request("https://worker.example/admin"))).text()).toContain("Workers Paid");
+	});
+
 	it("links to this installation's own App for installing on more repositories", async () => {
 		const { call } = setup();
 		expect(await (await call(new Request("https://worker.example/admin"))).text()).toContain("https://github.com/apps/qf-test/installations/new");

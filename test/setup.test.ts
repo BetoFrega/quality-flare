@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
+import { checksFor } from "../src/checks/index.ts";
 import { appConfigured, handleSetup, manifest, PENDING } from "../src/setup.ts";
 
 const ready = { GITHUB_APP_ID: "42", GITHUB_PRIVATE_KEY: "pem", GITHUB_WEBHOOK_SECRET: "s", PUBLIC_URL: "https://qf.example", ACCESS_AUD: "aud" } as Env;
@@ -23,6 +24,18 @@ describe("setup", () => {
 		expect(done).toContain("Tudo pronto");
 		expect(done).toContain("App ID 42");
 		expect(done).not.toContain("Criar a GitHub App");
+	});
+
+	it("without Workers Paid, drops the Tests checks and says so", async () => {
+		const free = { ...ready, TESTS_OFF: "free-plan" } as Env;
+		expect(checksFor(ready).map((c) => c.id)).toEqual(expect.arrayContaining(["tests", "container-tests"]));
+		expect(checksFor(free).map((c) => c.id)).not.toEqual(expect.arrayContaining(["tests"]));
+		expect(checksFor(free).map((c) => c.id)).toContain("closes-issue");
+		expect(checksFor(free).some((c) => c.onDemand)).toBe(false);
+		const page = await (await handleSetup(get("/setup"), free)).text();
+		expect(page).toContain("Workers Paid");
+		expect(page).toContain("Tudo pronto");
+		expect(await (await handleSetup(get("/setup"), ready)).text()).not.toContain("Workers Paid");
 	});
 
 	it("asks GitHub for an App whose webhook and redirect point here", () => {

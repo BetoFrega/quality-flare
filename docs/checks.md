@@ -6,6 +6,8 @@ To add a check, implement the `Check` interface of [`src/checks/types.ts`](../sr
 
 ## Tests
 
+Needs **Workers Paid**, like Container tests: on a free Cloudflare account the deploy leaves both out (see [Self-hosting](self-hosting.md#workers-free-or-workers-paid)).
+
 Runs the repository's tests on the pull request's head commit inside a [Dynamic Worker](https://developers.cloudflare.com/dynamic-workers/) created on the spot, with vitest's runner and `expect` (`@vitest/runner` and `@vitest/expect`), without vitest itself.
 
 The convention, with no per-repository config:

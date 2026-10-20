@@ -19,6 +19,9 @@ const kvId = fromEnv("SETTINGS_KV_ID");
 const d1Id = fromEnv("RUNS_D1_ID");
 const secretsStoreId = fromEnv("SECRETS_STORE_ID");
 const accountId = fromEnv("CLOUDFLARE_ACCOUNT_ID");
+// Set by scripts/deploy.mjs when the account has no Workers Paid plan: Containers, Dynamic Workers and a CPU limit
+// above the default are Paid-only, so the deploy leaves out the two Tests checks and everything they need.
+const noTests = process.env.QF_NO_TESTS === "1";
 
 // The Tests check's "Container" runner (src/checks/tests/container.ts): one container per run,
 // started by the TestBox Durable Object, which picks the instance type.
@@ -30,7 +33,7 @@ const testBox = defineContainer({
 });
 
 export default defineConfig({
-	containers: [testBox],
+	containers: noTests ? [] : [testBox],
 	worker: {
 		name: "quality-flare",
 		compatibilityDate: "2026-10-06",
@@ -42,7 +45,7 @@ export default defineConfig({
 		// Webhook URL points to the domain (see README).
 		workersDev: process.env.WORKERS_DEV !== "false",
 		// Each Tests shard builds its files' module graph (TypeScript stripping and all) before running it.
-		limits: { cpuMs: 120_000 },
+		...(noTests ? {} : { limits: { cpuMs: 120_000 } }),
 		triggers: [
 			// Tests shards, one per invocation. Concurrent invocations share an isolate's 128 MB, and each
 			// holds its shard's code (up to SHARD_BYTES, ~32 MB), so raising maxConcurrency makes shards run
@@ -59,7 +62,7 @@ export default defineConfig({
 			// Runs one Container tests run in a container (src/checks/tests/container.ts). Reached through
 			// `exports` from cloudflare:workers, not a binding: a container's Durable Object can't be bound with a
 			// Worker name, which bindings.durableObject always sets.
-			TestBox: exports.durableObject({ storage: "sqlite", container: testBox }),
+			...(noTests ? {} : { TestBox: exports.durableObject({ storage: "sqlite", container: testBox }) }),
 		},
 		env: {
 			// GitHub App ID (or Client ID), used as the JWT issuer.
@@ -82,7 +85,9 @@ export default defineConfig({
 			// The RunsHub Durable Object (see exports).
 			LIVE: bindings.durableObject({ worker: "quality-flare", exportName: "RunsHub" }),
 			// Loads Dynamic Workers that run each repository's tests (the "Tests" check).
-			LOADER: bindings.workerLoader(),
+			...(noTests ? {} : { LOADER: bindings.workerLoader() }),
+			// "free-plan" when the deploy left the Tests checks out (see noTests); the Worker then hides them.
+			TESTS_OFF: bindings.text(noTests ? "free-plan" : ""),
 			// Shards of Tests runs, consumed by this same Worker (see triggers).
 			TESTS_QUEUE: bindings.queue<TestShard>({ name: "quality-flare-tests" }),
 			// API token with Account Analytics: Read, for the admin's real account usage (src/account-usage.ts), and the

@@ -1,4 +1,5 @@
-import { esc, layout, renderMessage } from "./admin/page.ts";
+import { esc, layout, renderMessage, TESTS_OFF_NOTE } from "./admin/page.ts";
+import { testsOff } from "./checks/index.ts";
 
 /**
  * The setup page of a new installation, served under /setup without sign-in: it says which of the Worker's
@@ -153,6 +154,8 @@ function renderStatus(env: Env, origin: string): string {
 				: `<p>No <a href="${ZERO_TRUST}">Zero Trust</a>, em Access → Applications, crie uma aplicação <em>Self-hosted</em> para <code>${esc(new URL(origin).host)}</code> com os caminhos <code>admin</code> e <code>admin/*</code> e uma política que permita o seu e-mail. Copie o <em>Application Audience (AUD) Tag</em> para a variável de build <code>ACCESS_AUD</code>.</p>`,
 		),
 	];
+	// Not a step: the other checks work without Workers Paid, and the deploy turns the tests on once the account has it.
+	if (testsOff(env)) steps.push(`<li><h3>ℹ️ Testes</h3><p>${TESTS_OFF_NOTE}</p></li>`);
 	const done = !setupPending(env);
 	return layout(
 		"Instalação",

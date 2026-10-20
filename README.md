@@ -133,7 +133,15 @@ Vincular uma issue pela barra lateral não gera webhook. Depois de vincular, cli
 
 Qualquer pessoa pode rodar o próprio quality-flare, na própria conta Cloudflare e com a própria GitHub App. Não precisa instalar nada no computador: o build roda no [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/).
 
-**Precisa de:** uma conta Cloudflare no plano **Workers Paid** (US$ 5/mês; Containers e Dynamic Workers não existem no plano grátis) e uma conta GitHub.
+**Precisa de:** uma conta Cloudflare e uma conta GitHub. O plano grátis da Cloudflare basta para tudo, menos os testes:
+
+| | Workers Free | Workers Paid (US$ 5/mês) |
+| --- | --- | --- |
+| Closes an issue, Codex review, Dependabot auto-merge | ✅ | ✅ |
+| Admin, `/setup`, docs | ✅ | ✅ |
+| Tests e Container tests | ❌ | ✅ |
+
+Os dois checks de testes rodam em Dynamic Workers e Containers, que a Cloudflare só oferece no Workers Paid. Você não escolhe nada: numa conta grátis a Cloudflare recusa o deploy completo, e o `pnpm run deploy` publica de novo sem esses dois checks e avisa no log do build. Eles somem do admin, e o admin e o `/setup` explicam o motivo. Para ligá-los depois, assine o [Workers Paid](https://dash.cloudflare.com/?to=/:account/workers/plans) e rode o build de novo (**Deployments → Retry build**, ou um push na `main`).
 
 1. **Clique no botão:**
 
@@ -151,7 +159,7 @@ Qualquer pessoa pode rodar o próprio quality-flare, na própria conta Cloudflar
    Depois de mudar variáveis ou secrets de build, rode o build de novo (**Deployments → Retry build**, ou um push na `main`).
 4. **Instale a App** nos repositórios (o link aparece em `/setup` e no admin) e **ative-os** em `/admin`. Tudo começa desligado.
 
-Cada push na `main` do fork publica de novo. O `pnpm run deploy` ([`scripts/deploy.mjs`](scripts/deploy.mjs)) é o `cf deploy` que também envia os secrets da App guardados no build; sem eles, é o `cf deploy` puro.
+Cada push na `main` do fork publica de novo. O `pnpm run deploy` ([`scripts/deploy.mjs`](scripts/deploy.mjs)) é o `cf deploy` que também envia os secrets da App guardados no build e, numa conta grátis, deixa os testes de fora; no Workers Paid e sem esses secrets, é o `cf deploy` puro.
 
 Opcional:
 
