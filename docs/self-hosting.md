@@ -32,6 +32,7 @@ They live under the Worker's Settings → Build → Variables and secrets. [`clo
 | `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET` | The GitHub App's secrets, created on `/setup` | The Worker refuses webhooks and waits for the App |
 | `PUBLIC_URL` | Where the admin is opened (check run links; the container uses it for caches) | Broken links |
 | `ACCESS_AUD` | Audience (AUD) of the Cloudflare Access application that protects `/admin` | The admin stays closed |
+| `WORKERS_DEV` | `false` turns the `workers.dev` address off (only with your own domain in the Webhook URL) | `workers.dev` stays on |
 | `SETTINGS_KV_ID` | ID of the KV namespace with the settings | The deploy creates one, or keeps the one the Worker already uses |
 | `RUNS_D1_ID` | ID of the D1 database with run history | The deploy uses (or creates) the D1 database `quality-flare-runs` |
 | `SECRETS_STORE_ID`, `CLOUDFLARE_ACCOUNT_ID` | Secrets Store holding `quality-flare-analytics-token`, and the account whose usage the admin shows | `/admin/costs` shows estimates only |
@@ -47,7 +48,7 @@ Outside Workers Builds (`cf dev`, `pnpm typecheck`, tests), anything missing bec
   ```
 
 - **Real account usage in the admin** ([costs](admin.md#costs)). Create an API token with *Account Analytics: Read*, store it in Secrets Store as `quality-flare-analytics-token`, and set the build variables `SECRETS_STORE_ID` and `CLOUDFLARE_ACCOUNT_ID`.
-- **Your own domain.** Add a Custom Domain to the Worker, and use it in `PUBLIC_URL`, in the Access application and in the App's Webhook URL.
+- **Your own domain.** Add a Custom Domain to the Worker, and use it in `PUBLIC_URL`, in the Access application and in the App's Webhook URL (Settings → Developer settings → GitHub Apps → your App → Webhook URL). To turn the `workers.dev` address off after that, set the build variable `WORKERS_DEV` to `false`; doing so before changing the Webhook URL stops the webhooks. Turning `workers.dev` off only in the dashboard doesn't last: the next deploy turns it back on.
 
 ## Require the checks
 

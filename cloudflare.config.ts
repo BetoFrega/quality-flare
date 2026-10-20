@@ -37,8 +37,10 @@ export default defineConfig({
 		entrypoint,
 		// Keep Workers Logs on; deploys from this config would otherwise turn them off.
 		observability: { enabled: true },
-		// The webhook and admin are served on quality-flare.<subdomain>.workers.dev.
-		workersDev: true,
+		// The webhook and admin are served on quality-flare.<subdomain>.workers.dev, unless the build variable
+		// WORKERS_DEV is "false": an installation on its own domain turns that address off once the App's
+		// Webhook URL points to the domain (see README).
+		workersDev: process.env.WORKERS_DEV !== "false",
 		// Each Tests shard builds its files' module graph (TypeScript stripping and all) before running it.
 		limits: { cpuMs: 120_000 },
 		triggers: [

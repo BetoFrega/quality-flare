@@ -157,7 +157,7 @@ Opcional:
 
 - **Cache do Container tests:** o bucket R2 `quality-flare-turbo-cache` guarda o cache das execuções. Para ele não crescer para sempre, apague o que tem mais de 14 dias: `cf r2 buckets lifecycle update quality-flare-turbo-cache -f --rules '[{"id":"expire-14-days","enabled":true,"conditions":{"prefix":""},"deleteObjectsTransition":{"condition":{"type":"Age","maxAge":1209600}}}]'`.
 - **Uso real da conta no admin** ([`/admin/costs`](#admin)): crie um API token com *Account Analytics: Read*, guarde-o no Secrets Store como `quality-flare-analytics-token` e defina as variáveis de build `SECRETS_STORE_ID` e `CLOUDFLARE_ACCOUNT_ID`. Sem elas, a página mostra só as estimativas.
-- **Domínio próprio:** adicione um Custom Domain ao Worker, use-o em `PUBLIC_URL`, na aplicação do Access e na Webhook URL da App.
+- **Domínio próprio:** adicione um Custom Domain ao Worker, use-o em `PUBLIC_URL`, na aplicação do Access e na Webhook URL da App (em Settings → Developer settings → GitHub Apps → a sua App → Webhook URL). Para desligar o endereço `workers.dev` depois disso, defina a variável de build `WORKERS_DEV` = `false`; antes de trocar a Webhook URL, isso derruba os webhooks. Desligar o `workers.dev` só pelo painel não dura: o próximo deploy o religa.
 
 ### Variáveis de build
 
@@ -168,6 +168,7 @@ Ficam em Settings → Build → Variables and secrets do Worker; o [`cloudflare.
 | `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET` | Secrets da GitHub App, criados em `/setup` | O Worker recusa webhooks e espera a App |
 | `PUBLIC_URL` | Endereço onde se abre o admin (links dos check runs; o container usa para o cache) | Links quebrados |
 | `ACCESS_AUD` | Audience (AUD) da aplicação do Cloudflare Access que protege `/admin` | Admin fechado |
+| `WORKERS_DEV` | `false` desliga o endereço `workers.dev` (só com domínio próprio na Webhook URL) | O `workers.dev` fica ligado |
 | `SETTINGS_KV_ID` | ID do KV com as configurações | O deploy cria um, ou mantém o que o Worker já usa |
 | `RUNS_D1_ID` | ID do D1 com o histórico | O deploy usa (ou cria) o D1 `quality-flare-runs` |
 | `SECRETS_STORE_ID`, `CLOUDFLARE_ACCOUNT_ID` | Secrets Store do token `quality-flare-analytics-token` e conta cujo uso o admin mostra | `/admin/costs` só com estimativas |
