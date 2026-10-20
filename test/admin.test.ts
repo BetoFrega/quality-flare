@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { handleAdmin } from "../src/admin/index.ts";
+import { renderRunPage } from "../src/admin/runs-page.ts";
+import { LIVE_SCRIPT } from "../src/admin/live-script.ts";
 import type { Check } from "../src/checks/types.ts";
 import type { MetricsStore, Usage } from "../src/metrics.ts";
 import type { RunStore, TestRunDetail } from "../src/runs.ts";
@@ -26,7 +28,7 @@ const history: TestRunDetail[] = [
 			}],
 		},
 	},
-	{ id: 1, repo: "octo/app", pr: 3, sha: "aaaaaaaaaa", status: "running", conclusion: null, title: null, startedAt: NOW - 90 * 60_000, finishedAt: null, summary: null, report: null },
+	{ id: 1, repo: "octo/app", pr: 3, sha: "aaaaaaaaaa", status: "running", conclusion: null, title: null, startedAt: NOW - 90 * 60_000, finishedAt: null, container: true, summary: null, report: null },
 ];
 const runs: RunStore = {
 	start: async () => 0,
@@ -211,10 +213,16 @@ describe("admin", () => {
 	it("lists test runs, flagging runs that never finished", async () => {
 		const { call } = setup();
 		const page = await (await call(new Request("https://worker.example/admin/runs"))).text();
-		expect(page).toContain('<a href="/admin/runs/2">✗ Falhou</a>');
+		// The icon is hidden from screen readers; the label says it.
+		expect(page).toContain('<a href="/admin/runs/2"><span aria-hidden="true">✗</span> Falhou</a>');
 		expect(page).toContain("1 falha em 2 testes");
 		expect(page).toContain("2.5 s");
-		expect(page).toContain('<a href="/admin/runs/1">! Interrompida</a>');
+		expect(page).toContain('<a href="/admin/runs/1"><span aria-hidden="true">!</span> Interrompida</a>');
+		expect(page).toContain("<th>Check</th><th>Alvo</th>");
+		expect(page).toContain('title="Dynamic Workers criados (e quedas)">Workers</th>');
+		expect(page).toContain("<td>Tests</td>");
+		expect(page).toContain("<td>Container tests</td>");
+		expect(page).toContain("As 50 execuções mais recentes dos checks Tests e Container tests.");
 		// No ever-growing duration for a run that died.
 		expect(page).not.toContain("90 min 0 s");
 		expect(page).toContain(`<td class="num">—</td>`);
@@ -242,8 +250,25 @@ describe("admin", () => {
 		const store = { ...runs, list: async () => [fresh] };
 		const res = await handleAdmin(new Request("https://worker.example/admin/runs"), env, access, { checks, runs: () => store, now: () => NOW });
 		const page = await res.text();
-		expect(page).toContain("● Rodando");
+		expect(page).toContain('<span aria-hidden="true">●</span> Rodando</a>');
+		expect(page).toContain('<span data-progress="1" role="status" aria-live="polite">');
 		expect(page).toContain('<meta http-equiv="refresh" content="5">');
+		expect(page).not.toContain("passou do prazo");
+	});
+
+	it("says how long a run has been running, and flags one past its deadline", async () => {
+		const { env } = setup();
+		const slow = { ...history[1], startedAt: NOW - 20 * 60_000 };
+		const late = { ...history[1], id: 3, startedAt: NOW - 65 * 60_000 };
+		const store = { ...runs, list: async () => [slow, late], get: async () => late };
+		const call = (path: string) => handleAdmin(new Request(`https://worker.example${path}`), env, access, { checks, runs: () => store, now: () => NOW });
+		const list = await (await call("/admin/runs")).text();
+		expect(list).toContain('<td class="state running"><a href="/admin/runs/1"><span aria-hidden="true">●</span> Rodando há 20 min</a>');
+		expect(list).toContain('<td class="state running overdue"><a href="/admin/runs/3"><span aria-hidden="true">●</span> Rodando há 65 min · passou do prazo</a>');
+		expect(list).toContain("Uma execução rodando há mais de 60 min passou do prazo e provavelmente travou. Aos 75 min ela aparece como interrompida.");
+		const page = await (await call("/admin/runs/3")).text();
+		expect(page).toContain('<h2 class="state running overdue"><span aria-hidden="true">●</span> Rodando há 65 min · passou do prazo</h2>');
+		expect(page).toContain("provavelmente travou");
 	});
 
 	it("shows each test of a run, escaping names and errors", async () => {
@@ -252,6 +277,14 @@ describe("admin", () => {
 		expect(page).toContain("test/a.test.ts");
 		expect(page).toContain("a › &#60;subtracts&#62;");
 		expect(page).toContain("<pre>AssertionError: expected 1 to be 2</pre>");
+		expect(page).toContain('<a href="https://github.com/octo/app/pull/4">octo/app#4</a>');
+		// Failures first, then the files (the failing one open), then the usage.
+		const [failures, files, cost] = ["<h3>Falhas</h3>", "<h3>Arquivos</h3>", "<h3>Uso e custo</h3>"].map((h) => page.indexOf(h));
+		expect(failures).toBeGreaterThan(-1);
+		expect(failures).toBeLessThan(files);
+		expect(files).toBeLessThan(cost);
+		expect(page).toContain('<details class="plain" open><summary><span class="state failure">');
+		expect(page).toContain('<span class="state failure" role="img" aria-label="falhou">✗</span> <span class="mono">test/a.test.ts</span> › a › &#60;subtracts&#62;<pre>');
 		expect((await call(new Request("https://worker.example/admin/runs/9"))).status).toBe(404);
 	});
 
@@ -287,6 +320,24 @@ describe("admin", () => {
 		expect(page).toContain("Caiu (consumer sem memória?)");
 		expect(page).toContain('<span class="failure">exceededMemory</span>');
 		expect(page).toContain("Dividido (queda antes)");
+	});
+
+	it("puts a run's Dynamic Workers and container usage under one heading", () => {
+		const both = renderRunPage(history[0], undefined, NOW, {
+			usage,
+			attempts: [{ runId: 2, shard: "0", attempt: 1, files: 5, startedAt: NOW - 90_000, finishedAt: NOW - 89_000, outcome: "ran", codeBytes: null, dynamicWorker: true, cpuMs: 900, dwWallMs: 1000, dwOutcome: "ok" }],
+			container: { wallMs: 600_000, cpuUs: 1_200_000_000 },
+		});
+		expect(both.split("Uso e custo").length - 1).toBe(1);
+		expect(both).toContain("<dt>Tempo ligado</dt>");
+		const alone = renderRunPage({ ...history[0], container: true }, undefined, NOW, { container: { wallMs: 600_000, cpuUs: undefined } });
+		expect(alone).toContain("<h3>Uso e custo</h3>");
+		expect(alone).toContain("<span>Container tests</span>");
+	});
+
+	it("keeps the reader's scroll position when the live script reloads the page", () => {
+		expect(LIVE_SCRIPT).toContain("sessionStorage.setItem(scrollKey, String(scrollY))");
+		expect(LIVE_SCRIPT).not.toContain("return location.reload()");
 	});
 
 	it("leaves the usage out of a run that has none recorded, or when it can't be read", async () => {

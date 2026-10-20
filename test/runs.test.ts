@@ -11,7 +11,7 @@ describe.skipIf(inWorkers)("test run history", () => {
 	it("records a run from start to finish, newest first", async () => {
 		let clock = 1_000;
 		const runs = d1RunStore(await fakeD1(), () => clock);
-		const first = await runs.start({ repo: "octo/app", pr: 1, sha: "aaa" });
+		const first = await runs.start({ repo: "octo/app", pr: 1, sha: "aaa", container: true });
 		clock = 2_000;
 		const second = await runs.start({ repo: "octo/app", pr: 2, sha: "bbb" });
 		clock = 3_500;
@@ -19,11 +19,11 @@ describe.skipIf(inWorkers)("test run history", () => {
 		await runs.finish(second, { conclusion: "success", title: "1 teste passaram", summary: "ok" }, report);
 
 		expect(await runs.list()).toEqual([
-			{ id: second, repo: "octo/app", pr: 2, sha: "bbb", status: "completed", conclusion: "success", title: "1 teste passaram", startedAt: 2_000, finishedAt: 3_500 },
-			{ id: first, repo: "octo/app", pr: 1, sha: "aaa", status: "running", conclusion: null, title: null, startedAt: 1_000, finishedAt: null },
+			{ id: second, repo: "octo/app", pr: 2, sha: "bbb", status: "completed", conclusion: "success", title: "1 teste passaram", startedAt: 2_000, finishedAt: 3_500, container: false },
+			{ id: first, repo: "octo/app", pr: 1, sha: "aaa", status: "running", conclusion: null, title: null, startedAt: 1_000, finishedAt: null, container: true },
 		]);
 		expect(await runs.get(second)).toMatchObject({ summary: "ok", report });
-		expect(await runs.get(first)).toMatchObject({ summary: null, report: null });
+		expect(await runs.get(first)).toMatchObject({ summary: null, report: null, container: true });
 		expect(await runs.get(999)).toBeNull();
 	});
 

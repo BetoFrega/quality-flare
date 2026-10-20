@@ -1,4 +1,5 @@
-import { RUN_SORTS, RUN_STATES, runState, type RunQuery, type RunSort, type TestRun, type TestRunDetail } from "../runs.ts";
+import { RUN_SORTS, RUN_STATES, runState, STALE_AFTER_MS, type RunQuery, type RunSort, type TestRun, type TestRunDetail } from "../runs.ts";
+import { RUN_DEADLINE_MS } from "../checks/tests/index.ts";
 import type { AttemptRow, ContainerUsage, Usage } from "../metrics.ts";
 import { boxCost, INSTANCE, type BoxUsage } from "../checks/tests/container.ts";
 import { cpu, money, renderRunUsage, usageCells } from "./costs-page.ts";
@@ -40,13 +41,15 @@ export interface RunsPageData {
 export function renderRunsPage({ runs, repos, query, usage = new Map(), containers = new Map(), email, now }: RunsPageData): string {
 	const filtered = Boolean(query.repo || query.state);
 	const running = runs.some((r) => runState(r, now) === "running");
+	const late = runs.some((r) => overdue(r, now));
 	const rows = runs
 		.map((run) => {
 			const s = runState(run, now);
 			return `<tr>
-				<td class="state ${s}"><a href="/admin/runs/${run.id}">${ICON[s]} ${LABEL[s]}</a></td>
+				<td class="${stateClass(run, now)}"><a href="/admin/runs/${run.id}">${stateLabel(run, now)}</a></td>
+				<td>${run.container ? "Container tests" : "Tests"}</td>
 				<td>${target(run)} <span class="mono">${esc(run.sha.slice(0, 7))}</span></td>
-				<td>${s === "running" ? `<span data-progress="${run.id}">Preparando…</span>` : esc(run.title ?? "")}</td>
+				<td>${s === "running" ? `<span data-progress="${run.id}" role="status" aria-live="polite">Preparando…</span>` : esc(run.title ?? "")}</td>
 				<td class="num">${when(run.startedAt, now)}</td>
 				<td class="num">${duration(run, now)}</td>
 				${usageCells(usage.get(run.id), containers.get(run.id))}
@@ -54,10 +57,10 @@ export function renderRunsPage({ runs, repos, query, usage = new Map(), containe
 		})
 		.join("");
 	const table = runs.length
-		? `<div class="scroll"><table><thead><tr><th>Estado</th><th>PR</th><th>Resultado</th><th class="num">Início</th><th class="num">Duração</th><th class="num" title="Dynamic Workers criados (e quedas)">DW</th><th class="num">Custo est.</th></tr></thead><tbody>${rows}</tbody></table></div>`
+		? `<div class="scroll"><table><thead><tr><th>Estado</th><th>Check</th><th>Alvo</th><th>Resultado</th><th class="num">Início</th><th class="num">Duração</th><th class="num" title="Dynamic Workers criados (e quedas)">Workers</th><th class="num">Custo est.</th></tr></thead><tbody>${rows}</tbody></table></div>`
 		: filtered
 			? `<p class="empty">Nenhuma execução com esses filtros. <a href="/admin/runs">Limpar filtros</a></p>`
-			: `<p class="empty">Nenhuma execução ainda. O check Tests roda quando está ativo num repositório e uma PR recebe commits.</p>`;
+			: `<p class="empty">Nenhuma execução ainda. Os checks Tests e Container tests rodam quando estão ativos num repositório e uma PR recebe commits.</p>`;
 	const filters = `<form class="filters" method="get" action="/admin/runs">
 				${select("repo", "Repositório", query.repo ?? "", [["", "Todos os repositórios"], ...repos.map((r): [string, string] => [r, r])])}
 				${select("state", "Estado", query.state ?? "", [["", "Todos os estados"], ...RUN_STATES.map((s): [string, string] => [s, LABEL[s]])])}
@@ -70,7 +73,8 @@ export function renderRunsPage({ runs, repos, query, usage = new Map(), containe
 		`${renderHeader(email, "runs")}
 		<main data-live="all">
 			<h2>Execuções de testes</h2>
-			<p class="hint">Até 50 execuções do check Tests. A página acompanha ao vivo os testes que estão rodando.</p>
+			<p class="hint">As 50 execuções mais recentes dos checks Tests e Container tests. A página acompanha ao vivo os testes que estão rodando.</p>
+			${late ? `<p class="hint">${OVERDUE_HINT}</p>` : ""}
 			${filters}
 			${table}
 		</main>`,
@@ -86,47 +90,45 @@ export function renderRunPage(
 ): string {
 	const s = runState(run, now);
 	const files = run.report?.files ?? [];
-	const fileRows = files
+	// Failures first, each with the file it is in: a file's own errors (it didn't load), then its failing tests.
+	const failures = files.flatMap((f) => [
+		...(f.errors ?? []).map((e) => failure(f.path, "erro no arquivo", [e])),
+		...f.tests.filter((t) => t.state === "fail").map((t) => failure(f.path, t.name, t.errors ?? [])),
+	]);
+	const fileList = files
 		.map((f) => {
 			const passed = f.tests.filter((t) => t.state === "pass").length;
-			const failed = f.errors?.length || f.tests.some((t) => t.state === "fail");
-			return `<tr><td class="state ${failed ? "failure" : "success"}">${failed ? ICON.failure : ICON.success}</td><td class="mono">${esc(f.path)}</td><td class="num">${passed}/${f.tests.length}</td></tr>`;
+			const failed = Boolean(f.errors?.length || f.tests.some((t) => t.state === "fail"));
+			return `<details class="plain"${failed ? " open" : ""}><summary><span class="state ${failed ? "failure" : "success"}">${icon(failed ? "failure" : "success")} ${failed ? LABEL.failure : LABEL.success}</span> <span class="mono">${esc(f.path)}</span> <span class="count">${passed}/${f.tests.length} passaram</span></summary>
+				<ul class="tests">${f.tests.map((t) => `<li>${testIcon(t.state)} ${esc(t.name)}</li>`).join("")}</ul>
+			</details>`;
 		})
 		.join("");
-	const details = files
-		.map(
-			(f) => `<h3 class="mono">${esc(f.path)}</h3>
-			${(f.errors ?? []).map((e) => `<pre>${esc(e)}</pre>`).join("")}
-			<ul class="tests">${f.tests
-				.map(
-					(t) => `<li><span class="state ${testClass(t.state)}">${testIcon(t.state)}</span> ${esc(t.name)}${(t.errors ?? []).map((e) => `<pre>${esc(e)}</pre>`).join("")}</li>`,
-				)
-				.join("")}</ul>`,
-		)
-		.join("");
+	const report = `${failures.length ? `<h3>Falhas</h3><ul class="tests">${failures.join("")}</ul>` : ""}<h3>Arquivos</h3>${fileList}`;
 	const body =
 		s === "running"
-			? `<p data-progress="${run.id}">Preparando os testes…</p><ul class="tests" data-tests="${run.id}"></ul>`
+			? `<p data-progress="${run.id}" role="status" aria-live="polite">Preparando os testes…</p><ul class="tests" data-tests="${run.id}"></ul>`
 			: s === "stale"
 				? "<p>A execução foi interrompida antes de terminar: o Worker parou (limite de memória ou de tempo) sem registrar o resultado. Nada continua rodando. Rode de novo com <strong>Re-run</strong> na PR.</p>"
 				: files.length
-					? `<table><thead><tr><th></th><th>Arquivo</th><th class="num">Passaram</th></tr></thead><tbody>${fileRows}</tbody></table>${details}`
+					? report
 					: `<pre>${esc(run.summary ?? "")}</pre>`;
 	return layout(
 		`Execução ${run.id}`,
 		`${renderHeader(email, "runs")}
 		<main${s === "running" ? ` data-live="${run.id}"` : ""}>
 			<p class="hint"><a href="/admin/runs">← Execuções de testes</a></p>
-			<h2 class="state ${s}">${ICON[s]} ${esc(run.title ?? LABEL[s])}</h2>
+			<h2 class="${stateClass(run, now)}">${s === "running" ? stateLabel(run, now) : `${icon(s)} ${esc(run.title ?? LABEL[s])}`}</h2>
 			<p class="meta">
+				<span>${run.container ? "Container tests" : "Tests"}</span>
 				${target(run)}
-				<span class="mono">${esc(run.sha)}</span>
+				${run.pr ? `<a class="mono" href="https://github.com/${esc(run.repo)}/commit/${esc(run.sha)}">${esc(run.sha)}</a>` : `<span class="mono">${esc(run.sha)}</span>`}
 				<span>${when(run.startedAt, now)}</span>
 				<span>${duration(run, now)}</span>
 			</p>
-			${renderRunUsage(usage, attempts, now, s !== "running")}
-			${container ? renderContainerUsage(container) : ""}
+			${overdue(run, now) ? `<p class="hint">${OVERDUE_HINT}</p>` : ""}
 			${body}
+			${renderUsage(usage, attempts, now, s !== "running", container)}
 		</main>`,
 		s === "running" ? `${LIVE}${FALLBACK}` : "",
 	);
@@ -143,8 +145,36 @@ const LABEL: Record<State, string> = {
 	stale: "Interrompida",
 };
 
-const testIcon = (s: string) => (s === "pass" ? ICON.success : s === "fail" ? ICON.failure : ICON.neutral);
-const testClass = (s: string) => (s === "pass" ? "success" : s === "fail" ? "failure" : "skip");
+/** A state's icon, hidden from screen readers: the label next to it says the same. */
+const icon = (s: State) => `<span aria-hidden="true">${ICON[s]}</span>`;
+
+/** A test's icon, the only sign of its state, so it is read out as one. */
+function testIcon(state: string): string {
+	const [s, css, label] = state === "pass" ? (["success", "success", "passou"] as const) : state === "fail" ? (["failure", "failure", "falhou"] as const) : (["neutral", "skip", "ignorado"] as const);
+	return `<span class="state ${css}" role="img" aria-label="${label}">${ICON[s]}</span>`;
+}
+
+function failure(file: string, name: string, errors: string[]): string {
+	return `<li>${testIcon("fail")} <span class="mono">${esc(file)}</span> › ${esc(name)}${errors.map((e) => `<pre>${esc(e)}</pre>`).join("")}</li>`;
+}
+
+/**
+ * A run past its deadline should already have been failed by the cron (src/checks/tests/index.ts);
+ * until it shows as interrupted (STALE_AFTER_MS), it is flagged as probably stuck.
+ */
+const overdue = (run: TestRun, now: number) => runState(run, now) === "running" && now - run.startedAt > RUN_DEADLINE_MS;
+
+const OVERDUE_HINT = `Uma execução rodando há mais de ${RUN_DEADLINE_MS / 60_000} min passou do prazo e provavelmente travou. Aos ${STALE_AFTER_MS / 60_000} min ela aparece como interrompida.`;
+
+const stateClass = (run: TestRun, now: number) => `state ${runState(run, now)}${overdue(run, now) ? " overdue" : ""}`;
+
+/** The state's icon and label; a running run also says for how long, and whether it is past its deadline. */
+function stateLabel(run: TestRun, now: number): string {
+	const s = runState(run, now);
+	if (s !== "running") return `${icon(s)} ${LABEL[s]}`;
+	const min = Math.floor((now - run.startedAt) / 60_000);
+	return `${icon(s)} ${LABEL[s]}${min ? ` há ${min} min` : ""}${overdue(run, now) ? " · passou do prazo" : ""}`;
+}
 
 function duration(run: TestRun, now: number): string {
 	// An interrupted run never ended; the time since it started is not how long anything ran.
@@ -161,19 +191,24 @@ function when(at: number, now: number): string {
 	return new Date(at).toISOString().slice(0, 10);
 }
 
-/** The run page's usage section for a run on the "Container" runner. */
-function renderContainerUsage(u: BoxUsage): string {
+/** The run page's one usage section: the Dynamic Workers' (from the costs page), then the container's. */
+function renderUsage(u: Usage | undefined, attempts: AttemptRow[], now: number, over: boolean, container: BoxUsage | undefined): string {
+	const workers = renderRunUsage(u, attempts, now, over);
+	if (!container) return workers;
+	// The container's numbers go under the workers' heading when there is one.
+	return workers ? `${workers}${containerStats(container)}` : `<section class="usage"><h3>Uso e custo</h3>${containerStats(container)}</section>`;
+}
+
+/** Usage of a run on the "Container" runner. */
+function containerStats(u: BoxUsage): string {
 	const items: [string, string][] = [
 		["Custo estimado", money(boxCost(u))],
 		["Container", `${INSTANCE.name} (${INSTANCE.vcpu} vCPU, ${INSTANCE.memoryGiB} GiB)`],
 		["Tempo ligado", cpu(u.wallMs)],
 		["CPU usada", u.cpuUs === undefined ? "—" : cpu(Math.round(u.cpuUs / 1000))],
 	];
-	return `<section class="usage">
-		<h3>Uso e custo</h3>
-		<dl class="stats">${items.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>
-		<p class="hint">Estimativa sem a franquia mensal: memória e disco pelo tempo ligado, CPU pelo que foi usado.</p>
-	</section>`;
+	return `<dl class="stats">${items.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>
+		<p class="hint">Estimativa sem a franquia mensal: memória e disco pelo tempo ligado, CPU pelo que foi usado.</p>`;
 }
 
 /** The PR a run tested, or the commit for a full run, which has none (pr 0). */

@@ -209,8 +209,8 @@ export function layout(title: string, body: string, head = ""): string {
 <title>${esc(title)} · quality-flare</title>
 ${head}
 <style>
-	:root { --bg: #fff; --fg: #1f2328; --muted: #59636e; --line: #d1d9e0; --panel: #f6f8fa; --on: #1a7f37; --off: #818b98; --link: #0969da; color-scheme: light dark; }
-	@media (prefers-color-scheme: dark) { :root { --bg: #0d1117; --fg: #f0f6fc; --muted: #9198a1; --line: #3d444d; --panel: #151b23; --on: #3fb950; --off: #656c76; --link: #4493f8; } }
+	:root { --bg: #fff; --fg: #1f2328; --muted: #59636e; --line: #d1d9e0; --panel: #f6f8fa; --on: #1a7f37; --off: #818b98; --link: #0969da; --failure: #cf222e; --running: #9a6700; color-scheme: light dark; }
+	@media (prefers-color-scheme: dark) { :root { --bg: #0d1117; --fg: #f0f6fc; --muted: #9198a1; --line: #3d444d; --panel: #151b23; --on: #3fb950; --off: #656c76; --link: #4493f8; --failure: #f85149; --running: #d29922; } }
 	* { box-sizing: border-box; }
 	body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
 	header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
@@ -224,7 +224,8 @@ ${head}
 	.num { text-align: right; white-space: nowrap; }
 	.mono { font-family: ui-monospace, monospace; font-size: 13px; }
 	.state { white-space: nowrap; font-weight: 600; }
-	.success { color: var(--on); } .failure { color: #cf222e; } .neutral, .cancelled, .skip { color: var(--muted); } .running { color: #9a6700; }
+	.success { color: var(--on); } .failure { color: var(--failure); } .neutral, .cancelled, .skip { color: var(--muted); } .running { color: var(--running); } .overdue { color: var(--failure); }
+	.state a { color: inherit; }
 	.meta { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); font-size: 13px; margin: 0 0 20px; }
 	h3 { font-size: 15px; margin: 24px 0 6px; overflow-wrap: anywhere; }
 	pre { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow-x: auto; font-size: 12px; margin: 6px 0 0; white-space: pre-wrap; }
