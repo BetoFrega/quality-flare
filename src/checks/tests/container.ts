@@ -61,6 +61,9 @@ const STEP_MINUTES = 15;
 /** Without a request or an alarm for this long, Cloudflare stops the container on its own. */
 const INACTIVITY_MS = 5 * 60_000;
 
+/** How long a run whose container went away keeps trying to close its commands' check runs. */
+const CLOSE_RETRY_MS = 60 * 60_000;
+
 const OUT = "/work/out";
 /** GitHub caps a check run summary at 65535 characters. */
 const MAX_LOG = 50_000;
@@ -286,8 +289,17 @@ export class TestBox {
 		if (!job) return;
 		if (!container) {
 			// A deploy without the tests (no Workers Paid) took the container away mid-run: close the commands' check
-			// runs, which only this object knows; the sweep closes the run itself.
-			await this.abandon(job, { wallMs: Date.now() - job.startedAt }).catch(logError);
+			// runs, which only this object knows (the sweep closes the run itself), trying again while GitHub fails.
+			let since = await this.ctx.storage.get<number>("closing");
+			if (since === undefined) {
+				since = Date.now();
+				await this.ctx.storage.put("closing", since);
+				await recordUsage(this.env.RUNS, job.runId, { wallMs: since - job.startedAt });
+			}
+			if (!(await this.closeCommands(job)) && Date.now() - since < CLOSE_RETRY_MS) {
+				await this.ctx.storage.setAlarm(Date.now() + 60_000);
+				return;
+			}
 			await this.ctx.storage.deleteAll();
 			return;
 		}
@@ -369,6 +381,25 @@ export class TestBox {
 		if (!open.length) return;
 		const github = await this.github(job);
 		for (const command of open) await github.completeCheckRun(job.repo, command.checkRunId, COMMAND_CANCELLED).catch(logError);
+	}
+
+	/** Completes the commands' check runs still open, keeping which closed; whether all are closed now. */
+	private async closeCommands(job: BoxJob): Promise<boolean> {
+		const shown: Shown = (await this.ctx.storage.get<Shown>("shown")) ?? { outputs: {}, finished: [], failures: 0 };
+		try {
+			const github = await this.github(job);
+			for (const [i, command] of job.commands.entries()) {
+				if (shown.finished.includes(i)) continue;
+				await github.completeCheckRun(job.repo, command.checkRunId, COMMAND_CANCELLED);
+				shown.finished.push(i);
+			}
+			return true;
+		} catch (error) {
+			logError(error);
+			return false;
+		} finally {
+			await this.ctx.storage.put("shown", shown);
+		}
 	}
 
 	/**
