@@ -159,7 +159,12 @@ function renderDocsPage(pages: DocPage[], page: DocPage | undefined): string {
 	);
 }
 
-const MARK = `<svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5c.9 3.4 3.1 5.6 6.5 6.5-3.4.9-5.6 3.1-6.5 6.5-.9-3.4-3.1-5.6-6.5-6.5 3.4-.9 5.6-3.1 6.5-6.5Z" fill="currentColor"/><path d="m7 18.5 2.2 2.2L14 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+/** The mark: a check whose long arm trails off into a flare. The trail takes the text color, the flare the accent, so each page styles it. */
+export const MARK = `<svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M1.477 14.973 7.25 20.746l5.773-5.773-2.546-2.546L7.25 15.654l-3.227-3.227ZM13.8 13.488l3.117-3.117-1.838-1.838-3.117 3.117Z"/><circle class="mark-flare" cx="19.25" cy="6.2" r="3"/></svg>`;
+
+/** The tab icon: the mark without the middle of the trail, which blurs at 16px, colored for light and dark tabs. */
+const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><style>path{fill:#1c1814}circle{fill:#c2410c}@media (prefers-color-scheme:dark){path{fill:#f2ece4}circle{fill:#fb8c4a}}</style><path d="M1.727 14.773 7.5 20.546l8.773-8.773-2.546-2.546L7.5 15.454l-3.227-3.227Z"/><circle cx="19.5" cy="6" r="3"/></svg>`;
+export const FAVICON = `<link rel="icon" href="data:image/svg+xml,${encodeURIComponent(FAVICON_SVG)}">`;
 
 function layout(title: string, description: string, main: string): string {
 	return `<!doctype html>
@@ -171,7 +176,7 @@ function layout(title: string, description: string, main: string): string {
 <meta name="description" content="${esc(description)}">
 <meta name="theme-color" content="#fbf8f3" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#14110e" media="(prefers-color-scheme: dark)">
-<link rel="icon" href="data:image/svg+xml,${encodeURIComponent(MARK.replace('class="mark"', 'xmlns="http://www.w3.org/2000/svg" color="#c2410c"'))}">
+${FAVICON}
 <style>
 	:root {
 		--bg: #fbf8f3; --surface: #f4eee5; --raised: #fffdf9; --fg: #1c1814; --muted: #625a50; --faint: #8b8276; --line: #e3dace; --line-strong: #cfc3b3;
@@ -199,9 +204,10 @@ function layout(title: string, description: string, main: string): string {
 
 	.top { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
 	.top div { display: flex; align-items: center; gap: 24px; max-width: var(--wide); margin: 0 auto; padding: 12px 16px; }
-	.brand { display: flex; align-items: center; gap: 8px; margin-right: auto; color: var(--fg); text-decoration: none; font-weight: 700; letter-spacing: -0.01em; }
+	.brand { display: flex; align-items: center; gap: 10px; margin-right: auto; color: var(--fg); text-decoration: none; font-weight: 700; letter-spacing: -0.01em; }
 	.brand:hover { color: var(--fg); }
-	.mark { width: 22px; height: 22px; color: var(--accent); }
+	.mark { width: 24px; height: 24px; color: var(--fg); }
+	.mark-flare { fill: var(--accent); }
 	.top a { white-space: nowrap; }
 	.top a:not(.brand) { color: var(--muted); text-decoration: none; font-size: 15px; }
 	@media (max-width: 480px) { .top div { gap: 16px; } .top .wide-only { display: none; } }
