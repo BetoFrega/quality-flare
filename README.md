@@ -142,7 +142,7 @@ Requisitos para o deploy automático funcionar:
 | Variável de build | O que é |
 | --- | --- |
 | `CLOUDFLARE_ACCOUNT_ID` | Conta Cloudflare cujo uso o admin mostra |
-| `PUBLIC_URL` | URL onde se abre o admin (links dos check runs), por exemplo `https://quality-flare.<subdomínio>.workers.dev` |
+| `PUBLIC_URL` | URL onde se abre o admin (links dos check runs), `https://quality-flare.frega.dev` (endereço oficial) |
 | `SETTINGS_KV_ID` | ID do KV `quality-flare-settings` |
 | `RUNS_D1_ID` | ID do D1 `quality-flare-runs` |
 | `SECRETS_STORE_ID` | ID do Secrets Store que guarda `quality-flare-analytics-token` |
@@ -161,7 +161,7 @@ export CLOUDFLARE_ACCOUNT_ID=... PUBLIC_URL=... SETTINGS_KV_ID=... RUNS_D1_ID=..
 cf deploy --secrets-file .dev.vars
 ```
 
-A URL publicada (`https://quality-flare.<subdomínio>.workers.dev`) é a URL do webhook. Os secrets (`GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`) ficam no Worker e são mantidos entre deploys.
+O endereço oficial, [`https://quality-flare.frega.dev`](https://quality-flare.frega.dev), é a URL do webhook. Os secrets (`GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`) ficam no Worker e são mantidos entre deploys.
 
 ### 2. Criar a GitHub App
 
@@ -185,15 +185,15 @@ Em cada repositório: **Settings → Rules** (ou Branch protection) → exigir o
 
 ## Admin
 
-Em `/admin` (na `PUBLIC_URL`) ficam os repositórios onde a App está instalada. Tudo começa desativado:
+Em [`/admin`](https://quality-flare.frega.dev/admin) ficam os repositórios onde a App está instalada. Tudo começa desativado:
 
 - O interruptor **Ativar checks** de cada repositório liga o quality-flare nele. Enquanto estiver desligado, o Worker ignora os webhooks desse repositório e não cria check runs.
 - Clicar no repositório abre a lista dos checks, cada um com seu interruptor, e os botões **Ativar todos** e **Desativar todos**.
 - Num repositório ativo, um check desativado não roda e é publicado com conclusão `neutral` ("Desativado"), para que um check exigido pela proteção de branch não trave o merge.
-- **Execuções de testes** (`/admin/runs`) lista as 50 execuções mais recentes do check Tests: rodando, passou, falhou, neutro ou interrompida (ficou "rodando" por mais de 30 minutos). As páginas acompanham ao vivo: cada teste aparece assim que termina, com a contagem ("12 de 40 · 1 falhou"). Cada execução abre com os arquivos, cada teste e a mensagem de cada falha.
-- **Custos** (`/admin/costs`) mostra o uso medido da conta Cloudflare no mês e por dia (Dynamic Workers, CPU, erros; GraphQL Analytics com o token `quality-flare-analytics-token` do Secrets Store) e a estimativa por execução, repositório, dia e mês. A estimativa vem da tabela `test_shard_attempts` do D1: cada entrega de lote da fila registra arquivos, tamanho do código, resultado, tempo e se criou um Dynamic Worker; o Tail Worker `ShardTail` acrescenta o CPU do Dynamic Worker e se ele caiu por memória. Os Container tests entram nas duas partes: o uso real traz memória, CPU e disco dos containers da conta (`containersUsageAdaptiveGroups`) contra a franquia do mês, e a estimativa soma a tabela `test_container_runs` (tempo ligado e CPU de cada container). A lista e a página de cada execução mostram os Dynamic Workers, as quedas e o custo estimado, inclusive o do container.
+- **Execuções de testes** ([`/admin/runs`](https://quality-flare.frega.dev/admin/runs)) lista as 50 execuções mais recentes do check Tests: rodando, passou, falhou, neutro ou interrompida (ficou "rodando" por mais de 30 minutos). As páginas acompanham ao vivo: cada teste aparece assim que termina, com a contagem ("12 de 40 · 1 falhou"). Cada execução abre com os arquivos, cada teste e a mensagem de cada falha.
+- **Custos** ([`/admin/costs`](https://quality-flare.frega.dev/admin/costs)) mostra o uso medido da conta Cloudflare no mês e por dia (Dynamic Workers, CPU, erros; GraphQL Analytics com o token `quality-flare-analytics-token` do Secrets Store) e a estimativa por execução, repositório, dia e mês. A estimativa vem da tabela `test_shard_attempts` do D1: cada entrega de lote da fila registra arquivos, tamanho do código, resultado, tempo e se criou um Dynamic Worker; o Tail Worker `ShardTail` acrescenta o CPU do Dynamic Worker e se ele caiu por memória. Os Container tests entram nas duas partes: o uso real traz memória, CPU e disco dos containers da conta (`containersUsageAdaptiveGroups`) contra a franquia do mês, e a estimativa soma a tabela `test_container_runs` (tempo ligado e CPU de cada container). A lista e a página de cada execução mostram os Dynamic Workers, as quedas e o custo estimado, inclusive o do container.
 
-- **Login:** uma aplicação self-hosted do Cloudflare Access cobre `/admin` e `/admin/*` dos domínios do Worker. O Worker ainda confere `ctx.access` e exige que o `aud` seja o dessa aplicação (`ACCESS_AUD`), então o admin recusa qualquer pedido que não passou pelo Access.
+- **Login:** uma aplicação self-hosted do Cloudflare Access cobre `/admin` e `/admin/*` em `quality-flare.frega.dev` e no endereço `workers.dev` do Worker. O Worker ainda confere `ctx.access` e exige que o `aud` seja o dessa aplicação (`ACCESS_AUD`), então o admin recusa qualquer pedido que não passou pelo Access.
 - **Ao vivo:** o Dynamic Worker transmite cada teste que termina (NDJSON) para o check, que repassa em lotes ao Durable Object `RunsHub` (binding `LIVE`). As páginas do admin abrem um WebSocket em `/admin/live` (atrás do Access, só da mesma origem) e recebem os eventos; quem abre no meio de uma execução recebe o progresso até ali. Sem JavaScript, a página recarrega a cada 5 s.
 - **Histórico de testes:** D1 `quality-flare-runs` (binding `RUNS`), tabela `test_runs`, criada pelo próprio Worker no primeiro uso (não há migração para rodar).
 - **Armazenamento:** KV `quality-flare-settings` (binding `SETTINGS`), chave `repo:<owner/repo>` com `{ "enabled": true, "enabledChecks": ["closes-issue"] }`.
