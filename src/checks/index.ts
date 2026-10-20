@@ -17,11 +17,12 @@ export const UNAVAILABLE_RESULT: CheckResult = {
 
 /**
  * The checks webhooks run. Without Workers Paid the deploy leaves the Tests checks out; they still report, as
- * neutral, so a branch protection that requires them doesn't wait forever.
+ * neutral, so a branch protection that requires them doesn't wait forever. They stay on-demand so a run command
+ * reaches one already waiting, but they never wait themselves (src/index.ts).
  */
 export function checksFor(env: Pick<Env, "TESTS_OFF">): Check[] {
 	if (!testsOff(env)) return checks;
-	return checks.map((c) => (unavailable(c) ? { ...c, onDemand: false, run: async () => UNAVAILABLE_RESULT } : c));
+	return checks.map((c) => (unavailable(c) ? { ...c, run: async () => UNAVAILABLE_RESULT } : c));
 }
 
 /** The checks the admin offers: none that this deployment can't run. */

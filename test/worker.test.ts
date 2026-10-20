@@ -235,6 +235,19 @@ describe("tests on demand", () => {
 		expect(commanded.reactions).toEqual([{ content: "rocket" }]);
 	});
 
+	it("without Workers Paid, reports at once on a push and on a command, with no status comment", async () => {
+		const free = { ...env, TESTS_OFF: "free-plan" } as Env;
+		const pushed = mockGitHub();
+		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), free);
+		expect(ran).toEqual([pr.number]);
+		expect(pushed.checkRuns).toEqual([expect.objectContaining({ name: "Tests", conclusion: "success" })]);
+		expect(pushed.comments).toEqual([]);
+
+		const commanded = mockGitHub({ existingRuns: { Tests: "completed:action_required" } });
+		await runPlan({ pullRequests: [7], checks: [tests], command: { commentId: 5 } }, "octo/repo", 99, settings(true), free);
+		expect(ran).toEqual([pr.number, 7]);
+	});
+
 	it("keeps one status comment on a ready PR, edited only when what it says changes", async () => {
 		const first = mockGitHub();
 		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), env);

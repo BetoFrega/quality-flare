@@ -33,7 +33,6 @@ describe("setup", () => {
 		expect(adminChecksFor(free).map((c) => c.id)).toContain("closes-issue");
 		// Webhooks still report them, as neutral, for branch protections that require them.
 		const tests = checksFor(free).find((c) => c.id === "tests")!;
-		expect(tests.onDemand).toBe(false);
 		expect(await tests.run({} as Parameters<typeof tests.run>[0])).toEqual(UNAVAILABLE_RESULT);
 		const page = await (await handleSetup(get("/setup"), free)).text();
 		expect(page).toContain("Workers Paid");

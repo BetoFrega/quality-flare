@@ -109,6 +109,8 @@ export default {
 export async function runPlan(plan: Plan, repo: string, installationId: number, settings: RepoSettings, env: Env): Promise<void> {
 	const github = await GitHubClient.forInstallation({ appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY }, installationId);
 	const allChecks = checksFor(env);
+	// Without Workers Paid the on-demand checks only report neutral (checksFor): they run at once, never wait.
+	const off = testsOff(env);
 	// With the on-demand setting off, a run command is just a comment.
 	const checks = plan.command && !settings.onDemand ? plan.checks.filter((c) => !c.onDemand) : plan.checks;
 	// What the run command got: 🚀 when it started a run, 👀 when every run it asked for was already going,
@@ -131,14 +133,14 @@ export async function runPlan(plan: Plan, repo: string, installationId: number, 
 		const inherit = () => (inherited ??= inheritRuns(github, repo, pr, settings, env.GITHUB_APP_ID, allChecks));
 		for (const check of checks) {
 			// The Codex review comes first: a command while it blocks runs no tests.
-			if (blocked && check.onDemand) continue;
+			if (blocked && check.onDemand && !off) continue;
 			let result: CheckResult | null;
 			if (!settings.enabledChecks.has(check.id)) result = DISABLED_RESULT;
-			else if (check.onDemand && plan.command && (await runStatus(github, repo, pr.head.sha, check.name, env.GITHUB_APP_ID)) === "in_progress") {
+			else if (check.onDemand && !off && plan.command && (await runStatus(github, repo, pr.head.sha, check.name, env.GITHUB_APP_ID)) === "in_progress") {
 				// A run already going on this commit (a push on a bot's PR, an earlier command) answers this command too.
 				commanded ??= "eyes";
 				continue;
-			} else if (check.onDemand && !plan.command && !plan.rerun && !runsOnPush(settings.onDemand, pr)) {
+			} else if (check.onDemand && !off && !plan.command && !plan.rerun && !runsOnPush(settings.onDemand, pr)) {
 				// A commit keeps the run it has: leaving draft or reopening on the same head must not queue a passed run again.
 				const kept = Boolean(await runStatus(github, repo, pr.head.sha, check.name, env.GITHUB_APP_ID));
 				if (!kept && (await inherit())) continue;
@@ -151,7 +153,7 @@ export async function runPlan(plan: Plan, repo: string, installationId: number, 
 			if (result) await github.createCheckRun(repo, pr.head.sha, check.name, result);
 		}
 		// Bots' PRs run on push and the setting off runs everything, so neither has anything to explain.
-		const reported = allChecks.filter((c) => c.onDemand && settings.enabledChecks.has(c.id)).map((c) => c.name);
+		const reported = off ? [] : allChecks.filter((c) => c.onDemand && settings.enabledChecks.has(c.id)).map((c) => c.name);
 		const affectsStatus = plan.finished || checks.some((c) => c.onDemand || c.id === codexReview.id);
 		if (settings.onDemand && !runsOnPush(true, pr) && reported.length && affectsStatus) {
 			// Agents watching a PR see a check's title, not its text; the comment reaches them.
