@@ -2,6 +2,8 @@
 
 Continuous Integration rodando inteiramente na Cloudflare, entregue como uma GitHub App. Cada check vira um check run na pull request.
 
+**Site e documentação (em inglês):** [quality-flare.frega.dev](https://quality-flare.frega.dev) · [docs](https://quality-flare.frega.dev/docs), gerados de [`docs/`](docs).
+
 Toda a infraestrutura é Cloudflare: um único Worker, um namespace KV com as configurações de cada repositório e o Cloudflare Access protegendo o admin. O projeto foi criado e é publicado com o novo CLI da Cloudflare, [`cf`](https://www.npmjs.com/package/cf). Para rodar o seu, veja [Instale o seu](#instale-o-seu).
 
 ## Checks
