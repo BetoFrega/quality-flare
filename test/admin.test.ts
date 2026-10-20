@@ -108,11 +108,47 @@ describe("admin", () => {
 		expect(await (await call(new Request("https://worker.example/admin"))).text()).toContain("https://github.com/apps/qf-test/installations/new");
 	});
 
-	it("links to this installation's docs and to the project's site", async () => {
+	it("separates the admin's sections from the links to this installation's docs and the project's site", async () => {
 		const { call } = setup();
 		const page = await (await call(new Request("https://worker.example/admin"))).text();
-		expect(page).toContain('<a href="/docs">Docs</a>');
-		expect(page).toContain('<a href="https://quality-flare.frega.dev">Site</a>');
+		expect(page).toContain(
+			'<nav class="sections" aria-label="Seções"><a href="/admin" aria-current="page">Repositórios</a><a href="/admin/runs">Execuções</a><a href="/admin/costs">Custos</a></nav>',
+		);
+		expect(page).toContain('<a href="/docs">Docs<span aria-hidden="true"> ↗</span></a>');
+		expect(page).toContain('<a href="https://quality-flare.frega.dev">Site<span aria-hidden="true"> ↗</span></a>');
+		expect(page).toContain('<span class="who" title="me@example.com">me@example.com</span>');
+	});
+
+	it("links each repository to its runs and costs, naming the repository on repeated controls", async () => {
+		const { call } = setup();
+		const page = await (await call(new Request("https://worker.example/admin"))).text();
+		expect(page).toContain('<a href="/admin/runs?repo=octo%2Fapp" aria-label="Execuções de octo/app">Execuções</a>');
+		expect(page).toContain('<a href="/admin/costs?repo=octo%2Fapp" aria-label="Custos de octo/app">Custos</a>');
+		expect(page).toContain('aria-label="Abrir octo/app no GitHub">Abrir no GitHub</a>');
+		expect(page).toContain('aria-label="Ativar todos os checks em octo/app">Ativar todos</button>');
+		expect(page).toContain('aria-label="Desativar todos os checks em octo/&#60;secret&#62;">Desativar todos</button>');
+		expect(page).toContain('href="/admin/runs?repo=octo%2F%3Csecret%3E"');
+	});
+
+	it("keeps the admin's navigation on error pages for signed-in people, with a way back", async () => {
+		const { call } = setup();
+		for (const res of [await call(new Request("https://worker.example/admin/nope")), await call(new Request("https://worker.example/admin/runs/9")), await call(post("/admin/repos", { repo: "octo/not-installed" }))]) {
+			const page = await res.text();
+			expect(page).toContain('<nav class="sections"');
+			expect(page).not.toContain('aria-current="page"');
+			expect(page).toContain("me@example.com");
+			expect(page).toContain('<a href="/admin">Voltar para Repositórios</a>');
+		}
+		const crossSite = await (await call(post("/admin/repos", { repo: "octo/app" }, "https://evil.example"))).text();
+		expect(crossSite).toContain('<nav class="sections"');
+		expect(crossSite).not.toContain("Voltar para Repositórios");
+	});
+
+	it("shows no admin navigation before Access lets the person in", async () => {
+		const { env, callAs } = setup();
+		expect(await (await callAs(undefined, new Request("https://worker.example/admin"))).text()).not.toContain("<nav");
+		env.ACCESS_AUD = "";
+		expect(await (await callAs(access, new Request("https://worker.example/admin"))).text()).not.toContain("<nav");
 	});
 
 	it("lists installed repositories, off by default, with their checks collapsed", async () => {

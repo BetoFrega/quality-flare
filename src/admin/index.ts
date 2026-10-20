@@ -60,6 +60,11 @@ export async function handleAdmin(
 	}
 	const url = new URL(request.url);
 	const path = url.pathname.replace(/\/+$/, "") || "/";
+	// Past this point the person is signed in: messages keep the admin's header and navigation.
+	const message = async (status: number, title: string, detail = "", back = false) =>
+		html(renderMessage(title, detail, { email: (await access.getIdentity())?.email, back }), status);
+	const notFound = (title = "Página não encontrada") => message(404, title, "", true);
+	const invalid = () => message(400, "Pedido inválido", "Repositório ou check desconhecido.", true);
 
 	if (request.method === "GET" && path === ADMIN_PATH) {
 		const [repos, install] = await Promise.all([
@@ -81,9 +86,9 @@ export async function handleAdmin(
 	}
 
 	if (request.method === "GET" && path === `${ADMIN_PATH}/live`) {
-		if (request.headers.get("Upgrade") !== "websocket") return html(renderMessage("Esperava um WebSocket", ""), 426);
+		if (request.headers.get("Upgrade") !== "websocket") return message(426, "Esperava um WebSocket");
 		// The browser sends Origin on WebSocket handshakes; refuse other sites.
-		if (request.headers.get("Origin") !== url.origin) return html(renderMessage("Origem inválida", ""), 403);
+		if (request.headers.get("Origin") !== url.origin) return message(403, "Origem inválida");
 		return hub(env.LIVE).fetch(request);
 	}
 
@@ -105,7 +110,7 @@ export async function handleAdmin(
 	const runMatch = request.method === "GET" ? new RegExp(`^${ADMIN_PATH}/runs/(\\d+)$`).exec(path) : null;
 	if (runMatch) {
 		const run = await runs(env).get(Number(runMatch[1]));
-		if (!run) return html(renderMessage("Execução não encontrada", ""), 404);
+		if (!run) return notFound("Execução não encontrada");
 		const identity = await access.getIdentity();
 		const store = metrics(env);
 		const [usage, attempts, container] = await Promise.all([
@@ -143,7 +148,7 @@ export async function handleAdmin(
 
 	if (request.method === "POST" && path.startsWith(`${ADMIN_PATH}/`)) {
 		// Forms post from the admin page itself; anything else is a cross-site request.
-		if (request.headers.get("Origin") !== url.origin) return html(renderMessage("Origem inválida", ""), 403);
+		if (request.headers.get("Origin") !== url.origin) return message(403, "Origem inválida");
 		const form = await request.formData();
 		const enabled = form.get("enabled") === "true";
 		const repo = (await listRepos(env)).find((r) => r.full_name === form.get("repo"))?.full_name;
@@ -166,7 +171,7 @@ export async function handleAdmin(
 				await setChecksEnabled(env.SETTINGS, repo, checks.map((c) => c.id), enabled);
 				break;
 			default:
-				return html(renderMessage("Página não encontrada", ""), 404);
+				return notFound();
 		}
 		// Return to the same filtered view. Changes to checks happen inside the repository's
 		// collapsible, so keep it open.
@@ -175,7 +180,7 @@ export async function handleAdmin(
 		return Response.redirect(`${url.origin}${ADMIN_PATH}${search}#${encodeURIComponent(repo)}`, 303);
 	}
 
-	return html(renderMessage("Página não encontrada", ""), 404);
+	return notFound();
 }
 
 function logMetricsError<T>(fallback: T): (error: unknown) => T {
@@ -184,8 +189,6 @@ function logMetricsError<T>(fallback: T): (error: unknown) => T {
 		return fallback;
 	};
 }
-
-const invalid = () => html(renderMessage("Pedido inválido", "Repositório ou check desconhecido."), 400);
 
 function html(body: string, status = 200): Response {
 	return new Response(body, {
