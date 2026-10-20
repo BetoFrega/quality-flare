@@ -13,6 +13,8 @@ export interface AdminPageData {
 	query?: RepoQuery;
 	/** The App's page for installing it on more repositories. */
 	installUrl?: string;
+	/** The deploy left the Tests checks out: the account has no Workers Paid plan. */
+	testsOff?: boolean;
 }
 
 export type RepoStatus = "enabled" | "disabled";
@@ -71,7 +73,11 @@ function filterRows(rows: Row[], checks: Check[], { q, status, sort = "name" }: 
 /** Without the App's own link: the Apps installed on the person's account. */
 const INSTALLATIONS_URL = "https://github.com/settings/installations";
 
-export function renderAdminPage({ email, checks, rows, open, query = {}, installUrl = INSTALLATIONS_URL }: AdminPageData): string {
+/** Why the Tests checks are missing, on the admin and /setup. */
+export const TESTS_OFF_NOTE =
+	'Os checks Tests e Container tests estão desligados: a conta Cloudflare não tem o Workers Paid, que eles exigem. Depois de assinar o <a href="https://dash.cloudflare.com/?to=/:account/workers/plans">Workers Paid</a>, rode o build de novo (Deployments → Retry build) para ligá-los.';
+
+export function renderAdminPage({ email, checks, rows, open, query = {}, installUrl = INSTALLATIONS_URL, testsOff = false }: AdminPageData): string {
 	const shown = filterRows(rows, checks, query);
 	const back = repoSearch(query).slice(1);
 	const filtered = Boolean(query.q || query.status);
@@ -95,6 +101,7 @@ export function renderAdminPage({ email, checks, rows, open, query = {}, install
 		`${renderHeader(email, "repos")}
 		<main>
 			<h2>Repositórios</h2>
+			${testsOff ? `<p class="hint">${TESTS_OFF_NOTE}</p>` : ""}
 			<p class="hint">Repositórios e checks começam desativados. Ative o repositório e depois os checks que ele deve rodar. Um check desativado num repositório ativo aparece na PR como <em>neutral</em>, para não travar branches que o exigem.</p>
 			${filters}
 			${list}

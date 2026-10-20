@@ -1,4 +1,4 @@
-import { checks as allChecks } from "../checks/index.ts";
+import { adminChecksFor, testsOff } from "../checks/index.ts";
 import type { Check } from "../checks/types.ts";
 import { GitHubClient, type InstalledRepo } from "../github.ts";
 import { getRepoSettings, setChecksEnabled, setOnDemand, setRepoEnabled } from "../settings.ts";
@@ -39,7 +39,7 @@ export async function handleAdmin(
 	env: Env,
 	access: CloudflareAccessContext | undefined,
 	{
-		checks = allChecks,
+		checks = adminChecksFor(env),
 		listRepos = listInstalledRepos,
 		runs = (e) => d1RunStore(e.RUNS),
 		metrics = (e) => d1MetricsStore(e.RUNS),
@@ -73,7 +73,7 @@ export async function handleAdmin(
 			repos.map(async (repo) => ({ repo, settings: await getRepoSettings(env.SETTINGS, repo.full_name) })),
 		);
 		const identity = await access.getIdentity();
-		return html(renderAdminPage({ email: identity?.email, checks, rows, open: url.searchParams.get("open"), query: repoQuery(url.searchParams), installUrl: install }));
+		return html(renderAdminPage({ email: identity?.email, checks, rows, open: url.searchParams.get("open"), query: repoQuery(url.searchParams), installUrl: install, testsOff: testsOff(env) }));
 	}
 
 	if (request.method === "GET" && path === `${ADMIN_PATH}/live.js`) {

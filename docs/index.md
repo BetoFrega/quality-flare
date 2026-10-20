@@ -22,7 +22,7 @@ Around the checks:
 
 ## Where to go next
 
-- **Run your own instance:** [Self-hosting](self-hosting.md). You need a Cloudflare account on Workers Paid and a GitHub account; nothing is installed on your computer.
+- **Run your own instance:** [Self-hosting](self-hosting.md). You need a Cloudflare account (the free plan runs everything except the tests) and a GitHub account; nothing is installed on your computer.
 - **Set up a repository:** [Configuration](configuration.md) describes `quality-flare.json`, which most repositories don't need for the Tests check.
 - **Understand the moving parts:** [Architecture](architecture.md).
 
