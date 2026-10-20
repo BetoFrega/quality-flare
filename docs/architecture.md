@@ -40,7 +40,7 @@ quality-flare is one Cloudflare Worker, configured in [`cloudflare.config.ts`](.
 | Path | What it serves |
 | --- | --- |
 | `POST /` | GitHub webhooks |
-| `GET /` | The home page |
+| `GET /` | The home page on the project's own instance; elsewhere a redirect to `/admin` (or `/setup` until it is finished) |
 | `/docs` | This documentation, rendered from [`docs/`](../docs) at build time |
 | `/setup` | Setup of a new installation; creates the GitHub App |
 | `/admin` | The admin, behind Cloudflare Access |

@@ -8,6 +8,8 @@ import { SETUP_PATH } from "./setup.ts";
  */
 
 export const DOCS_PATH = "/docs";
+/** The project's own instance, the only one whose root shows the home page; other installations' roots open their admin. */
+export const OFFICIAL_URL = "https://quality-flare.frega.dev";
 const REPO_URL = "https://github.com/BetoFrega/quality-flare";
 
 type DocPage = { slug: string; title: string; html: string };

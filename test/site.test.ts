@@ -8,22 +8,31 @@ const fresh = { GITHUB_APP_ID: PENDING, GITHUB_PRIVATE_KEY: PENDING, GITHUB_WEBH
 const inWorkers = globalThis.navigator?.userAgent === "Cloudflare-Workers";
 const build = () => import("../build/docs.ts");
 const ctx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
-const get = (path: string, env: Env) => worker.fetch(new Request(`https://quality-flare.acme.workers.dev${path}`), env, ctx);
+const OTHER = "https://quality-flare.acme.workers.dev";
+const OFFICIAL = "https://quality-flare.frega.dev";
+const get = (path: string, env: Env, base = OTHER) => worker.fetch(new Request(`${base}${path}`), env, ctx);
 
 describe("site", () => {
-	it("serves the home page at the root once the App exists", async () => {
-		const res = await get("/", ready);
+	it("serves the home page at the official instance's root once the App exists", async () => {
+		const res = await get("/", ready, OFFICIAL);
 		expect(res.headers.get("Content-Type")).toContain("text/html");
 		const page = await res.text();
 		expect(page).toContain("Continuous integration that runs entirely on Cloudflare");
 		expect(page).not.toContain("Finish setting it up");
-		expect(await (await get("/", { ...ready, ACCESS_AUD: "" } as Env)).text()).toContain("Finish setting it up");
+		expect(await (await get("/", { ...ready, ACCESS_AUD: "" } as Env, OFFICIAL)).text()).toContain("Finish setting it up");
 	});
 
-	it("still sends a new installation's root to /setup", async () => {
-		const res = await get("/", fresh);
-		expect(res.status).toBe(302);
-		expect(res.headers.get("Location")).toBe("https://quality-flare.acme.workers.dev/setup");
+	it("sends other installations' root to the admin, or to /setup until it is finished", async () => {
+		for (const [env, path] of [[ready, "/admin"], [{ ...ready, ACCESS_AUD: "" } as Env, "/setup"], [fresh, "/setup"]] as const) {
+			const res = await get("/", env);
+			expect(res.status).toBe(302);
+			expect(res.headers.get("Location")).toBe(`${OTHER}${path}`);
+		}
+	});
+
+	it("still sends a new official installation's root to /setup", async () => {
+		const res = await get("/", fresh, OFFICIAL);
+		expect(res.headers.get("Location")).toBe(`${OFFICIAL}/setup`);
 	});
 
 	it.skipIf(inWorkers)("serves every docs page, before and after setup, with the sidebar", async () => {
@@ -58,7 +67,7 @@ describe("site", () => {
 		const { PAGES } = await build();
 		const pages = await Promise.all(PAGES.map(async (slug) => (await get(slug === "index" ? "/docs" : `/docs/${slug}`, ready)).text()));
 		const ids = new Map(PAGES.map((slug, i) => [slug, new Set([...pages[i].matchAll(/ id="([^"]+)"/g)].map((m) => m[1]))]));
-		const home = await (await get("/", ready)).text();
+		const home = await (await get("/", ready, OFFICIAL)).text();
 		for (const page of [...pages, home]) {
 			for (const [, slug = "index", anchor] of page.matchAll(/href="\/docs(?:\/([a-z-]+))?#([^"]+)"/g)) {
 				expect(ids.get(slug)?.has(anchor), `${slug}#${anchor}`).toBe(true);
