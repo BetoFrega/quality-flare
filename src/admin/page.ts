@@ -281,6 +281,19 @@ ${head}
 	.filters input, .filters select { font: inherit; font-size: 14px; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
 	.filters input { width: 180px; }
 	.filters a, .filters .count { align-self: center; }
+	.costs .hint { max-width: 70ch; }
+	.costs h4 { font-size: 14px; margin: 20px 0 6px; }
+	.costs details.plain > .hint { margin: 2px 0 12px 18px; }
+	.lead { margin: 12px 0; padding: 12px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+	.lead.over .verdict { color: #cf222e; }
+	.lead .verdict { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
+	.lead .hint { margin: 0; }
+	.toc { margin: 0 0 8px; font-size: 13px; }
+	.toc a { color: var(--link); }
+	.meters { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+	.meters dd { font-size: 15px; }
+	.meters .pct { font-size: 13px; margin-left: 4px; }
+	.meters meter { display: block; width: 100%; height: 8px; margin-top: 6px; }
 	@media (max-width: 560px) {
 		summary { padding-right: 56px; }
 		.count { margin-left: 0; flex-basis: 100%; }
