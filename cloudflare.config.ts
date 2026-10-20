@@ -22,6 +22,11 @@ const accountId = fromEnv("CLOUDFLARE_ACCOUNT_ID");
 // Set by scripts/deploy.mjs when the account has no Workers Paid plan: Containers, Dynamic Workers and a CPU limit
 // above the default are Paid-only, so the deploy leaves out the two Tests checks and everything they need.
 const noTests = process.env.QF_NO_TESTS === "1";
+// When the daily full run starts (src/checks/tests/daily.ts), as a cron expression in UTC. The build variable
+// DAILY_RUN_CRON changes it.
+const dailyCron = process.env.DAILY_RUN_CRON || "0 9 * * *";
+// The Worker tells its two crons apart by expression (SWEEP_CRON in src/index.ts), so they can't be the same.
+if (dailyCron.trim() === "*/5 * * * *") throw new Error("DAILY_RUN_CRON can't be */5 * * * *, the schedule of the sweep of overdue runs.");
 
 // The Tests check's "Container" runner (src/checks/tests/container.ts): one container per run,
 // started by the TestBox Durable Object, which picks the instance type.
@@ -51,10 +56,10 @@ export default defineConfig({
 			// holds its shard's code (up to SHARD_BYTES, ~32 MB), so raising maxConcurrency makes shards run
 			// out of memory. Retries split a shard that crashed.
 			triggers.queue({ name: "quality-flare-tests", maxBatchSize: 1, maxRetries: 3, maxConcurrency: 2 }),
-			// Fails Tests runs past their deadline without waiting for their queued shards.
+			// Fails Tests runs past their deadline without waiting for their queued shards (SWEEP_CRON in src/index.ts).
 			triggers.scheduled({ schedule: "*/5 * * * *" }),
-			// The daily full run on default branches (src/checks/tests/daily.ts, DAILY_CRON).
-			triggers.scheduled({ schedule: "0 9 * * *" }),
+			// The daily full run on default branches (src/checks/tests/daily.ts).
+			triggers.scheduled({ schedule: dailyCron }),
 		],
 		exports: {
 			// Relays live test progress to the admin over WebSockets.

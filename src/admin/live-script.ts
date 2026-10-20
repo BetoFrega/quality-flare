@@ -11,7 +11,7 @@ export const LIVE_SCRIPT = `(() => {
 	const counts = new Map();
 	const icon = (s) => (s === "pass" ? "✓" : s === "fail" ? "✗" : "–");
 	const css = (s) => (s === "pass" ? "success" : s === "fail" ? "failure" : "skip");
-	const said = (s) => (s === "pass" ? "passou" : s === "fail" ? "falhou" : "ignorado");
+	const said = (s) => (s === "pass" ? "passed" : s === "fail" ? "failed" : "skipped");
 	// Storage can be unavailable (private windows, blocked site data): then the reload starts at the top.
 	const scrollKey = "scroll:" + location.pathname + location.search;
 	try {
@@ -37,8 +37,8 @@ export const LIVE_SCRIPT = `(() => {
 		const done = c.pass + c.fail + c.other;
 		if (!done && c.status) return document.querySelectorAll('[data-progress="' + runId + '"]').forEach((el) => (el.textContent = c.status));
 		const text =
-			(c.total ? done + " de " + c.total : done + " testes") +
-			(c.fail ? " · " + c.fail + (c.fail === 1 ? " falhou" : " falharam") : "") +
+			(c.total ? done + " of " + c.total : done + " tests") +
+			(c.fail ? " · " + c.fail + " failed" : "") +
 			(c.counted && c.status ? " · " + c.status : "");
 		document.querySelectorAll('[data-progress="' + runId + '"]').forEach((el) => (el.textContent = text));
 	}

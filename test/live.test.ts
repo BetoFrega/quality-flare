@@ -55,7 +55,7 @@ export default { fetch(request, env) {
 			await until(() => late.messages.length === 1);
 			expect(late.messages[0]).toMatchObject({ type: "snapshot", runId: 1, total: 2, status: "Lote 0: rodando", tests: [{ name: "adds", state: "pass" }], counts: { pass: 1, total: 2 } });
 
-			await publish([{ type: "finished", runId: 1, conclusion: "success", title: "2 testes passaram" }]);
+			await publish([{ type: "finished", runId: 1, conclusion: "success", title: "2 tests passed" }]);
 			await until(() => late.messages.length === 2);
 			expect(late.messages[1]).toMatchObject({ type: "finished", runId: 1 });
 			expect(other.messages).toEqual([]);

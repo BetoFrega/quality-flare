@@ -53,29 +53,29 @@ export function toCheckResult(report: TestReport, unresolved: Unresolved[] = [])
 	const skipped = tests.filter((t) => t.state === "skip" || t.state === "todo").length;
 	const failedTests = report.files.flatMap((f) => f.tests.filter((t) => t.state === "fail").map((t) => ({ file: f.path, ...t })));
 	const brokenFiles = report.files.filter((f) => f.errors?.length);
-	const fileCount = `${report.files.length} arquivo${report.files.length === 1 ? "" : "s"}`;
+	const fileCount = `${report.files.length} file${report.files.length === 1 ? "" : "s"}`;
 
 	if (!failedTests.length && !brokenFiles.length) {
 		return {
 			conclusion: "success",
-			title: `${passed} teste${passed === 1 ? "" : "s"} passaram`,
-			summary: `${passed} passaram${skipped ? `, ${skipped} pulados` : ""} em ${fileCount}.\n\n${fileTable(report)}`,
+			title: `${passed} test${passed === 1 ? "" : "s"} passed`,
+			summary: `${passed} passed${skipped ? `, ${skipped} skipped` : ""} in ${fileCount}.\n\n${fileTable(report)}`,
 		};
 	}
 
 	const sections = [
 		...(unresolved.length
-			? [`### Imports não resolvidos\n\n${unresolved.map((u) => `- \`${u.specifier}\` em \`${u.from}\`${u.reason ? `: ${u.reason}` : ""}`).join("\n")}`]
+			? [`### Unresolved imports\n\n${unresolved.map((u) => `- \`${u.specifier}\` in \`${u.from}\`${u.reason ? `: ${u.reason}` : ""}`).join("\n")}`]
 			: []),
 		...brokenFiles.map((f) => `### \`${f.path}\`\n\n${f.errors!.map(codeBlock).join("\n")}`),
 		...failedTests.map((t) => `### ${t.name}\n\`${t.file}\`\n\n${(t.errors ?? []).map(codeBlock).join("\n")}`),
 	];
 	const failures = failedTests.length + brokenFiles.length;
-	let summary = `${failedTests.length} falharam, ${passed} passaram${skipped ? `, ${skipped} pulados` : ""} em ${fileCount}.\n\n${fileTable(report)}\n\n## Falhas\n\n${sections.join("\n\n")}`;
-	if (summary.length > MAX_SUMMARY) summary = `${summary.slice(0, MAX_SUMMARY)}\n\n…(cortado)`;
+	let summary = `${failedTests.length} failed, ${passed} passed${skipped ? `, ${skipped} skipped` : ""} in ${fileCount}.\n\n${fileTable(report)}\n\n## Failures\n\n${sections.join("\n\n")}`;
+	if (summary.length > MAX_SUMMARY) summary = `${summary.slice(0, MAX_SUMMARY)}\n\n…(truncated)`;
 	return {
 		conclusion: "failure",
-		title: `${failures} falha${failures === 1 ? "" : "s"} em ${tests.length} teste${tests.length === 1 ? "" : "s"}`,
+		title: `${failures} failure${failures === 1 ? "" : "s"} in ${tests.length} test${tests.length === 1 ? "" : "s"}`,
 		summary,
 	};
 }
@@ -86,7 +86,7 @@ function fileTable(report: TestReport): string {
 		const icon = f.errors?.length || f.tests.some((t) => t.state === "fail") ? "❌" : "✅";
 		return `| ${icon} | \`${f.path}\` | ${ok}/${f.tests.length} |`;
 	});
-	return ["| | Arquivo | Passaram |", "| --- | --- | --- |", ...rows].join("\n");
+	return ["| | File | Passed |", "| --- | --- | --- |", ...rows].join("\n");
 }
 
 const codeBlock = (text: string) => `\`\`\`\n${text.replaceAll("```", "ʼʼʼ")}\n\`\`\``;

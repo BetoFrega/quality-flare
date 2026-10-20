@@ -41,7 +41,7 @@ describe("quality-flare.json tests config", () => {
 	});
 
 	it("says what is wrong with an invalid file", () => {
-		expect(() => readTestConfig("{")).toThrow("quality-flare.json não é um JSON válido");
-		expect(() => readTestConfig(JSON.stringify({ tests: { include: "src" } }))).toThrow('"tests.include" deve ser uma lista de textos');
+		expect(() => readTestConfig("{")).toThrow("quality-flare.json is not valid JSON");
+		expect(() => readTestConfig(JSON.stringify({ tests: { include: "src" } }))).toThrow('"tests.include" must be a list of strings');
 	});
 });

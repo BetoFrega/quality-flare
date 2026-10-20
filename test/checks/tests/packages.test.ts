@@ -117,7 +117,7 @@ describe("buildModules with a package that fails to download", () => {
 			fetchPackage: () => Promise.reject(new Error("Network connection lost.")),
 		});
 		expect(unresolved).toEqual([
-			{ specifier: "next/server", from: "test/a.test.ts", reason: "não foi possível baixar next@16.0.0 do npm (Network connection lost.)" },
+			{ specifier: "next/server", from: "test/a.test.ts", reason: "could not download next@16.0.0 from npm (Network connection lost.)" },
 		]);
 	});
 });

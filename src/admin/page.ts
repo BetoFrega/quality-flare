@@ -24,10 +24,10 @@ export type RepoSort = "name" | "name-desc" | "enabled" | "checks";
 const REPO_STATUSES: RepoStatus[] = ["enabled", "disabled"];
 const REPO_SORTS: RepoSort[] = ["name", "name-desc", "enabled", "checks"];
 const SORT_LABEL: Record<RepoSort, string> = {
-	name: "Nome (A–Z)",
-	"name-desc": "Nome (Z–A)",
-	enabled: "Ativos primeiro",
-	checks: "Mais checks ativos",
+	name: "Name (A–Z)",
+	"name-desc": "Name (Z–A)",
+	enabled: "Enabled first",
+	checks: "Most checks enabled",
 };
 
 export interface RepoQuery {
@@ -77,7 +77,7 @@ const INSTALLATIONS_URL = "https://github.com/settings/installations";
 
 /** Why the Tests checks are missing, on the admin and /setup. */
 export const TESTS_OFF_NOTE =
-	'Os checks Tests e Container tests estão desligados: a conta Cloudflare não tem o Workers Paid, que eles exigem. Depois de assinar o <a href="https://dash.cloudflare.com/?to=/:account/workers/plans">Workers Paid</a>, rode o build de novo (Deployments → Retry build) para ligá-los.';
+	'The Tests and Container tests checks are off: the Cloudflare account does not have Workers Paid, which they need. After you subscribe to <a href="https://dash.cloudflare.com/?to=/:account/workers/plans">Workers Paid</a>, run the build again (Deployments → Retry build) to turn them on.';
 
 export function renderAdminPage({ email, checks, rows, open, changed, query = {}, installUrl = INSTALLATIONS_URL, testsOff = false }: AdminPageData): string {
 	const shown = filterRows(rows, checks, query);
@@ -86,28 +86,28 @@ export function renderAdminPage({ email, checks, rows, open, changed, query = {}
 	const list = shown.length
 		? `<ul class="repos">${shown.map(({ repo, settings }) => renderRepo(repo, settings, checks, repo.full_name === open, back, changed)).join("")}</ul>`
 		: rows.length
-			? `<p class="empty">Nenhum repositório com esses filtros. <a href="/admin">Limpar filtros</a></p>`
-			: `<p class="empty">A App ainda não está instalada em nenhum repositório. <a href="${esc(installUrl)}">Instalar</a></p>`;
+			? `<p class="empty">No repositories match these filters. <a href="/admin">Clear filters</a></p>`
+			: `<p class="empty">The App is not installed on any repository yet. <a href="${esc(installUrl)}">Install</a></p>`;
 	const filters = rows.length
 		? `<form class="filters" method="get" action="/admin">
-				<label>Nome <input type="search" name="q" value="${esc(query.q ?? "")}" placeholder="owner/repo"></label>
-				${select("status", "Estado", query.status ?? "", [["", "Todos"], ["enabled", "Ativos"], ["disabled", "Desativados"]])}
-				${select("sort", "Ordenar", query.sort ?? "name", REPO_SORTS.map((s): [string, string] => [s, SORT_LABEL[s]]))}
-				<button type="submit" class="secondary">Aplicar</button>
-				${back ? '<a href="/admin">Limpar</a>' : ""}
-				${filtered ? `<span class="count">${shown.length} de ${rows.length}</span>` : ""}
+				<label>Name <input type="search" name="q" value="${esc(query.q ?? "")}" placeholder="owner/repo"></label>
+				${select("status", "Status", query.status ?? "", [["", "All"], ["enabled", "Enabled"], ["disabled", "Disabled"]])}
+				${select("sort", "Sort", query.sort ?? "name", REPO_SORTS.map((s): [string, string] => [s, SORT_LABEL[s]]))}
+				<button type="submit" class="secondary">Apply</button>
+				${back ? '<a href="/admin">Clear</a>' : ""}
+				${filtered ? `<span class="count">${shown.length} of ${rows.length}</span>` : ""}
 			</form>`
 		: "";
 	return layout(
-		"Repositórios",
+		"Repositories",
 		`${renderHeader(email, "repos")}
 		<main>
-			<h2>Repositórios</h2>
+			<h2>Repositories</h2>
 			${testsOff ? `<p class="hint">${TESTS_OFF_NOTE}</p>` : ""}
-			<p class="hint">Repositórios e checks começam desativados. Ative o repositório e depois os checks que ele deve rodar. Um check desativado num repositório ativo aparece na PR como <em>neutral</em>, para não travar branches que o exigem.</p>
+			<p class="hint">Repositories and checks start disabled. Enable the repository, then the checks it should run. A disabled check on an enabled repository shows on the PR as <em>neutral</em>, so it does not block branches that require it.</p>
 			${filters}
 			${list}
-			<p class="hint"><a href="${esc(installUrl)}">Conectar outros repositórios</a></p>
+			<p class="hint"><a href="${esc(installUrl)}">Connect more repositories</a></p>
 		</main>`,
 	);
 }
@@ -123,15 +123,15 @@ export function renderHeader(email: string | undefined, current?: "repos" | "run
 	const external = (href: string, text: string) => `<a href="${href}">${text}<span aria-hidden="true"> ↗</span></a>`;
 	return `<header>
 			<h1>quality-flare</h1>
-			<nav class="sections" aria-label="Seções">${link("/admin", "repos", "Repositórios")}${link("/admin/runs", "runs", "Execuções")}${link("/admin/costs", "costs", "Custos")}</nav>
-			<nav class="external" aria-label="Links externos">${external(DOCS_PATH, "Docs")}${external(OFFICIAL_URL, "Site")}</nav>
+			<nav class="sections" aria-label="Sections">${link("/admin", "repos", "Repositories")}${link("/admin/runs", "runs", "Test runs")}${link("/admin/costs", "costs", "Costs")}</nav>
+			<nav class="external" aria-label="External links">${external(DOCS_PATH, "Docs")}${external(OFFICIAL_URL, "Site")}</nav>
 			${email ? `<span class="who" title="${esc(email)}">${esc(email)}</span>` : ""}
 		</header>`;
 }
 
 /**
  * The id of a control on the admin page, which a change made through it redirects back to.
- * `control` is "repo", "check:<id>", "on-demand", or "checks" (the list, after "Ativar/Desativar todos").
+ * `control` is "repo", "check:<id>", "on-demand", or "checks" (the list, after "Enable/Disable all").
  */
 export function controlId(repo: string, control: string): string {
 	return `${repo}:${control}`;
@@ -139,7 +139,7 @@ export function controlId(repo: string, control: string): string {
 
 /** Turning a whole repository off makes the Worker ignore its webhooks, so no check run is created at all. */
 const REPO_OFF_WARNING =
-	"Desativar o repositório interrompe todos os check runs dele: um check exigido pela proteção de branch fica pendente e trava o merge das PRs. Para pausar sem travar, use “Desativar todos”: os checks passam a responder neutral.";
+	"Disabling the repository stops all of its check runs: a check that branch protection requires stays pending and blocks merging PRs. To pause without blocking, use “Disable all”: the checks then answer neutral.";
 
 /**
  * `back` is the list's filter and sort, so a change made through a form returns to the same view.
@@ -150,38 +150,38 @@ function renderRepo(repo: InstalledRepo, settings: RepoSettings, checks: Check[]
 	const id = (control: string) => controlId(repo.full_name, control);
 	const active = checks.filter((c) => settings.enabledChecks.has(c.id)).length;
 	const count = settings.enabled
-		? `${active} de ${checks.length} ${checks.length === 1 ? "check ativo" : "checks ativos"}`
-		: "nenhum check roda: repositório desativado";
+		? `${active} of ${checks.length} ${checks.length === 1 ? "check enabled" : "checks enabled"}`
+		: "no checks run: repository disabled";
 	const warningId = id("warning");
 	const listId = id("checks");
 	const items = checks
 		.map(
 			(check) => `<li>
 				<span>${esc(check.name)}</span>
-				${toggle("/admin/checks", fields({ check: check.id }), settings.enabledChecks.has(check.id), `${check.name} em ${repo.full_name}`, id(`check:${check.id}`), changed)}
+				${toggle("/admin/checks", fields({ check: check.id }), settings.enabledChecks.has(check.id), `${check.name} on ${repo.full_name}`, id(`check:${check.id}`), changed)}
 			</li>`,
 		)
 		.join("");
 	const listSaved = changed === listId
-		? `<p class="saved" role="status" id="${esc(listId)}-status">Salvo: ${active} de ${checks.length} checks ativos.</p>`
+		? `<p class="saved" role="status" id="${esc(listId)}-status">Saved: ${active} of ${checks.length} checks enabled.</p>`
 		: "";
 	return `<li class="repo${settings.enabled ? "" : " off"}" id="${esc(repo.full_name)}">
 		<details${open ? " open" : ""}>
 			<summary>
-				<span class="name">${esc(repo.full_name)}</span>${repo.private ? ' <span class="badge">privado</span>' : ""}
+				<span class="name">${esc(repo.full_name)}</span>${repo.private ? ' <span class="badge">private</span>' : ""}
 				<span class="count">${count}</span>
 			</summary>
 			<div class="body">
 				${settings.enabled
 					? `<p class="note warn" id="${esc(warningId)}">${REPO_OFF_WARNING}</p>`
-					: '<p class="note">Os checks só rodam depois que o repositório é ativado.</p>'}
+					: '<p class="note">Checks only run after the repository is enabled.</p>'}
 				<div class="bulk">
-					${button("/admin/checks/all", fields({ enabled: "true" }), "Ativar todos", `Ativar todos os checks em ${repo.full_name}`)}
-					${button("/admin/checks/all", fields({ enabled: "false" }), "Desativar todos", `Desativar todos os checks em ${repo.full_name}`)}
+					${button("/admin/checks/all", fields({ enabled: "true" }), "Enable all", `Enable all checks on ${repo.full_name}`)}
+					${button("/admin/checks/all", fields({ enabled: "false" }), "Disable all", `Disable all checks on ${repo.full_name}`)}
 					<span class="links">
-						<a href="/admin/runs?repo=${esc(encodeURIComponent(repo.full_name))}" aria-label="${esc(`Execuções de ${repo.full_name}`)}">Execuções</a>
-						<a href="/admin/costs?repo=${esc(encodeURIComponent(repo.full_name))}" aria-label="${esc(`Custos de ${repo.full_name}`)}">Custos</a>
-						<a href="${esc(repo.html_url)}" aria-label="${esc(`Abrir ${repo.full_name} no GitHub`)}">Abrir no GitHub</a>
+						<a href="/admin/runs?repo=${esc(encodeURIComponent(repo.full_name))}" aria-label="${esc(`Test runs of ${repo.full_name}`)}">Test runs</a>
+						<a href="/admin/costs?repo=${esc(encodeURIComponent(repo.full_name))}" aria-label="${esc(`Costs of ${repo.full_name}`)}">Costs</a>
+						<a href="${esc(repo.html_url)}" aria-label="${esc(`Open ${repo.full_name} on GitHub`)}">Open on GitHub</a>
 					</span>
 				</div>
 				${listSaved}
@@ -190,7 +190,7 @@ function renderRepo(repo: InstalledRepo, settings: RepoSettings, checks: Check[]
 			</div>
 		</details>
 		<div class="repo-toggle">
-			${toggle("/admin/repos", fields({}), settings.enabled, `Checks do quality-flare em ${repo.full_name}`, id("repo"), changed, settings.enabled ? { title: REPO_OFF_WARNING, describedBy: warningId } : {})}
+			${toggle("/admin/repos", fields({}), settings.enabled, `Enable checks on ${repo.full_name}`, id("repo"), changed, settings.enabled ? { title: REPO_OFF_WARNING, describedBy: warningId } : {})}
 		</div>
 	</li>`;
 }
@@ -201,10 +201,10 @@ function onDemandToggle(on: boolean, fields: Record<string, string>, checks: Che
 	if (!names.length) return "";
 	return `<div class="on-demand">
 		<div class="row">
-			<span>Testes sob demanda</span>
-			${toggle("/admin/on-demand", fields, on, `Testes sob demanda em ${repo}`, id, changed)}
+			<span>On-demand tests</span>
+			${toggle("/admin/on-demand", fields, on, `On-demand tests on ${repo}`, id, changed)}
 		</div>
-		<p class="note">Ligado, ${esc(names.join(" e "))} ficam em espera em cada push até alguém do repositório comentar <code>${esc(RUN_COMMAND)}</code> na PR, que roda o commit atual. PRs de bots, como o Dependabot, rodam direto.</p>
+		<p class="note">When on, ${esc(names.join(" and "))} wait on each push until someone from the repository comments <code>${esc(RUN_COMMAND)}</code> on the PR, which runs the current commit. PRs from bots, such as Dependabot, run right away.</p>
 	</div>`;
 }
 
@@ -227,9 +227,9 @@ function toggle(
 	return `<form method="post" action="${action}">
 		${hidden({ ...fields, enabled: on ? "false" : "true" })}
 		<button type="submit" class="switch" id="${esc(id)}" role="switch" aria-checked="${on}" aria-label="${esc(label)}"${described ? ` aria-describedby="${esc(described)}"` : ""}${title ? ` title="${esc(title)}"` : ""}>
-			<span class="track"><span class="thumb"></span></span><span class="label">${on ? "Ativo" : "Desativado"}</span>
+			<span class="track"><span class="thumb"></span></span><span class="label">${on ? "Enabled" : "Disabled"}</span>
 		</button>
-		${saved ? `<span class="saved" role="status" id="${esc(statusId)}">Salvo</span>` : ""}
+		${saved ? `<span class="saved" role="status" id="${esc(statusId)}">Saved</span>` : ""}
 	</form>`;
 }
 
@@ -258,13 +258,13 @@ export function select(name: string, label: string, value: string, options: [str
 export function renderMessage(title: string, detail: string, shell?: { email?: string; back?: boolean }): string {
 	const text = `<h2>${esc(title)}</h2>${detail ? `<p>${esc(detail)}</p>` : ""}`;
 	if (!shell) return layout(title, `<main>${text}</main>`);
-	const back = shell.back ? '<p><a href="/admin">Voltar para Repositórios</a></p>' : "";
+	const back = shell.back ? '<p><a href="/admin">Back to Repositories</a></p>' : "";
 	return layout(title, `${renderHeader(shell.email)}<main>${text}${back}</main>`);
 }
 
 export function layout(title: string, body: string, head = ""): string {
 	return `<!doctype html>
-<html lang="pt-BR">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

@@ -45,7 +45,7 @@ export async function handleAdmin(
 		metrics = (e) => d1MetricsStore(e.RUNS),
 		account = async (e) => {
 			// Bound only when the deploy had SECRETS_STORE_ID and CLOUDFLARE_ACCOUNT_ID (cloudflare.config.ts).
-			if (!e.ANALYTICS_TOKEN) throw new Error("Sem token de analytics: defina SECRETS_STORE_ID e CLOUDFLARE_ACCOUNT_ID no build (veja o README).");
+			if (!e.ANALYTICS_TOKEN) throw new Error("No analytics token: set SECRETS_STORE_ID and CLOUDFLARE_ACCOUNT_ID in the build (see the README).");
 			return accountUsage({ token: await e.ANALYTICS_TOKEN.get(), account: e.CLOUDFLARE_ACCOUNT_ID, script: "quality-flare" });
 		},
 		installUrl = (e) => GitHubClient.installUrl({ appId: e.GITHUB_APP_ID, privateKey: e.GITHUB_PRIVATE_KEY }),
@@ -53,18 +53,18 @@ export async function handleAdmin(
 	}: AdminDeps = {},
 ): Promise<Response> {
 	if (!env.ACCESS_AUD) {
-		return html(renderMessage("Admin fechado", `O Cloudflare Access ainda não protege o admin. Veja ${SETUP_PATH} para configurar.`), 403);
+		return html(renderMessage("Admin closed", `Cloudflare Access does not protect the admin yet. See ${SETUP_PATH} to set it up.`), 403);
 	}
 	if (!access || access.aud !== env.ACCESS_AUD) {
-		return html(renderMessage("Acesso negado", "Entre pelo Cloudflare Access para usar o admin."), 403);
+		return html(renderMessage("Access denied", "Sign in through Cloudflare Access to use the admin."), 403);
 	}
 	const url = new URL(request.url);
 	const path = url.pathname.replace(/\/+$/, "") || "/";
 	// Past this point the person is signed in: messages keep the admin's header and navigation.
 	const message = async (status: number, title: string, detail = "", back = false) =>
 		html(renderMessage(title, detail, { email: (await access.getIdentity())?.email, back }), status);
-	const notFound = (title = "Página não encontrada") => message(404, title, "", true);
-	const invalid = () => message(400, "Pedido inválido", "Repositório ou check desconhecido.", true);
+	const notFound = (title = "Page not found") => message(404, title, "", true);
+	const invalid = () => message(400, "Invalid request", "Unknown repository or check.", true);
 
 	if (request.method === "GET" && path === ADMIN_PATH) {
 		const [repos, install] = await Promise.all([
@@ -86,9 +86,9 @@ export async function handleAdmin(
 	}
 
 	if (request.method === "GET" && path === `${ADMIN_PATH}/live`) {
-		if (request.headers.get("Upgrade") !== "websocket") return message(426, "Esperava um WebSocket");
+		if (request.headers.get("Upgrade") !== "websocket") return message(426, "Expected a WebSocket");
 		// The browser sends Origin on WebSocket handshakes; refuse other sites.
-		if (request.headers.get("Origin") !== url.origin) return message(403, "Origem inválida");
+		if (request.headers.get("Origin") !== url.origin) return message(403, "Invalid origin");
 		return hub(env.LIVE).fetch(request);
 	}
 
@@ -110,7 +110,7 @@ export async function handleAdmin(
 	const runMatch = request.method === "GET" ? new RegExp(`^${ADMIN_PATH}/runs/(\\d+)$`).exec(path) : null;
 	if (runMatch) {
 		const run = await runs(env).get(Number(runMatch[1]));
-		if (!run) return notFound("Execução não encontrada");
+		if (!run) return notFound("Run not found");
 		const identity = await access.getIdentity();
 		const store = metrics(env);
 		const [usage, attempts, container] = await Promise.all([
@@ -148,7 +148,7 @@ export async function handleAdmin(
 
 	if (request.method === "POST" && path.startsWith(`${ADMIN_PATH}/`)) {
 		// Forms post from the admin page itself; anything else is a cross-site request.
-		if (request.headers.get("Origin") !== url.origin) return message(403, "Origem inválida");
+		if (request.headers.get("Origin") !== url.origin) return message(403, "Invalid origin");
 		const form = await request.formData();
 		const enabled = form.get("enabled") === "true";
 		const repo = (await listRepos(env)).find((r) => r.full_name === form.get("repo"))?.full_name;

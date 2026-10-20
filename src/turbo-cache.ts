@@ -52,7 +52,7 @@ export async function handleTurboCache(request: Request, bucket: R2Bucket, secre
 	const path = new URL(request.url).pathname.slice(TURBO_PATH.length);
 	const auth = request.headers.get("Authorization") ?? "";
 	const access = auth.startsWith("Bearer ") ? await tokenAccess(secret, auth.slice("Bearer ".length)).catch(() => undefined) : undefined;
-	if (!access) return Response.json({ error: { code: "forbidden", message: "Token inválido" } }, { status: 403 });
+	if (!access) return Response.json({ error: { code: "forbidden", message: "Invalid token" } }, { status: 403 });
 	const { repo } = access;
 
 	if (path === "/v8/artifacts/status") return Response.json({ status: "enabled" });
@@ -69,7 +69,7 @@ export async function handleTurboCache(request: Request, bucket: R2Bucket, secre
 	switch (request.method) {
 		case "PUT": {
 			if (access.kind === "read" || (hash.startsWith(FILES_PREFIX) && access.kind !== "files")) {
-				return Response.json({ error: { code: "forbidden", message: "Token sem escrita nesta chave" } }, { status: 403 });
+				return Response.json({ error: { code: "forbidden", message: "Token cannot write this key" } }, { status: 403 });
 			}
 			if (!request.body) return new Response("Missing body", { status: 400 });
 			const customMetadata: Record<string, string> = { duration: request.headers.get("x-artifact-duration") ?? "0" };

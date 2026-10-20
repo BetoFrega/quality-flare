@@ -14,7 +14,7 @@ Each check has a stable `id` (for example `closes-issue`), which is what is save
 
 ## Runs
 
-`/admin/runs` lists the 50 most recent runs of the Tests and Container tests checks (the **Check** column tells them apart): running, passed, failed, neutral, or interrupted (still "running" after 75 minutes). A running run says for how long ("Rodando há 48 min"); past the run deadline (60 minutes) it is flagged as probably stuck, since the cron should already have failed it. Pages follow along live: each test appears as soon as it ends, with the count ("12 de 40 · 1 falhou"); when a run starts or ends, the page reloads and keeps its scroll position.
+`/admin/runs` lists the 50 most recent runs of the Tests and Container tests checks (the **Check** column tells them apart): running, passed, failed, neutral, or interrupted (still "running" after 75 minutes). A running run says for how long ("Running for 48 min"); past the run deadline (60 minutes) it is flagged as probably stuck, since the cron should already have failed it. Pages follow along live: each test appears as soon as it ends, with the count ("12 of 40 tests · 1 failed"); when a run starts or ends, the page reloads and keeps its scroll position.
 
 Each run opens with a link to its PR (or commit, for a full run), then its failures (file › test, with the message), then every file, the failing ones open, and finally its usage and estimated cost: the Dynamic Workers it used and their crashes, or the container's.
 

@@ -1,45 +1,44 @@
 import { dayCost, monthOverage, type AccountUsage } from "../account-usage.ts";
-import { CONTAINER_PRICES, INSTANCE } from "../checks/tests/container.ts";
+import { CONTAINER_PRICES } from "../checks/tests/container.ts";
+import { DEFAULT_INSTANCE } from "../checks/tests/instances.ts";
 import { boxResources, CONTAINER_INCLUDED, containerCost, containerOverage, type ContainerResources } from "../container-costs.ts";
 import { cost, INCLUDED, LOST_AFTER_MS, monthCost, PRICES, type AttemptRow, type ContainerRow, type ContainerUsage, type ShardOutcome, type Usage, type UsageRow } from "../metrics.ts";
 import { esc, layout, renderHeader, select } from "./page.ts";
 
-/** Usage and estimated cost: the run pages' "Uso" section and the /admin/costs page. */
+/** Usage and estimated cost: the run pages' "Usage and cost" section and the /admin/costs page. */
 
 export function money(usd: number): string {
-	const digits = usd < 0.01 ? 4 : 2;
-	return usd === 0 ? "US$ 0" : `US$ ${usd.toLocaleString("pt-BR", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+	return usd === 0 ? "$0" : usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`;
 }
 
 export function cpu(ms: number): string {
-	const one = (value: number) => value.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-	return ms < 1000 ? `${ms} ms` : ms < 60_000 ? `${one(ms / 1000)} s` : ms < 3_600_000 ? `${one(ms / 60_000)} min` : `${one(ms / 3_600_000)} h`;
+	return ms < 1000 ? `${ms} ms` : ms < 60_000 ? `${(ms / 1000).toFixed(1)} s` : ms < 3_600_000 ? `${(ms / 60_000).toFixed(1)} min` : `${(ms / 3_600_000).toFixed(1)} h`;
 }
 
-const n = (value: number) => value.toLocaleString("pt-BR");
+const n = (value: number) => value.toLocaleString("en-US");
 
 /** A container's estimated gross cost: memory and disk for the time it was on, CPU as used. */
-export const boxesCost = (c: ContainerUsage) => containerCost(boxResources(c.wallMs, c.cpuUs));
+export const boxesCost = (c: ContainerUsage) => containerCost(boxResources(c));
 
 /** Cells for a run in the runs list: Dynamic Workers and estimated cost, Dynamic Workers and container together. */
 export function usageCells(u: Usage | undefined, box?: ContainerUsage): string {
 	if (!u && !box) return '<td class="num">—</td><td class="num">—</td>';
-	const trouble = u?.crashes ? ` <span class="failure" title="Dynamic Workers que caíram">${u.crashes}✗</span>` : "";
-	const dw = u ? `${n(u.dynamicWorkers)}${trouble}` : '<span title="Rodou num container">—</span>';
+	const trouble = u?.crashes ? ` <span class="failure" title="Dynamic Workers that crashed">${u.crashes}✗</span>` : "";
+	const dw = u ? `${n(u.dynamicWorkers)}${trouble}` : '<span title="Ran in a container">—</span>';
 	return `<td class="num">${dw}</td><td class="num">${money((u ? cost(u) : 0) + (box ? boxesCost(box) : 0))}</td>`;
 }
 
 const OUTCOME: Record<ShardOutcome, string> = {
-	ran: "Rodou",
-	rechecked: "Rodou; falhas de novo sozinhas",
-	split: "Dividido (queda antes)",
-	crashed: "Dynamic Worker caiu; dividido",
-	"too-large": "Código grande demais; dividido",
-	expired: "Passou do prazo",
-	"gave-up": "Desistiu após quedas",
-	failed: "Não rodou (erro)",
-	skipped: "Ignorado (execução encerrada)",
-	error: "Erro; vai de novo",
+	ran: "Ran",
+	rechecked: "Ran; failures rerun alone",
+	split: "Split (after a crash)",
+	crashed: "Dynamic Worker crashed; split",
+	"too-large": "Code too large; split",
+	expired: "Past the deadline",
+	"gave-up": "Gave up after crashes",
+	failed: "Did not run (error)",
+	skipped: "Skipped (run ended)",
+	error: "Error; will retry",
 };
 
 /** A label, its value and, optionally, what the label means. */
@@ -51,24 +50,24 @@ function statList(items: Stat[]): string {
 
 /** What the counts with less obvious names mean, for their labels' titles. */
 const MEANING = {
-	attempts: "Cada grupo de arquivos de teste que a fila entregou a um Dynamic Worker; um lote repetido conta de novo.",
-	retries: "Lotes que a fila entregou de novo depois de um erro.",
-	crashes: "Em geral por falta de memória; o lote é dividido e roda de novo.",
-	splits: "Lotes partidos em lotes menores depois de uma queda.",
+	attempts: "Each group of test files the queue delivered to a Dynamic Worker; a retried batch counts again.",
+	retries: "Batches the queue delivered again after an error.",
+	crashes: "Usually out of memory; the batch is split and runs again.",
+	splits: "Batches broken into smaller ones after a crash.",
 };
 
 /** The numbers that drive the cost first; the ones that explain them after. */
 const mainStats = (u: Usage): Stat[] => [
-	["Custo estimado", money(cost(u))],
+	["Estimated cost", money(cost(u))],
 	["Dynamic Workers", n(u.dynamicWorkers)],
-	["CPU dos Dynamic Workers", cpu(u.cpuMs)],
+	["Dynamic Workers CPU", cpu(u.cpuMs)],
 ];
 const detailStats = (u: Usage): Stat[] => [
-	["Lotes executados", n(u.attempts), MEANING.attempts],
-	["Tempo somado dos lotes", cpu(u.wallMs)],
-	["Lotes repetidos", n(u.retries), MEANING.retries],
-	["Dynamic Workers que caíram", n(u.crashes), MEANING.crashes],
-	["Lotes divididos", n(u.splits), MEANING.splits],
+	["Batches run", n(u.attempts), MEANING.attempts],
+	["Total batch time", cpu(u.wallMs)],
+	["Retried batches", n(u.retries), MEANING.retries],
+	["Crashed Dynamic Workers", n(u.crashes), MEANING.crashes],
+	["Split batches", n(u.splits), MEANING.splits],
 ];
 
 /** The run page's usage section: totals and every shard attempt. In a run that is over, an attempt that never ended crashed. */
@@ -77,7 +76,7 @@ export function renderRunUsage(u: Usage | undefined, attempts: AttemptRow[], now
 	const rows = attempts
 		.map((a) => {
 			const lost = !a.outcome && (over || (a.startedAt ?? now) < now - LOST_AFTER_MS);
-			const outcome = a.outcome ? OUTCOME[a.outcome] : lost ? "Caiu (Worker da fila sem memória?)" : "Rodando";
+			const outcome = a.outcome ? OUTCOME[a.outcome] : lost ? "Crashed (consumer out of memory?)" : "Running";
 			const dw = a.dwOutcome && a.dwOutcome !== "ok" ? ` <span class="failure">${esc(a.dwOutcome)}</span>` : "";
 			return `<tr>
 				<td class="mono">${esc(a.shard)}${a.attempt > 1 ? ` #${a.attempt}` : ""}</td>
@@ -90,15 +89,14 @@ export function renderRunUsage(u: Usage | undefined, attempts: AttemptRow[], now
 		})
 		.join("");
 	return `<section class="usage">
-		<h3>Uso e custo</h3>
+		<h3>Usage and cost</h3>
 		${statList([...mainStats(u), ...detailStats(u)])}
-		<p class="hint">Estimativa sem a franquia mensal. Não inclui o CPU do Worker da fila, que monta o código dos lotes.</p>
-		<details class="plain"><summary>${n(attempts.length)} entregas de lotes</summary>
-			<div class="scroll"><table><thead><tr><th>Lote</th><th class="num">Arquivos</th><th>Resultado</th><th class="num">Código</th><th class="num">Tempo</th><th class="num">CPU do DW</th></tr></thead><tbody>${rows}</tbody></table></div>
+		<p class="hint">Estimate without the monthly allowance. It does not include the CPU of the queue consumer, which builds the batches' code.</p>
+		<details class="plain"><summary>${n(attempts.length)} batch deliveries</summary>
+			<div class="scroll"><table><thead><tr><th>Batch</th><th class="num">Files</th><th>Result</th><th class="num">Code</th><th class="num">Time</th><th class="num">DW CPU</th></tr></thead><tbody>${rows}</tbody></table></div>
 		</details>
 	</section>`;
 }
-
 
 export interface CostsPageData {
 	days: UsageRow[];
@@ -113,10 +111,10 @@ export interface CostsPageData {
 	email?: string;
 }
 
-const hours = (seconds: number) => (seconds / 3600).toLocaleString("pt-BR", { maximumFractionDigits: 1 });
+const hours = (seconds: number) => (seconds / 3600).toLocaleString("en-US", { maximumFractionDigits: 1 });
 
-/** A unit price, as small as it is: "US$ 0,0000025". */
-const price = (usd: number) => `US$ ${usd.toLocaleString("pt-BR", { maximumSignificantDigits: 3 })}`;
+/** A unit price, as small as it is: "$0.0000025". */
+const price = (usd: number) => `$${usd.toLocaleString("en-US", { maximumSignificantDigits: 3 })}`;
 
 const BILLING = '<a href="https://dash.cloudflare.com/?to=/:account/billing">Billing &gt; Billable Usage</a>';
 
@@ -131,16 +129,16 @@ interface Allowance {
 /** Container usage against the monthly allowance, as Cloudflare bills it. */
 function containerAllowances(r: ContainerResources): Allowance[] {
 	return [
-		{ label: "Memória dos containers", used: r.memoryGiBs, included: CONTAINER_INCLUDED.memoryGiBs, format: (v) => `${hours(v)} GiB-h` },
-		{ label: "CPU dos containers", used: r.vcpuS, included: CONTAINER_INCLUDED.vcpuS, format: (v) => `${n(Math.round(v / 60))} vCPU-min` },
-		{ label: "Disco dos containers", used: r.diskGBs, included: CONTAINER_INCLUDED.diskGBs, format: (v) => `${hours(v)} GB-h` },
+		{ label: "Container memory", used: r.memoryGiBs, included: CONTAINER_INCLUDED.memoryGiBs, format: (v) => `${hours(v)} GiB-h` },
+		{ label: "Container CPU", used: r.vcpuS, included: CONTAINER_INCLUDED.vcpuS, format: (v) => `${n(Math.round(v / 60))} vCPU-min` },
+		{ label: "Container disk", used: r.diskGBs, included: CONTAINER_INCLUDED.diskGBs, format: (v) => `${hours(v)} GB-h` },
 	];
 }
 
 function accountAllowances(month: AccountUsage["month"]): Allowance[] {
 	return [
 		{ label: "Dynamic Workers", used: month.dynamicWorkers, included: INCLUDED.dynamicWorkers, format: n },
-		{ label: "CPU da conta", used: month.accountCpuMs, included: INCLUDED.cpuMs, format: cpu },
+		{ label: "Account CPU", used: month.accountCpuMs, included: INCLUDED.cpuMs, format: cpu },
 		...containerAllowances(month.containers),
 	];
 }
@@ -152,11 +150,11 @@ function percent(a: Allowance): string {
 	return value > 0 && value < 1 ? "<1%" : `${n(Math.round(value))}%`;
 }
 
-/** Each allowance as "used de included", its share and a bar; the text carries everything the bar shows. */
+/** Each allowance as "used of included", its share and a bar; the text carries everything the bar shows. */
 function renderAllowances(items: Allowance[]): string {
 	return `<dl class="stats meters">${items
 		.map((a) => {
-			return `<div><dt>${esc(a.label)}</dt><dd>${esc(a.format(a.used))} de ${esc(a.format(a.included))} <span class="pct${share(a) > 1 ? " failure" : ""}">${esc(percent(a))}</span><meter min="0" max="${a.included}" value="${a.used}" high="${a.included * 0.8}" optimum="0" aria-hidden="true"></meter></dd></div>`;
+			return `<div><dt>${esc(a.label)}</dt><dd>${esc(a.format(a.used))} of ${esc(a.format(a.included))} <span class="pct${share(a) > 1 ? " failure" : ""}">${esc(percent(a))}</span><meter min="0" max="${a.included}" value="${a.used}" high="${a.included * 0.8}" optimum="0" aria-hidden="true"></meter></dd></div>`;
 		})
 		.join("")}</dl>`;
 }
@@ -164,32 +162,30 @@ function renderAllowances(items: Allowance[]): string {
 /** A collapsed note on where the numbers come from, kept out of the way of the numbers. */
 const how = (summary: string, text: string) => `<details class="plain"><summary>${summary}</summary><p class="hint">${text}</p></details>`;
 
-const containerRuns = (r: ContainerRow) => boxResources(r.wallMs, r.cpuUs);
-
 /**
  * The page's answer: is the month still inside the allowance? From what Cloudflare measured when
  * it could be read, otherwise from the estimates (which only see the tests, maybe of one repository).
  */
 function renderLead(account: AccountUsage | string | undefined, tests: UsageRow | undefined, boxes: ContainerRow | undefined, repo: string | undefined): string {
-	const verdict = (period: string, over: number) => `da franquia em ${esc(period)}: ${money(over)} a pagar até agora`;
+	const verdict = (period: string, over: number) => `the allowance in ${esc(period)}: ${money(over)} to pay so far`;
 	const box = (over: number, text: string, note: string) => `<div class="lead${over ? " over" : ""}"><p class="verdict">${text}</p><p class="hint">${note}</p></div>`;
 	if (account && typeof account !== "string") {
 		const over = monthOverage(account.month);
 		const closest = accountAllowances(account.month).reduce((a, b) => (share(b) > share(a) ? b : a));
 		return box(
 			over,
-			`${over ? "Acima" : "Dentro"} ${verdict(account.month.period, over)}`,
-			`Medido pelo Cloudflare na conta inteira. Maior uso: ${esc(closest.label)}, ${esc(percent(closest))} da franquia. Mês do calendário em UTC; o valor cobrado de verdade está em ${BILLING}.`,
+			`${over ? "Past" : "Within"} ${verdict(account.month.period, over)}`,
+			`Measured by Cloudflare on the whole account. Highest use: ${esc(closest.label)}, ${esc(percent(closest))} of the allowance. Calendar month in UTC; the real charge is in ${BILLING}.`,
 		);
 	}
-	const why = typeof account === "string" ? "O uso medido da conta não pôde ser lido" : "O uso medido da conta não está disponível";
+	const why = typeof account === "string" ? "The account's measured usage could not be read" : "The account's measured usage is not available";
 	const period = tests?.period ?? boxes?.period;
-	if (!period) return box(0, "Nenhum uso registrado neste mês", `${why}, e os testes não registraram uso.`);
-	const over = (tests ? monthCost(tests) : 0) + (boxes ? containerOverage(containerRuns(boxes)) : 0);
+	if (!period) return box(0, "No usage recorded this month", `${why}, and the tests recorded no usage.`);
+	const over = (tests ? monthCost(tests) : 0) + (boxes ? containerOverage(boxResources(boxes)) : 0);
 	return box(
 		over,
-		`Estimativa: ${over ? "acima" : "dentro"} ${verdict(period, over)}`,
-		`${why} (<a href="#conta">detalhes</a>). A estimativa só vê os testes${repo ? ` de ${esc(repo)}` : ""}; outros Workers da conta dividem a mesma franquia.`,
+		`Estimate: ${over ? "past" : "within"} ${verdict(period, over)}`,
+		`${why} (<a href="#account">details</a>). The estimate only sees the tests${repo ? ` of ${esc(repo)}` : ""}; other Workers on the account share the same allowance.`,
 	);
 }
 
@@ -197,7 +193,7 @@ function renderLead(account: AccountUsage | string | undefined, tests: UsageRow 
 function renderAccount(account: AccountUsage | string | undefined): string {
 	if (account === undefined) return "";
 	if (typeof account === "string")
-		return `<section id="conta"><h3>Uso medido da conta</h3><p class="hint failure">Não deu para ler o uso real da conta: ${esc(account)}</p></section>`;
+		return `<section id="account"><h3>Measured account usage</h3><p class="hint failure">Could not read the account's real usage: ${esc(account)}</p></section>`;
 	const { month, days } = account;
 	const rows = days
 		.map(
@@ -214,29 +210,29 @@ function renderAccount(account: AccountUsage | string | undefined): string {
 		)
 		.join("");
 	const more: Stat[] = [
-		["CPU do quality-flare", cpu(month.cpuMs), "O CPU deste Worker (webhook, fila e cron), já somado ao CPU da conta."],
-		["Invocações com erro", n(month.errors)],
-		["Containers após franquia", money(containerOverage(month.containers))],
+		["quality-flare CPU", cpu(month.cpuMs), "This Worker's CPU (webhook, queue and cron), already part of the account CPU."],
+		["Invocations with errors", n(month.errors)],
+		["Containers past the allowance", money(containerOverage(month.containers))],
 	];
-	return `<section id="conta">
-		<h3>Uso medido da conta, mês ${esc(month.period)}</h3>
+	return `<section id="account">
+		<h3>Measured account usage, month ${esc(month.period)}</h3>
 		${renderAllowances(accountAllowances(month))}
-		<details class="plain"><summary>Mais números do mês</summary>${statList(more)}</details>
+		<details class="plain"><summary>More numbers for the month</summary>${statList(more)}</details>
 		${
 			days.length
-				? `<details class="plain"><summary>Por dia (últimos 30 dias)</summary><div class="scroll"><table><thead><tr><th>Dia</th><th class="num">Dynamic Workers</th><th class="num">CPU do quality-flare</th><th class="num">Invocações</th><th class="num">Erros</th><th class="num">CPU da conta</th><th class="num">Containers</th><th class="num">Custo bruto</th></tr></thead><tbody>${rows}</tbody></table></div></details>`
+				? `<details class="plain"><summary>By day (last 30 days)</summary><div class="scroll"><table><thead><tr><th>Day</th><th class="num">Dynamic Workers</th><th class="num">quality-flare CPU</th><th class="num">Invocations</th><th class="num">Errors</th><th class="num">Account CPU</th><th class="num">Containers</th><th class="num">Gross cost</th></tr></thead><tbody>${rows}</tbody></table></div></details>`
 				: ""
 		}
 		${how(
-			"Como medimos",
-			`Números do Cloudflare Analytics para a conta inteira, sem separar por execução. A cobrança é o que passa da franquia do mês do calendário (UTC); o ciclo de cobrança pode ser outro. Containers contam memória e disco pelo tempo ligado e a CPU usada. Requisições e fila ficam dentro da franquia e não aparecem. O valor cobrado de verdade está em ${BILLING}.`,
+			"How we measure",
+			`Real numbers from Cloudflare Analytics for the whole account, not split by run. The charge is what goes past the calendar month's allowance (UTC); your billing cycle may differ. Containers add up memory and disk for the time they were on, plus the CPU used. Requests and queue operations stay within the allowance and are not shown. The real charge is in ${BILLING}.`,
 		)}
 	</section>`;
 }
 
 /** Estimates for the Tests check, from what each shard attempt recorded. */
 function renderTests(days: UsageRow[], months: UsageRow[]): string {
-	const head = `<tr><th>Período</th><th class="num">Execuções</th><th class="num" title="${MEANING.attempts}">Lotes</th><th class="num" title="${MEANING.retries}">Repetidos</th><th class="num" title="${MEANING.crashes}">Quedas</th><th class="num">Dynamic Workers</th><th class="num">CPU dos DW</th><th class="num">Custo</th>`;
+	const head = `<tr><th>Period</th><th class="num">Runs</th><th class="num" title="${MEANING.attempts}">Batches</th><th class="num" title="${MEANING.retries}">Retries</th><th class="num" title="${MEANING.crashes}">Crashes</th><th class="num">Dynamic Workers</th><th class="num">DW CPU</th><th class="num">Cost</th>`;
 	const row = (r: UsageRow, month: boolean) => `<tr>
 		<td class="mono">${esc(r.period)}</td>
 		<td class="num">${n(r.runs)}</td>
@@ -250,22 +246,22 @@ function renderTests(days: UsageRow[], months: UsageRow[]): string {
 	</tr>`;
 	const table = (rows: UsageRow[], month: boolean) =>
 		rows.length
-			? `<div class="scroll"><table><thead>${head}${month ? '<th class="num">Após franquia</th>' : ""}</tr></thead><tbody>${rows.map((r) => row(r, month)).join("")}</tbody></table></div>`
-			: '<p class="empty">Nenhum lote registrado nesse período.</p>';
+			? `<div class="scroll"><table><thead>${head}${month ? '<th class="num">Past allowance</th>' : ""}</tr></thead><tbody>${rows.map((r) => row(r, month)).join("")}</tbody></table></div>`
+			: '<p class="empty">No batches recorded in this period.</p>';
 	const current = months[0];
-	return `<section id="testes">
-		<h4>Tests em Dynamic Workers${current ? `, mês ${esc(current.period)}` : ""}</h4>
+	return `<section id="tests">
+		<h4>Tests on Dynamic Workers${current ? `, month ${esc(current.period)}` : ""}</h4>
 		${
 			current
-				? `${statList([...mainStats(current), ["Após franquia", money(monthCost(current))]])}
-					<details class="plain"><summary>Mais números do mês</summary>${statList([["Execuções", n(current.runs)], ...detailStats(current)])}</details>`
-				: '<p class="empty">Nenhum lote registrado.</p>'
+				? `${statList([...mainStats(current), ["Past allowance", money(monthCost(current))]])}
+					<details class="plain"><summary>More numbers for the month</summary>${statList([["Runs", n(current.runs)], ...detailStats(current)])}</details>`
+				: '<p class="empty">No batches recorded.</p>'
 		}
-		<details class="plain"><summary>Por dia (últimos 30 dias, UTC)</summary>${table(days, false)}</details>
-		<details class="plain"><summary>Por mês</summary>${table(months, true)}</details>
+		<details class="plain"><summary>By day (last 30 days, UTC)</summary>${table(days, false)}</details>
+		<details class="plain"><summary>By month</summary>${table(months, true)}</details>
 		${how(
-			"Como estimamos",
-			`Cada lote do check Tests (um grupo de arquivos de teste que a fila entrega a um Dynamic Worker) registra os Dynamic Workers que criou e o CPU que usaram. O custo soma Dynamic Workers (${price(PRICES.dynamicWorker)} cada), CPU (${price(PRICES.cpuMs * 1_000_000)} por milhão de ms), requisições e operações de fila, a preço de tabela. “Após franquia” desconta a franquia mensal (${n(INCLUDED.dynamicWorkers)} Dynamic Workers e ${n(INCLUDED.cpuMs / 1_000_000)} milhões de ms de CPU) como se só estes testes a usassem; na conta ela é dividida com os outros Workers. Não entra o CPU do Worker da fila, que monta o código dos lotes. Quando um Dynamic Worker cai, em geral por falta de memória, o lote é dividido em lotes menores e roda de novo.`,
+			"How we estimate",
+			`Each batch of the Tests check (a group of test files the queue delivers to a Dynamic Worker) records the Dynamic Workers it created and the CPU they used. The cost adds up Dynamic Workers (${price(PRICES.dynamicWorker)} each), CPU (${price(PRICES.cpuMs * 1_000_000)} per million ms), requests and queue operations, at list price. “Past allowance” takes off the monthly allowance (${n(INCLUDED.dynamicWorkers)} Dynamic Workers and ${n(INCLUDED.cpuMs / 1_000_000)} million CPU ms) as if only these tests used it; on the account it is shared with the other Workers. It does not include the CPU of the queue consumer, which builds the batches' code. When a Dynamic Worker crashes, usually out of memory, the batch is split into smaller ones and runs again.`,
 		)}
 	</section>`;
 }
@@ -276,57 +272,57 @@ function renderContainers(days: ContainerRow[], months: ContainerRow[]): string 
 		<td class="mono">${esc(r.period)}</td>
 		<td class="num">${n(r.runs)}</td>
 		<td class="num">${cpu(r.wallMs)}</td>
-		<td class="num${r.unmeasured ? " failure" : ""}" ${r.unmeasured ? `title="${r.unmeasured} sem CPU medida"` : ""}>${cpu(Math.round(r.cpuUs / 1000))}</td>
+		<td class="num${r.unmeasured ? " failure" : ""}" ${r.unmeasured ? `title="${r.unmeasured} without measured CPU"` : ""}>${cpu(Math.round(r.cpuUs / 1000))}</td>
 		<td class="num">${money(boxesCost(r))}</td>
-		${month ? `<td class="num">${money(containerOverage(containerRuns(r)))}</td>` : ""}
+		${month ? `<td class="num">${money(containerOverage(boxResources(r)))}</td>` : ""}
 	</tr>`;
 	const table = (rows: ContainerRow[], month: boolean) =>
 		rows.length
-			? `<div class="scroll"><table><thead><tr><th>Período</th><th class="num">Execuções</th><th class="num">Tempo ligado</th><th class="num">CPU usada</th><th class="num">Custo</th>${month ? '<th class="num">Após franquia</th>' : ""}</tr></thead><tbody>${rows.map((r) => row(r, month)).join("")}</tbody></table></div>`
-			: '<p class="empty">Nenhum container registrado nesse período.</p>';
+			? `<div class="scroll"><table><thead><tr><th>Period</th><th class="num">Runs</th><th class="num">Time on</th><th class="num">CPU used</th><th class="num">Cost</th>${month ? '<th class="num">Past allowance</th>' : ""}</tr></thead><tbody>${rows.map((r) => row(r, month)).join("")}</tbody></table></div>`
+			: '<p class="empty">No containers recorded in this period.</p>';
 	const current = months[0];
 	const stats: Stat[] = current
 		? [
-				["Custo estimado", money(boxesCost(current))],
-				["Após franquia", money(containerOverage(containerRuns(current)))],
-				["Execuções", n(current.runs)],
-				["Tempo ligado", cpu(current.wallMs)],
+				["Estimated cost", money(boxesCost(current))],
+				["Past allowance", money(containerOverage(boxResources(current)))],
+				["Runs", n(current.runs)],
+				["Time on", cpu(current.wallMs)],
 			]
 		: [];
 	return `<section id="containers">
-		<h4>Container tests${current ? `, mês ${esc(current.period)}` : ""}</h4>
-		${current ? `${statList(stats)}${renderAllowances(containerAllowances(containerRuns(current)))}` : '<p class="empty">Nenhum container registrado.</p>'}
-		<details class="plain"><summary>Por dia (últimos 30 dias, UTC)</summary>${table(days, false)}</details>
-		<details class="plain"><summary>Por mês</summary>${table(months, true)}</details>
+		<h4>Container tests${current ? `, month ${esc(current.period)}` : ""}</h4>
+		${current ? `${statList(stats)}${renderAllowances(containerAllowances(boxResources(current)))}` : '<p class="empty">No containers recorded.</p>'}
+		<details class="plain"><summary>By day (last 30 days, UTC)</summary>${table(days, false)}</details>
+		<details class="plain"><summary>By month</summary>${table(months, true)}</details>
 		${how(
-			"Como estimamos",
-			`Cada execução sobe um container ${esc(INSTANCE.name)} (${INSTANCE.vcpu} vCPU, ${INSTANCE.memoryGiB} GiB, ${INSTANCE.diskGB} GB). Memória (${price(CONTAINER_PRICES.memoryGiBs)} por GiB-s) e disco (${price(CONTAINER_PRICES.diskGBs)} por GB-s) contam pelo tempo ligado; CPU (${price(CONTAINER_PRICES.vcpuS)} por vCPU-s) pelo que foi usado. A franquia mensal inclui ${hours(CONTAINER_INCLUDED.memoryGiBs)} GiB-h de memória, ${n(CONTAINER_INCLUDED.vcpuS / 60)} vCPU-min e ${hours(CONTAINER_INCLUDED.diskGBs)} GB-h de disco, como se só estes testes a usassem.`,
+			"How we estimate",
+			`Each run starts a container of the instance type that <code>container.instance</code> in quality-flare.json picks (${esc(DEFAULT_INSTANCE)} by default). Memory (${price(CONTAINER_PRICES.memoryGiBs)} per GiB-s) and disk (${price(CONTAINER_PRICES.diskGBs)} per GB-s) count for the time it is on; CPU (${price(CONTAINER_PRICES.vcpuS)} per vCPU-s) counts for what it used. Each month the account includes ${hours(CONTAINER_INCLUDED.memoryGiBs)} GiB-h of memory, ${n(CONTAINER_INCLUDED.vcpuS / 60)} vCPU-min and ${hours(CONTAINER_INCLUDED.diskGBs)} GB-h of disk, counted here as if only these tests used it.`,
 		)}
 	</section>`;
 }
 
 export function renderCostsPage({ days, months, repos, repo, account, containerDays = [], containerMonths = [], email }: CostsPageData): string {
-	const filters = `<form class="filters" method="get" action="/admin/costs#estimativas">
-		${select("repo", "Repositório", repo ?? "", [["", "Todos os repositórios"], ...repos.map((r): [string, string] => [r, r])])}
-		<button type="submit" class="secondary">Aplicar</button>
-		${repo ? '<a href="/admin/costs#estimativas">Limpar</a>' : ""}
+	const filters = `<form class="filters" method="get" action="/admin/costs#estimates">
+		${select("repo", "Repository", repo ?? "", [["", "All repositories"], ...repos.map((r): [string, string] => [r, r])])}
+		<button type="submit" class="secondary">Apply</button>
+		${repo ? '<a href="/admin/costs#estimates">Clear</a>' : ""}
 	</form>`;
 	const index = [
-		...(account === undefined ? [] : [["conta", "Uso medido da conta"]]),
-		["testes", "Estimativa: Tests"],
-		["containers", "Estimativa: Container tests"],
+		...(account === undefined ? [] : [["account", "Measured account usage"]]),
+		["tests", "Estimate: Tests"],
+		["containers", "Estimate: Container tests"],
 	];
 	return layout(
-		"Custos",
+		"Costs",
 		`${renderHeader(email, "costs")}
 		<main class="costs">
-			<h2>Custos</h2>
+			<h2>Costs</h2>
 			${renderLead(account, months[0], containerMonths[0], repo)}
-			<nav class="toc" aria-label="Nesta página">${index.map(([id, text]) => `<a href="#${id}">${text}</a>`).join("")}</nav>
+			<nav class="toc" aria-label="On this page">${index.map(([id, text]) => `<a href="#${id}">${text}</a>`).join("")}</nav>
 			${renderAccount(account)}
-			<section id="estimativas">
-				<h3>Estimativas por repositório</h3>
-				<p class="hint">Calculadas a partir do que cada execução de teste registra. O filtro vale só para as estimativas; o uso medido acima é da conta inteira.</p>
+			<section id="estimates">
+				<h3>Estimates by repository</h3>
+				<p class="hint">Worked out from what each test run records. The filter only applies to the estimates; the measured usage above is for the whole account.</p>
 				${filters}
 				${renderTests(days, months)}
 				${renderContainers(containerDays, containerMonths)}

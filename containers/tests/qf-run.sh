@@ -86,7 +86,7 @@ compare_with_nothing() {
 merge_base() {
 	git -c user.name=quality-flare -c user.email=quality-flare@users.noreply.github.com \
 		merge -q --no-edit --no-ff "origin/$BASE" && return
-	echo "A PR tem conflito com $BASE. Resolva o conflito para rodar os checks."
+	echo "The PR conflicts with $BASE. Resolve the conflict to run the checks."
 	return 1
 }
 
@@ -108,7 +108,7 @@ install() {
 	local key
 	key=$({ with_dependency_files git ls-files -z -- | sort -z | xargs -0 -r sha256sum --; echo "${INSTALL:-}"; } | sha256sum | cut -d' ' -f1)
 	if reusable_install && [ -d node_modules ] && [ "$(cat /work/installed 2>/dev/null)" = "$key" ]; then
-		echo "Dependências já instaladas: o container veio de um snapshot com o mesmo lockfile e os mesmos package.json."
+		echo "Dependencies already installed: the container came from a snapshot with the same lockfile and the same package.json files."
 		return
 	fi
 	rm -f /work/installed
@@ -129,7 +129,7 @@ wait_for_snapshot() {
 	git config --unset-all http.extraHeader
 	touch "$OUT/snapshot"
 	while [ -e "$OUT/snapshot" ] && ((i++ < 300)); do sleep 1; done
-	[ -e "$OUT/snapshot" ] && echo "O snapshot não foi tirado a tempo; a run segue sem ele."
+	[ -e "$OUT/snapshot" ] && echo "The snapshot was not taken in time. The run goes on without it."
 	rm -f "$OUT/snapshot"
 	git config http.extraHeader "$header"
 }
@@ -164,7 +164,7 @@ affected() {
 	# With several vitest projects each line starts with its project's name: "[unit] src/a.test.ts".
 	while IFS= read -r file; do file=${file#\[*\] }; [ -f "$file" ] && files+=("$file"); done <<<"$listed"
 	[ -n "${ALWAYS_RUN:-}" ] && mapfile -t always <<<"$ALWAYS_RUN"
-	echo "Só os testes afetados pela PR: ${#files[@]} arquivo(s), mais ${#always[@]} filtro(s) que sempre rodam."
+	echo "Only the tests the PR affects: ${#files[@]} file$( ((${#files[@]} == 1)) || echo s), plus ${#always[@]} always-run filter$( ((${#always[@]} == 1)) || echo s)."
 	# No file at all: a filter nothing matches, which --passWithNoTests turns into a pass.
 	((${#files[@]} + ${#always[@]})) || files=(--changed "$since")
 	args+=("${files[@]}" "${always[@]}" --passWithNoTests)
@@ -176,7 +176,7 @@ affected() {
 # --changed HEAD then sees as staged: removed from a copy of the index, /work/related-index.
 # Fails (every test runs) when the change reaches everything.
 related_index() {
-	local related config i
+	local related config i n
 	for ((i = 0; i < ${#args[@]}; i++)); do
 		case ${args[i]} in
 		--config | -c) config=${args[i + 1]-} ;;
@@ -185,10 +185,12 @@ related_index() {
 	done
 	related=$(node /usr/local/lib/qf-related.mjs "origin/$BASE" ${config:+"$config"}) || return 1
 	if [ "$related" = all ]; then
-		echo "A PR muda pacotes que a configuração do vitest usa: todos os testes rodam."
+		echo "The PR changes packages that the vitest config uses, so all tests run."
 		return 1
 	fi
-	echo "A PR muda package.json ou lockfile: $(grep -c . <<<"$related") arquivo(s) contam como mudados."
+	n=$(grep -c . <<<"$related")
+	if ((n == 1)); then echo "The PR changes package.json or a lockfile: 1 file counts as changed."
+	else echo "The PR changes package.json or a lockfile: $n files count as changed."; fi
 	cp "$(git rev-parse --absolute-git-dir)/index" /work/related-index &&
 		{ [ -z "$related" ] || GIT_INDEX_FILE=/work/related-index git --literal-pathspecs rm -q --cached --ignore-unmatch --pathspec-from-file=- <<<"$related"; }
 }
@@ -224,13 +226,13 @@ restore_cache() {
 		# minute, and tar is cut off, which drops the cache.
 		listing=$(set -o pipefail; timeout 60 tar --numeric-owner -tvzf /work/cache.tgz | head -c 64M | head -n 200001); then
 		if cut -c1 <<<"$listing" | grep -qv '[-d]'; then
-			echo "Cache ignorado: tem links ou arquivos especiais."
+			echo "Cache ignored: it has links or special files."
 		elif (($(awk '{ total += $3 } END { printf "%d", total }' <<<"$listing") > 2 * 1024 * 1024 * 1024)); then
-			echo "Cache ignorado: passa de 2 GB descompactado."
+			echo "Cache ignored: it is over 2 GB uncompressed."
 		elif (($(wc -l <<<"$listing") > 200000)); then
-			echo "Cache ignorado: passa de 200 mil arquivos."
+			echo "Cache ignored: it has over 200,000 files."
 		elif ! listing=$(set -o pipefail; timeout 60 tar -tzf /work/cache.tgz | head -c 64M); then
-			echo "Cache ignorado: a lista de arquivos passa de 64 MB."
+			echo "Cache ignored: its file list is over 64 MB."
 		else
 			for path in "${paths[@]}"; do
 				# Literal: a path such as ":(glob)x" would otherwise be pathspec magic and match no tracked file.
@@ -240,7 +242,7 @@ restore_cache() {
 				grep -qxF -e "$path" -e "$path/" <<<"$listing" && members+=("$path")
 			done
 			((${#members[@]})) && tar -xzf /work/cache.tgz -- "${members[@]}" &&
-				echo "Cache restaurado: $(du -h /work/cache.tgz | cut -f1)."
+				echo "Cache restored: $(du -h /work/cache.tgz | cut -f1)."
 		fi
 	fi
 	rm -f /work/cache.tgz
@@ -251,16 +253,16 @@ restore_cache() {
 # DEADLINE (TestBox's BOX_DEADLINE_MS, counted from before the container started) the whole run fails.
 save_cache() {
 	local paths=() path present=()
-	if grep -Eq ' (124|137) ' "$OUT/steps"; then echo "Cache não salvo: um passo passou do limite ou foi morto."; return; fi
-	if (($(date +%s%3N) > ${DEADLINE:-0} - 4 * 60000)); then echo "Cache não salvo: a execução está perto do limite de 20 minutos."; return; fi
+	if grep -Eq ' (124|137) ' "$OUT/steps"; then echo "Cache not saved: a step went over its time limit or was killed."; return; fi
+	if (($(date +%s%3N) > ${DEADLINE:-0} - 4 * 60000)); then echo "Cache not saved: the run is close to its 20-minute limit."; return; fi
 	mapfile -t paths <<<"$CACHE_PATHS"
 	for path in "${paths[@]}"; do [ -e "$path" ] && present+=("$path"); done
 	((${#present[@]})) || return 0
 	# Up to 60 s to compress and 60 s to upload, then TestBox's next poll: within the 4 minutes left.
 	timeout 60 tar -czf /work/cache.tgz -- "${present[@]}" &&
-		if (($(stat -c %s /work/cache.tgz) > 90 * 1024 * 1024)); then echo "Cache não salvo: passa de 90 MB."
+		if (($(stat -c %s /work/cache.tgz) > 90 * 1024 * 1024)); then echo "Cache not saved: it is over 90 MB."
 		else curl -fsS --max-time 60 -X PUT -H "Authorization: Bearer $CACHE_AUTH" -H "Content-Type: application/octet-stream" \
-			--data-binary @/work/cache.tgz "$(cache_url)" >/dev/null && echo "Cache salvo: $(du -h /work/cache.tgz | cut -f1)."
+			--data-binary @/work/cache.tgz "$(cache_url)" >/dev/null && echo "Cache saved: $(du -h /work/cache.tgz | cut -f1)."
 		fi
 	rm -f /work/cache.tgz
 }
