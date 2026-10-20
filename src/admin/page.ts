@@ -2,7 +2,7 @@ import type { Check } from "../checks/types.ts";
 import type { InstalledRepo } from "../github.ts";
 import type { RepoSettings } from "../settings.ts";
 import { RUN_COMMAND } from "../on-demand.ts";
-import { DOCS_PATH, OFFICIAL_URL } from "../site.ts";
+import { DOCS_PATH, FAVICON, MARK, OFFICIAL_URL } from "../site.ts";
 
 export interface AdminPageData {
 	email?: string;
@@ -122,7 +122,7 @@ export function renderHeader(email: string | undefined, current?: "repos" | "run
 		`<a href="${href}"${id === current ? ' aria-current="page"' : ""}>${text}</a>`;
 	const external = (href: string, text: string) => `<a href="${href}">${text}<span aria-hidden="true"> ↗</span></a>`;
 	return `<header>
-			<h1>quality-flare</h1>
+			<h1>${MARK}quality-flare</h1>
 			<nav class="sections" aria-label="Sections">${link("/admin", "repos", "Repositories")}${link("/admin/runs", "runs", "Test runs")}${link("/admin/costs", "costs", "Costs")}</nav>
 			<nav class="external" aria-label="External links">${external(DOCS_PATH, "Docs")}${external(OFFICIAL_URL, "Site")}</nav>
 			${email ? `<span class="who" title="${esc(email)}">${esc(email)}</span>` : ""}
@@ -269,6 +269,7 @@ export function layout(title: string, body: string, head = ""): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · quality-flare</title>
+${FAVICON}
 ${head}
 <style>
 	:root { --bg: #fff; --fg: #1f2328; --muted: #59636e; --line: #d1d9e0; --panel: #f6f8fa; --on: #1a7f37; --off: #818b98; --link: #0969da; --failure: #cf222e; --running: #9a6700; color-scheme: light dark; }
@@ -276,7 +277,10 @@ ${head}
 	* { box-sizing: border-box; }
 	body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
 	header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
-	h1 { font-size: 16px; margin: 0; }
+	h1 { display: flex; align-items: center; gap: 10px; flex-shrink: 0; white-space: nowrap; font-size: 16px; margin: 0; }
+	.mark { width: 24px; height: 24px; }
+	.mark-flare { fill: #c2410c; }
+	@media (prefers-color-scheme: dark) { .mark-flare { fill: #fb8c4a; } }
 	nav { display: flex; gap: 16px; font-size: 14px; }
 	nav a { color: var(--muted); text-decoration: none; text-underline-offset: 6px; text-decoration-thickness: 2px; }
 	nav a:hover { color: var(--fg); text-decoration-line: underline; }
