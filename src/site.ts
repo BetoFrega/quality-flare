@@ -12,7 +12,7 @@ export const DOCS_PATH = "/docs";
 export const OFFICIAL_URL = "https://quality-flare.frega.dev";
 const REPO_URL = "https://github.com/BetoFrega/quality-flare";
 
-type DocPage = { slug: string; title: string; html: string };
+type DocPage = { slug: string; section: string; title: string; html: string };
 
 /** The documentation page at `pathname`, or a 404 page. */
 export async function handleDocs(pathname: string): Promise<Response> {
@@ -39,8 +39,8 @@ const CHECKS = [
 
 const FEATURES = [
 	{ name: "Tests on demand", link: "on-demand", body: "Pushes don't spend a run. Comment <code>/quality-flare run</code> when the pull request is ready; one status comment tells agents and people where it stands." },
-	{ name: "Only what changed", link: "on-demand#only-the-tests-that-changed", body: "Pull requests run the tests that depend on the change. A daily full run on the default branch catches the rest and opens an issue when it fails." },
-	{ name: "Caches on R2", link: "configuration#caches", body: "Turborepo's remote cache, tool caches such as ESLint's and tsc's, and container snapshots that skip the install." },
+	{ name: "Only what changed", link: "running-tests#run-only-the-tests-a-change-affects", body: "Pull requests run the tests that depend on the change. A daily full run on the default branch catches the rest and opens an issue when it fails." },
+	{ name: "Caches on R2", link: "running-tests#make-runs-faster", body: "Turborepo's remote cache, tool caches such as ESLint's and tsc's, and container snapshots that skip the install." },
 	{ name: "Live progress", link: "checks#container-tests", body: "Check runs update every few seconds with counts and failures, and the admin streams each test as it finishes." },
 	{ name: "Costs you can see", link: "admin#costs", body: "Measured account usage next to an estimate for every run, repository and day." },
 	{ name: "Off until you say so", link: "admin", body: "Every repository and check starts disabled. Turn them on one by one in an admin behind Cloudflare Access." },
@@ -137,7 +137,9 @@ function renderHome(pending: boolean): string {
 function renderDocsPage(pages: DocPage[], page: DocPage | undefined): string {
 	const href = (p: DocPage) => (p.slug === "index" ? DOCS_PATH : `${DOCS_PATH}/${p.slug}`);
 	const label = (p: DocPage) => (p.slug === "index" ? "Introduction" : p.title);
-	const nav = pages.map((p) => `<li><a href="${href(p)}"${p.slug === page?.slug ? ' aria-current="page"' : ""}>${esc(label(p))}</a></li>`).join("");
+	const item = (p: DocPage) => `<li><a href="${href(p)}"${p.slug === page?.slug ? ' aria-current="page"' : ""}>${esc(label(p))}</a></li>`;
+	const sections = [...new Set(pages.map((p) => p.section))];
+	const nav = sections.map((section) => `<p class="kicker">${esc(section)}</p><ul>${pages.filter((p) => p.section === section).map(item).join("")}</ul>`).join("");
 	const at = page ? pages.indexOf(page) : -1;
 	const prev = at > 0 ? pages[at - 1] : undefined;
 	const next = at >= 0 && at < pages.length - 1 ? pages[at + 1] : undefined;
@@ -153,7 +155,7 @@ function renderDocsPage(pages: DocPage[], page: DocPage | undefined): string {
 		page ? `${page.title} · quality-flare docs` : "Not found · quality-flare docs",
 		"Documentation of quality-flare, continuous integration on Cloudflare.",
 		`<div class="docs">
-			<nav class="sidebar" aria-label="Documentation"><p class="kicker">Documentation</p><ul>${nav}</ul></nav>
+			<nav class="sidebar" aria-label="Documentation">${nav}</nav>
 			<article class="prose">${body}${pager}</article>
 		</div>`,
 	);
@@ -285,7 +287,8 @@ function layout(title: string, description: string, main: string): string {
 
 	.docs { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 56px; padding-top: 40px; }
 	.sidebar ul { list-style: none; padding: 0; margin: 0; border-left: 1px solid var(--line); }
-	.sidebar .kicker { color: var(--faint); }
+	.sidebar .kicker { color: var(--faint); margin: 24px 0 8px; }
+	.sidebar .kicker:first-child { margin-top: 0; }
 	.sidebar { align-self: start; position: sticky; top: 72px; }
 	.sidebar a { display: block; padding: 6px 14px; margin-left: -1px; border-left: 2px solid transparent; color: var(--muted); text-decoration: none; font-size: 15px; }
 	.sidebar a:hover { color: var(--fg); }
