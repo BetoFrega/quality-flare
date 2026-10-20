@@ -11,6 +11,7 @@ import { renderCostsPage } from "./costs-page.ts";
 import { LIVE_SCRIPT } from "./live-script.ts";
 import { renderAdminPage, renderMessage, repoQuery, repoSearch } from "./page.ts";
 import { renderRunPage, renderRunsPage, runQuery } from "./runs-page.ts";
+import { SETUP_PATH } from "../setup.ts";
 
 export const ADMIN_PATH = "/admin";
 
@@ -21,6 +22,8 @@ export interface AdminDeps {
 	metrics?: (env: Env) => MetricsStore;
 	/** The account's real usage, from Cloudflare's analytics. */
 	account?: (env: Env) => Promise<AccountUsage>;
+	/** The App's page for installing it on more repositories. */
+	installUrl?: (env: Env) => Promise<string>;
 	now?: () => number;
 }
 
@@ -40,10 +43,18 @@ export async function handleAdmin(
 		listRepos = listInstalledRepos,
 		runs = (e) => d1RunStore(e.RUNS),
 		metrics = (e) => d1MetricsStore(e.RUNS),
-		account = async (e) => accountUsage({ token: await e.ANALYTICS_TOKEN.get(), account: e.CLOUDFLARE_ACCOUNT_ID, script: "quality-flare" }),
+		account = async (e) => {
+			// Bound only when the deploy had SECRETS_STORE_ID and CLOUDFLARE_ACCOUNT_ID (cloudflare.config.ts).
+			if (!e.ANALYTICS_TOKEN) throw new Error("Sem token de analytics: defina SECRETS_STORE_ID e CLOUDFLARE_ACCOUNT_ID no build (veja o README).");
+			return accountUsage({ token: await e.ANALYTICS_TOKEN.get(), account: e.CLOUDFLARE_ACCOUNT_ID, script: "quality-flare" });
+		},
+		installUrl = (e) => GitHubClient.installUrl({ appId: e.GITHUB_APP_ID, privateKey: e.GITHUB_PRIVATE_KEY }),
 		now = Date.now,
 	}: AdminDeps = {},
 ): Promise<Response> {
+	if (!env.ACCESS_AUD) {
+		return html(renderMessage("Admin fechado", `O Cloudflare Access ainda não protege o admin. Veja ${SETUP_PATH} para configurar.`), 403);
+	}
 	if (!access || access.aud !== env.ACCESS_AUD) {
 		return html(renderMessage("Acesso negado", "Entre pelo Cloudflare Access para usar o admin."), 403);
 	}
@@ -51,12 +62,18 @@ export async function handleAdmin(
 	const path = url.pathname.replace(/\/+$/, "") || "/";
 
 	if (request.method === "GET" && path === ADMIN_PATH) {
-		const repos = await listRepos(env);
+		const [repos, install] = await Promise.all([
+			listRepos(env),
+			installUrl(env).catch((error: unknown) => {
+				console.error("quality-flare: could not read the App's link", error);
+				return undefined;
+			}),
+		]);
 		const rows = await Promise.all(
 			repos.map(async (repo) => ({ repo, settings: await getRepoSettings(env.SETTINGS, repo.full_name) })),
 		);
 		const identity = await access.getIdentity();
-		return html(renderAdminPage({ email: identity?.email, checks, rows, open: url.searchParams.get("open"), query: repoQuery(url.searchParams) }));
+		return html(renderAdminPage({ email: identity?.email, checks, rows, open: url.searchParams.get("open"), query: repoQuery(url.searchParams), installUrl: install }));
 	}
 
 	if (request.method === "GET" && path === `${ADMIN_PATH}/live.js`) {
