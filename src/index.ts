@@ -163,6 +163,7 @@ export async function runPlan(plan: Plan, repo: string, installationId: number, 
 				appId: env.GITHUB_APP_ID,
 				codexBlock: runsCodex && !off ? codexBlock : undefined,
 				ignoredCommand: Boolean(blocked),
+				unavailable: off,
 				create: Boolean(plan.command) || (waiting.length > 0 && !pr.draft),
 			}).catch((error: unknown) => {
 				console.error("quality-flare: could not update the status comment", error);

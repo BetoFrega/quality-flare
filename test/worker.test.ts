@@ -252,7 +252,7 @@ describe("tests on demand", () => {
 		expect(before.comments[0].body).toContain("esperando");
 		const after = mockGitHub({ existingComments: [{ id: 3, ...before.comments[0] }], existingRuns: { Tests: "completed:neutral" } });
 		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), free);
-		expect(after.edits).toEqual([expect.objectContaining({ id: "3", body: expect.not.stringContaining("esperando") })]);
+		expect(after.edits).toEqual([expect.objectContaining({ id: "3", body: expect.stringContaining("Testes: indisponíveis") })]);
 	});
 
 	it("keeps one status comment on a ready PR, edited only when what it says changes", async () => {

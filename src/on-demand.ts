@@ -113,7 +113,7 @@ const STATUS_MARKER = "<!-- quality-flare:on-demand";
 const STATUS_PATTERN = /<!-- quality-flare:on-demand(?: (\{.*?\}))? -->/;
 
 /** Where a PR's on-demand checks stand on one commit. */
-export type StatusKind = "waiting" | "running" | "passed" | "failed";
+export type StatusKind = "waiting" | "running" | "passed" | "failed" | "unavailable";
 
 /** What the status comment says, kept in its marker so the next update knows what came before. */
 export interface StatusMark {
@@ -131,6 +131,8 @@ export interface StatusInput {
 	codexBlock?: string;
 	/** A run command came while the Codex review held the PR back. */
 	ignoredCommand?: boolean;
+	/** The deploy left the test checks out (no Workers Paid): they report neutral without running. */
+	unavailable?: boolean;
 	previous?: StatusMark;
 }
 
@@ -156,7 +158,7 @@ const short = (sha: string) => sha.slice(0, 7);
 
 /** The status comment for a PR's on-demand checks, and the mark it carries. */
 export function renderStatus(input: StatusInput): { body: string; mark: StatusMark } {
-	const kind = kindOf(input.runs);
+	const kind = input.unavailable ? "unavailable" : kindOf(input.runs);
 	const { previous } = input;
 	const staleFrom =
 		kind !== "waiting" || !previous ? undefined : previous.sha !== input.sha && previous.kind !== "waiting" ? previous.sha : previous.staleFrom;
@@ -191,6 +193,13 @@ export function renderStatus(input: StatusInput): { body: string; mark: StatusMa
 			"",
 			"Espere o resultado sem fazer push: um push novo deixa esta execução desatualizada e volta a esperar outro " +
 				`\`${RUN_COMMAND}\`.`,
+		);
+	} else if (kind === "unavailable") {
+		lines.push(
+			`### ➖ Testes: indisponíveis (${commit})`,
+			"",
+			"Este quality-flare está numa conta Cloudflare sem o Workers Paid, que os checks de testes exigem: eles não rodam " +
+				`e aparecem como neutros. Rode os testes localmente; \`${RUN_COMMAND}\` não muda nada aqui.`,
 		);
 	} else if (kind === "passed") {
 		lines.push(
@@ -228,6 +237,8 @@ export interface StatusUpdate {
 	/** Why the Codex review holds the PR back, or undefined when it doesn't; absent when the repository doesn't run it. */
 	codexBlock?: () => Promise<string | undefined>;
 	ignoredCommand?: boolean;
+	/** The test checks are unavailable (see StatusInput). */
+	unavailable?: boolean;
 	/** Create the comment when the PR has none; otherwise only an existing comment is updated. */
 	create: boolean;
 }
@@ -251,6 +262,7 @@ export async function updateStatus(github: GitHubClient, repo: string, pr: PullR
 		runs,
 		codexBlock,
 		ignoredCommand: update.ignoredCommand,
+		unavailable: update.unavailable,
 		previous: existing?.body ? parseStatusMark(existing.body) : undefined,
 	});
 	if (!existing) await github.commentOnPullRequest(repo, pr.number, body);
