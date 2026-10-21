@@ -19,7 +19,7 @@ A waiting check ends as **Action required** (`action_required`), titled `Aguarda
 
 A push whose only new commit is a clean merge of the base doesn't wait again. If the pull request's previous commit passed, the merged commit is on the base, and the merge only brings files from the base exactly as they are there, with no file the pull request also changed, the new commit inherits the previous commit's green check runs (titled `Reaproveitado de <commit>`).
 
-Any other case waits for another `/quality-flare run`: a file changed on both sides, a change of its own in the merge, a merge of another branch, a previous commit that didn't pass. A conflict the base brings in another file, such as a renamed export the pull request uses, slips through here; the daily full run on the base catches it.
+Any other case waits for another `/quality-flare run`: a file changed on both sides, a change of its own in the merge, a merge of another branch, a previous commit that didn't pass. A conflict the base brings in another file, such as a renamed export the pull request uses, slips through here; the [daily full run](running-tests.md#run-only-the-tests-a-change-affects) on the base catches it, when the repository has one.
 
 ## The status comment
 
@@ -36,11 +36,3 @@ Agents that follow a pull request only see the check as pending, so quality-flar
 | The run ends | ✅ passed or ❌ failed, check by check |
 
 Drafts don't get the comment, but an existing comment keeps being updated. The state comes from quality-flare's check runs on the commit, and the comment is only edited when its text changes.
-
-## Only the tests that changed
-
-With `"changed": true` in the [`container` section](configuration.md#container), each pull request runs only the test files that depend on what it changed (`vitest --changed origin/<base>`). A change to `package.json` or `package-lock.json` stands for the files that use the packages it changed. `alwaysRun` lists tests that run on every pull request anyway, such as tests that read files or run scripts, which vitest's module graph can't connect to a change.
-
-## The daily full run
-
-Once a day, at 09:00 UTC, every repository with `changed` on runs every test on its default branch, unless that commit already ran. This catches what affected-only runs miss. When the full run fails, quality-flare opens an issue on the repository. The full run is also the only run that writes [caches and snapshots](configuration.md#caches).

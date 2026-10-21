@@ -7,11 +7,20 @@ const ID = "virtual:docs";
 const RESOLVED = `\0${ID}`;
 const DIR = new URL("../docs/", import.meta.url);
 
-/** The pages under /docs, in the sidebar's order: docs/<slug>.md, with "index" served at /docs itself. */
-export const PAGES = ["index", "self-hosting", "checks", "configuration", "on-demand", "admin", "architecture"];
+/** The sidebar's sections and their pages, in order: docs/<slug>.md, with "index" served at /docs itself. */
+export const SECTIONS = [
+	{ title: "Get started", pages: ["index", "getting-started"] },
+	{ title: "Guides", pages: ["running-tests", "on-demand"] },
+	{ title: "Reference", pages: ["checks", "configuration", "admin"] },
+	{ title: "Run your own", pages: ["self-hosting", "architecture"] },
+];
+
+export const PAGES = SECTIONS.flatMap((s) => s.pages);
 
 export interface DocPage {
 	slug: string;
+	/** The sidebar section it is listed under. */
+	section?: string;
 	/** The page's first `# ` heading. */
 	title: string;
 	html: string;
@@ -30,11 +39,13 @@ export function docs(): Plugin {
 		async load(id) {
 			if (id !== RESOLVED) return;
 			const pages = await Promise.all(
-				PAGES.map(async (slug) => {
-					const file = new URL(`${slug}.md`, DIR);
-					this.addWatchFile(file.pathname);
-					return renderDoc(slug, await readFile(file, "utf8"));
-				}),
+				SECTIONS.flatMap(({ title: section, pages }) =>
+					pages.map(async (slug) => {
+						const file = new URL(`${slug}.md`, DIR);
+						this.addWatchFile(file.pathname);
+						return { ...renderDoc(slug, await readFile(file, "utf8")), section };
+					}),
+				),
 			);
 			return `export default ${JSON.stringify(pages)};`;
 		},
