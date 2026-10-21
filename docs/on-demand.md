@@ -13,11 +13,11 @@ The idea is that agents run tests locally all the time and only ask for the remo
 
 ## The waiting check
 
-A waiting check ends as **Action required** (`action_required`), titled `Aguardando "/quality-flare run"`. It blocks merging like a failure, but it completes the check suite: a `queued` check never completed, and agents waiting for CI to finish never woke up. A waiting check that the branch requires blocks merging, auto-merge included, until someone asks for the run.
+A waiting check ends as **Action required** (`action_required`), titled `Waiting for "/quality-flare run"`. It blocks merging like a failure, but it completes the check suite: a `queued` check never completed, and agents waiting for CI to finish never woke up. A waiting check that the branch requires blocks merging, auto-merge included, until someone asks for the run.
 
 ## Merges of the base
 
-A push whose only new commit is a clean merge of the base doesn't wait again. If the pull request's previous commit passed, the merged commit is on the base, and the merge only brings files from the base exactly as they are there, with no file the pull request also changed, the new commit inherits the previous commit's green check runs (titled `Reaproveitado de <commit>`).
+A push whose only new commit is a clean merge of the base doesn't wait again. If the pull request's previous commit passed, the merged commit is on the base, and the merge only brings files from the base exactly as they are there, with no file the pull request also changed, the new commit inherits the previous commit's green check runs (titled `Reused from <commit>`).
 
 Any other case waits for another `/quality-flare run`: a file changed on both sides, a change of its own in the merge, a merge of another branch, a previous commit that didn't pass. A conflict the base brings in another file, such as a renamed export the pull request uses, slips through here; the [daily full run](running-tests.md#run-only-the-tests-a-change-affects) on the base catches it, when the repository has one.
 

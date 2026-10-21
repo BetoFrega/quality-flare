@@ -22,6 +22,20 @@ describe("site", () => {
 		expect(await (await get("/", { ...ready, ACCESS_AUD: "" } as Env, OFFICIAL)).text()).toContain("Finish setting it up");
 	});
 
+	it("links pages to the preview image for link previews", async () => {
+		const home = await (await get("/", ready, OFFICIAL)).text();
+		expect(home).toContain(`<meta property="og:image" content="${OFFICIAL}/og.png">`);
+		expect(home).toContain('<meta name="twitter:card" content="summary_large_image">');
+	});
+
+	it.skipIf(inWorkers)("serves the preview image as a PNG, before and after setup", async () => {
+		for (const env of [ready, fresh]) {
+			const res = await get("/og.png", env);
+			expect(res.headers.get("Content-Type")).toBe("image/png");
+			expect([...new Uint8Array(await res.arrayBuffer()).slice(0, 4)]).toEqual([0x89, 0x50, 0x4e, 0x47]);
+		}
+	});
+
 	it("sends other installations' root to the admin, or to /setup until it is finished", async () => {
 		for (const [env, path] of [[ready, "/admin"], [{ ...ready, ACCESS_AUD: "" } as Env, "/setup"], [fresh, "/setup"]] as const) {
 			const res = await get("/", env);
