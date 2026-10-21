@@ -10,7 +10,7 @@ import { codexReviewBlock, inheritedRuns, isRunCommand, type PullRequestComment,
 import { GitHubClient, type PullRequest } from "./github.ts";
 import { getRepoSettings, type RepoSettings } from "./settings.ts";
 import { appConfigured, handleSetup, SETUP_PATH, setupPending } from "./setup.ts";
-import { DOCS_PATH, handleDocs, handleHome, OFFICIAL_URL } from "./site.ts";
+import { DOCS_PATH, handleDocs, handleHome, handleOgImage, OFFICIAL_URL, OG_IMAGE_PATH } from "./site.ts";
 import { handleTurboCache, TURBO_PATH } from "./turbo-cache.ts";
 
 const PULL_REQUEST_ACTIONS = new Set([
@@ -69,6 +69,7 @@ export default {
 		if (pathname === ADMIN_PATH || pathname.startsWith(`${ADMIN_PATH}/`)) return handleAdmin(request, env, ctx.access);
 		const reading = request.method === "GET" || request.method === "HEAD";
 		if (reading && (pathname === DOCS_PATH || pathname.startsWith(`${DOCS_PATH}/`))) return handleDocs(pathname);
+		if (reading && pathname === OG_IMAGE_PATH) return handleOgImage();
 		// Until the App exists its secrets are placeholders anyone could sign with (scripts/deploy.mjs).
 		if (!appConfigured(env)) {
 			if (request.method === "GET" && pathname === "/") return Response.redirect(new URL(SETUP_PATH, request.url).href, 302);

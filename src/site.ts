@@ -11,6 +11,8 @@ export const DOCS_PATH = "/docs";
 /** The project's own instance, the only one whose root shows the home page; other installations' roots open their admin. */
 export const OFFICIAL_URL = "https://quality-flare.frega.dev";
 const REPO_URL = "https://github.com/BetoFrega/quality-flare";
+/** The image link previews show (Open Graph): the home page's hero, as src/og.png. */
+export const OG_IMAGE_PATH = "/og.png";
 
 type DocPage = { slug: string; section: string; title: string; html: string };
 
@@ -22,6 +24,13 @@ export async function handleDocs(pathname: string): Promise<Response> {
 	const slug = pathname.replace(/\/+$/, "").slice(DOCS_PATH.length + 1) || "index";
 	const page = pages.find((p) => p.slug === slug);
 	return html(renderDocsPage(pages, page), page ? 200 : 404);
+}
+
+/** The link preview image. Imported on first use, like virtual:docs, since Vite inlines it at build time. */
+export async function handleOgImage(): Promise<Response> {
+	const { default: dataUrl } = await import("./og.png?inline");
+	const bytes = Uint8Array.from(atob(dataUrl.slice(dataUrl.indexOf(",") + 1)), (c) => c.charCodeAt(0));
+	return new Response(bytes, { headers: { "Content-Type": "image/png", "Cache-Control": "public, max-age=86400" } });
 }
 
 /** The home page. `pending` adds a note that this installation's /setup isn't finished. */
@@ -127,7 +136,7 @@ function renderHome(pending: boolean): string {
 		<section class="cta">
 			<div>
 				<h2>Run it on your own account</h2>
-				<p>Fork the repository, import it in Workers Builds, and open <code>/setup</code>. The page creates the GitHub App for you. You need Workers Paid.</p>
+				<p>Fork the repository, import it in Workers Builds, and open <code>/setup</code>. The page creates the GitHub App for you. The free plan runs every check but the tests, which need Workers Paid.</p>
 			</div>
 			<a class="button primary" href="${docLink("self-hosting")}">Self-hosting guide</a>
 		</section>`,
@@ -176,6 +185,15 @@ function layout(title: string, description: string, main: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)}</title>
 <meta name="description" content="${esc(description)}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="quality-flare">
+<meta property="og:title" content="${esc(title)}">
+<meta property="og:description" content="${esc(description)}">
+<meta property="og:image" content="${OFFICIAL_URL}${OG_IMAGE_PATH}">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="quality-flare: continuous integration that runs entirely on Cloudflare, next to a pull request's passing checks">
+<meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#fbf8f3" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#14110e" media="(prefers-color-scheme: dark)">
 ${FAVICON}
