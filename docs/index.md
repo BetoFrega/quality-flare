@@ -25,7 +25,7 @@ Around the checks:
 
 ## Where to start
 
-1. **[Self-hosting](self-hosting.md):** deploy your instance and create its GitHub App. You need a Cloudflare account and a GitHub account; nothing is installed on your computer.
+1. **[Self-hosting](self-hosting.md):** deploy your instance and create its GitHub App. You need a Cloudflare account (the free plan runs everything except the tests) and a GitHub account; nothing is installed on your computer.
 2. **[Getting started](getting-started.md):** connect a repository and see the first check runs.
 3. **[Running tests](running-tests.md):** pick between Tests and Container tests and configure them for your repository.
 

@@ -17,7 +17,7 @@ export async function readRun(response: Response, onProgress: (event: ProgressEv
 				if (event.type === "error") throw new Error(event.message);
 				onProgress(event);
 			}
-			if (done) throw new Error("O Dynamic Worker terminou sem mandar o relatório.");
+			if (done) throw new Error("The Dynamic Worker finished without sending the report.");
 		}
 	} finally {
 		reader.cancel().catch(() => {});

@@ -1,7 +1,7 @@
 import { ADMIN_PATH, handleAdmin } from "./admin/index.ts";
 import { codexReview } from "./checks/codex-review/index.ts";
-import { checks as allChecks } from "./checks/index.ts";
-import { DAILY_CRON, runDailyFullRuns } from "./checks/tests/daily.ts";
+import { checksFor, testsOff } from "./checks/index.ts";
+import { runDailyFullRuns } from "./checks/tests/daily.ts";
 import { runTestShards, sweepOverdueRuns } from "./checks/tests/index.ts";
 import type { TestShard } from "./checks/tests/jobs.ts";
 import type { Check, CheckResult } from "./checks/types.ts";
@@ -24,6 +24,9 @@ const PULL_REQUEST_ACTIONS = new Set([
 ]);
 
 /** Events about a PR's reviews whose payload carries the PR, for checks that list them in `events`. */
+/** The cron that sweeps overdue Tests runs (cloudflare.config.ts); the other one starts the daily full run. */
+const SWEEP_CRON = "*/5 * * * *";
+
 const REVIEW_EVENTS = new Set(["pull_request_review", "pull_request_review_comment", "pull_request_review_thread"]);
 
 interface WebhookPayload {
@@ -43,8 +46,8 @@ interface WebhookPayload {
  */
 export const DISABLED_RESULT: CheckResult = {
 	conclusion: "neutral",
-	title: "Desativado",
-	summary: "Este check está desativado para este repositório no admin do quality-flare.",
+	title: "Disabled",
+	summary: "This check is disabled for this repository in the quality-flare admin.",
 };
 
 export interface Plan {
@@ -86,7 +89,7 @@ export default {
 		}
 
 		const payload = JSON.parse(body) as WebhookPayload;
-		const plan = planDelivery(request.headers.get("X-GitHub-Event"), payload, allChecks);
+		const plan = planDelivery(request.headers.get("X-GitHub-Event"), payload, checksFor(env));
 		if (!plan || !payload.installation || !payload.repository) return new Response("Ignored\n", { status: 202 });
 
 		const repo = payload.repository.full_name;
@@ -104,13 +107,17 @@ export default {
 	// Fails Tests runs past their deadline, and once a day runs every test on default branches (see cloudflare.config.ts triggers).
 	async scheduled(controller, env) {
 		if (!appConfigured(env)) return;
-		if (controller.cron === DAILY_CRON) await runDailyFullRuns(env);
-		else await sweepOverdueRuns(env);
+		// Without the Tests checks there is no daily run, but runs started before still need to expire.
+		if (controller.cron === SWEEP_CRON) await sweepOverdueRuns(env);
+		else if (!testsOff(env)) await runDailyFullRuns(env);
 	},
 } satisfies ExportedHandler<Env, TestShard>;
 
 export async function runPlan(plan: Plan, repo: string, installationId: number, settings: RepoSettings, env: Env): Promise<void> {
 	const github = await GitHubClient.forInstallation({ appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY }, installationId);
+	const allChecks = checksFor(env);
+	// Without Workers Paid the on-demand checks only report neutral (checksFor): they run at once, never wait.
+	const off = testsOff(env);
 	// With the on-demand setting off, a run command is just a comment.
 	const checks = plan.command && !settings.onDemand ? plan.checks.filter((c) => !c.onDemand) : plan.checks;
 	// What the run command got: 🚀 when it started a run, 👀 when every run it asked for was already going,
@@ -130,17 +137,17 @@ export async function runPlan(plan: Plan, repo: string, installationId: number, 
 		if (blocked) commanded = "confused";
 		// A push that only merges the base into a head that passed keeps its runs instead of waiting (see inheritedRuns).
 		let inherited: Promise<boolean> | undefined;
-		const inherit = () => (inherited ??= inheritRuns(github, repo, pr, settings, env.GITHUB_APP_ID));
+		const inherit = () => (inherited ??= inheritRuns(github, repo, pr, settings, env.GITHUB_APP_ID, allChecks));
 		for (const check of checks) {
 			// The Codex review comes first: a command while it blocks runs no tests.
-			if (blocked && check.onDemand) continue;
+			if (blocked && check.onDemand && !off) continue;
 			let result: CheckResult | null;
 			if (!settings.enabledChecks.has(check.id)) result = DISABLED_RESULT;
-			else if (check.onDemand && plan.command && (await runStatus(github, repo, pr.head.sha, check.name, env.GITHUB_APP_ID)) === "in_progress") {
+			else if (check.onDemand && !off && plan.command && (await runStatus(github, repo, pr.head.sha, check.name, env.GITHUB_APP_ID)) === "in_progress") {
 				// A run already going on this commit (a push on a bot's PR, an earlier command) answers this command too.
 				commanded ??= "eyes";
 				continue;
-			} else if (check.onDemand && !plan.command && !plan.rerun && !runsOnPush(settings.onDemand, pr)) {
+			} else if (check.onDemand && !off && !plan.command && !plan.rerun && !runsOnPush(settings.onDemand, pr)) {
 				// A commit keeps the run it has: leaving draft or reopening on the same head must not queue a passed run again.
 				const kept = Boolean(await runStatus(github, repo, pr.head.sha, check.name, env.GITHUB_APP_ID));
 				if (!kept && (await inherit())) continue;
@@ -161,8 +168,9 @@ export async function runPlan(plan: Plan, repo: string, installationId: number, 
 			await updateStatus(github, repo, pr, {
 				checks: reported,
 				appId: env.GITHUB_APP_ID,
-				codexBlock: runsCodex ? codexBlock : undefined,
+				codexBlock: runsCodex && !off ? codexBlock : undefined,
 				ignoredCommand: Boolean(blocked),
+				unavailable: off,
 				create: Boolean(plan.command) || (waiting.length > 0 && !pr.draft),
 			}).catch((error: unknown) => {
 				console.error("quality-flare: could not update the status comment", error);
@@ -177,7 +185,7 @@ export async function runPlan(plan: Plan, repo: string, installationId: number, 
 }
 
 /** Copies the runs a clean merge of the base inherits onto the PR's head; false when it inherits none, or GitHub can't say. */
-async function inheritRuns(github: GitHubClient, repo: string, pr: PullRequest, settings: RepoSettings, appId: string): Promise<boolean> {
+async function inheritRuns(github: GitHubClient, repo: string, pr: PullRequest, settings: RepoSettings, appId: string, allChecks: Check[]): Promise<boolean> {
 	const enabled = allChecks.filter((c) => c.onDemand && settings.enabledChecks.has(c.id)).map((c) => c.name);
 	const others = allChecks.map((c) => c.name).filter((name) => !enabled.includes(name));
 	try {

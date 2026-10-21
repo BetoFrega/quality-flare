@@ -127,10 +127,10 @@ describe("webhook handler", () => {
 		expect(res.status).toBe(200);
 		expect(checkRuns).toEqual([
 			expect.objectContaining({ name: "Closes an issue", head_sha: "abc123", status: "completed", conclusion: "failure" }),
-			expect.objectContaining({ name: "Tests", conclusion: "neutral", output: expect.objectContaining({ title: "Desativado" }) }),
-			expect.objectContaining({ name: "Container tests", conclusion: "neutral", output: expect.objectContaining({ title: "Desativado" }) }),
-			expect.objectContaining({ name: "Dependabot auto-merge", conclusion: "neutral", output: expect.objectContaining({ title: "Desativado" }) }),
-			expect.objectContaining({ name: "Codex review", conclusion: "neutral", output: expect.objectContaining({ title: "Desativado" }) }),
+			expect.objectContaining({ name: "Tests", conclusion: "neutral", output: expect.objectContaining({ title: "Disabled" }) }),
+			expect.objectContaining({ name: "Container tests", conclusion: "neutral", output: expect.objectContaining({ title: "Disabled" }) }),
+			expect.objectContaining({ name: "Dependabot auto-merge", conclusion: "neutral", output: expect.objectContaining({ title: "Disabled" }) }),
+			expect.objectContaining({ name: "Codex review", conclusion: "neutral", output: expect.objectContaining({ title: "Disabled" }) }),
 		]);
 	});
 
@@ -161,7 +161,7 @@ describe("webhook handler", () => {
 		await setChecksEnabled(env.SETTINGS, "Octo/Repo", ["closes-issue"], false);
 		const { checkRuns, fetchMock } = mockGitHub();
 		await run(delivery("pull_request", { action: "opened", pull_request: pr }));
-		expect(checkRuns[0]).toMatchObject({ name: "Closes an issue", conclusion: "neutral", output: { title: "Desativado" } });
+		expect(checkRuns[0]).toMatchObject({ name: "Closes an issue", conclusion: "neutral", output: { title: "Disabled" } });
 		expect(fetchMock.mock.calls.some(([url]) => url.endsWith("/graphql"))).toBe(false);
 	});
 
@@ -200,7 +200,7 @@ describe("tests on demand", () => {
 		onDemand: true,
 		run: async ({ pr }) => {
 			ran.push(pr.number);
-			return { conclusion: "success", title: "Passou", summary: "" };
+			return { conclusion: "success", title: "Passed", summary: "" };
 		},
 	};
 	const settings = (onDemand: boolean) => ({ enabled: true, enabledChecks: new Set(["tests"]), onDemand });
@@ -218,7 +218,7 @@ describe("tests on demand", () => {
 				name: "Tests",
 				status: "completed",
 				conclusion: "action_required",
-				output: expect.objectContaining({ title: 'Aguardando "/quality-flare run"', summary: expect.stringContaining("pronta para o merge") }),
+				output: expect.objectContaining({ title: 'Waiting for "/quality-flare run"', summary: expect.stringContaining("ready to merge") }),
 			}),
 		]);
 	});
@@ -227,7 +227,7 @@ describe("tests on demand", () => {
 		const pushed = mockGitHub({ existingRuns: { Tests: "completed:action_required" } });
 		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), env);
 		expect(pushed.checkRuns).toEqual([]);
-		expect(pushed.comments).toEqual([{ body: expect.stringContaining("| Tests | ⏳ esperando |") }]);
+		expect(pushed.comments).toEqual([{ body: expect.stringContaining("| Tests | ⏳ waiting |") }]);
 
 		const commanded = mockGitHub({ existingRuns: { Tests: "completed:action_required" } });
 		await runPlan({ pullRequests: [7], checks: [tests], command: { commentId: 5 } }, "octo/repo", 99, settings(true), env);
@@ -235,12 +235,32 @@ describe("tests on demand", () => {
 		expect(commanded.reactions).toEqual([{ content: "rocket" }]);
 	});
 
+	it("without Workers Paid, reports at once on a push and on a command, with no status comment", async () => {
+		const free = { ...env, TESTS_OFF: "free-plan" } as Env;
+		const pushed = mockGitHub();
+		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), free);
+		expect(ran).toEqual([pr.number]);
+		expect(pushed.checkRuns).toEqual([expect.objectContaining({ name: "Tests", conclusion: "success" })]);
+		expect(pushed.comments).toEqual([]);
+
+		const commanded = mockGitHub({ existingRuns: { Tests: "completed:action_required" } });
+		await runPlan({ pullRequests: [7], checks: [tests], command: { commentId: 5 } }, "octo/repo", 99, settings(true), free);
+		expect(ran).toEqual([pr.number, 7]);
+		// A status comment left from before the deploy stops saying the tests wait.
+		const before = mockGitHub();
+		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), env);
+		expect(before.comments[0].body).toContain("waiting");
+		const after = mockGitHub({ existingComments: [{ id: 3, ...before.comments[0] }], existingRuns: { Tests: "completed:neutral" } });
+		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), free);
+		expect(after.edits).toEqual([expect.objectContaining({ id: "3", body: expect.stringContaining("Tests: unavailable") })]);
+	});
+
 	it("keeps one status comment on a ready PR, edited only when what it says changes", async () => {
 		const first = mockGitHub();
 		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), env);
-		expect(first.comments).toEqual([{ body: expect.stringContaining("### ⏳ Testes: esperando `/quality-flare run` (`abc123`)") }]);
-		expect(first.comments[0].body).toContain("pronta para o merge");
-		expect(first.comments[0].body).toContain("| Tests | ⏳ esperando |");
+		expect(first.comments).toEqual([{ body: expect.stringContaining("### ⏳ Tests: waiting for `/quality-flare run` (`abc123`)") }]);
+		expect(first.comments[0].body).toContain("ready to merge");
+		expect(first.comments[0].body).toContain("| Tests | ⏳ waiting |");
 
 		const again = mockGitHub({ existingComments: [{ id: 3, ...first.comments[0] }] });
 		await runPlan({ pullRequests: [pr], checks: [tests] }, "octo/repo", 99, settings(true), env);
@@ -252,7 +272,7 @@ describe("tests on demand", () => {
 		const changed = mockGitHub({ existingComments: [{ id: 3, ...first.comments[0] }] });
 		await runPlan({ pullRequests: [pr], checks: [tests, container] }, "octo/repo", 99, both, env);
 		expect(changed.comments).toEqual([]);
-		expect(changed.edits).toEqual([{ id: "3", body: expect.stringContaining("| Container tests | ⏳ esperando |") }]);
+		expect(changed.edits).toEqual([{ id: "3", body: expect.stringContaining("| Container tests | ⏳ waiting |") }]);
 
 		const draft = mockGitHub();
 		await runPlan({ pullRequests: [{ ...pr, draft: true }], checks: [tests] }, "octo/repo", 99, settings(true), env);
@@ -267,21 +287,21 @@ describe("tests on demand", () => {
 		const commanded = mockGitHub({ existingComments: [comment] });
 		await runPlan({ pullRequests: [7], checks: [tests], command: { commentId: 5 } }, "octo/repo", 99, settings(true), env);
 		expect(commanded.comments).toEqual([]);
-		expect(commanded.edits).toEqual([{ id: "3", body: expect.stringContaining("### ✅ Testes: passaram no commit `abc123`") }]);
-		expect(commanded.edits[0].body).toContain("Não faça mais push");
+		expect(commanded.edits).toEqual([{ id: "3", body: expect.stringContaining("### ✅ Tests: passed on commit `abc123`") }]);
+		expect(commanded.edits[0].body).toContain("Do not push again");
 
 		const pushed = mockGitHub({ existingComments: [{ id: 3, body: commanded.edits[0].body }] });
 		await runPlan({ pullRequests: [{ ...pr, head: { sha: "def4567" } }], checks: [tests] }, "octo/repo", 99, settings(true), env);
 		expect(pushed.comments).toEqual([]);
-		expect(pushed.edits).toEqual([{ id: "3", body: expect.stringContaining("### ⏳ Testes: esperando `/quality-flare run` (`def4567`)") }]);
-		expect(pushed.edits[0].body).toContain("a execução no commit `abc123` não vale para ele");
+		expect(pushed.edits).toEqual([{ id: "3", body: expect.stringContaining("### ⏳ Tests: waiting for `/quality-flare run` (`def4567`)") }]);
+		expect(pushed.edits[0].body).toContain("The run on commit `abc123` does not count for it");
 
 		// The note stays while the new commit waits, even when something else rewrites the comment.
 		const reviewed = mockGitHub({ existingComments: [{ id: 3, body: pushed.edits[0].body }] });
 		const container = { ...tests, id: "container-tests", name: "Container tests" };
 		const both = { enabled: true, enabledChecks: new Set(["tests", "container-tests"]), onDemand: true };
 		await runPlan({ pullRequests: [{ ...pr, head: { sha: "def4567" } }], checks: [tests, container] }, "octo/repo", 99, both, env);
-		expect(reviewed.edits[0].body).toContain("a execução no commit `abc123` não vale para ele");
+		expect(reviewed.edits[0].body).toContain("The run on commit `abc123` does not count for it");
 	});
 
 	it("updates the status comment when a test run finishes on the PR's head", async () => {
@@ -289,7 +309,7 @@ describe("tests on demand", () => {
 		const finished = (sha: string, appId = 1) => ({ pullRequests: [7], checks: [], finished: { sha, appId } });
 		const failed = mockGitHub({ existingComments: [comment], existingRuns: { Tests: "completed:failure" } });
 		await runPlan(finished("abc123"), "octo/repo", 99, settings(true), env);
-		expect(failed.edits).toEqual([{ id: "3", body: expect.stringContaining("### ❌ Testes: falharam no commit `abc123`") }]);
+		expect(failed.edits).toEqual([{ id: "3", body: expect.stringContaining("### ❌ Tests: failed on commit `abc123`") }]);
 		expect(failed.edits[0].body).toContain("| Tests | ❌ failure |");
 
 		const other = mockGitHub({ existingComments: [comment], existingRuns: { Tests: "completed:failure" } });
@@ -300,7 +320,7 @@ describe("tests on demand", () => {
 		const running = mockGitHub({ existingComments: [comment], existingRuns: { Tests: "in_progress" } });
 		await runPlan({ pullRequests: [7], checks: [tests], command: { commentId: 5 } }, "octo/repo", 99, settings(true), env);
 		expect(running.reactions).toEqual([{ content: "eyes" }]);
-		expect(running.edits).toEqual([{ id: "3", body: expect.stringContaining("### 🏃 Testes: rodando no commit `abc123`") }]);
+		expect(running.edits).toEqual([{ id: "3", body: expect.stringContaining("### 🏃 Tests: running on commit `abc123`") }]);
 	});
 
 	it("comments when a draft with a queued check becomes ready for review", async () => {
@@ -313,7 +333,7 @@ describe("tests on demand", () => {
 	it("keeps the passed runs when a push only merges the base into a head that passed", async () => {
 		const merged = { ...pr, head: { sha: "mrg999" } };
 		const fromBase = { status: "ahead", files: [{ filename: "src/a.ts", status: "modified", sha: "blob1" }] };
-		const passed = (name: string, conclusion = "success") => ({ name, status: "completed", conclusion, html_url: `https://github.test/${name}`, output: { title: "Passou" } });
+		const passed = (name: string, conclusion = "success") => ({ name, status: "completed", conclusion, html_url: `https://github.test/${name}`, output: { title: "Passed" } });
 		const fake = (changes: Partial<MergeFake> = {}): MergeFake => ({
 			parents: { mrg999: ["abc123", "main01"] },
 			runs: { abc123: [passed("Tests"), passed("Typecheck"), passed("Closes an issue", "failure")] },
@@ -326,7 +346,7 @@ describe("tests on demand", () => {
 		expect(ran).toEqual([]);
 		// Every run the tests reported comes along, Typecheck included; checks that run on push don't.
 		expect(clean.checkRuns).toEqual([
-			expect.objectContaining({ name: "Tests", head_sha: "mrg999", conclusion: "success", output: expect.objectContaining({ title: "Reaproveitado de abc123: Passou" }) }),
+			expect.objectContaining({ name: "Tests", head_sha: "mrg999", conclusion: "success", output: expect.objectContaining({ title: "Reused from abc123: Passed" }) }),
 			expect.objectContaining({ name: "Typecheck", head_sha: "mrg999", conclusion: "success" }),
 		]);
 		expect(clean.checkRuns[0].output).toEqual(expect.objectContaining({ summary: expect.stringContaining("https://github.test/Tests") }));
@@ -401,9 +421,9 @@ describe("tests on demand", () => {
 		await runPlan({ pullRequests: [7], checks: [tests], command: { commentId: 5 } }, "octo/repo", 99, both, env);
 		expect(ran).toEqual([]);
 		expect(blocked.checkRuns).toEqual([]);
-		expect(blocked.comments).toEqual([{ body: expect.stringContaining("### ⏸️ Testes: esperando o Codex review (`abc123`)") }]);
-		expect(blocked.comments[0].body).toContain("O último `/quality-flare run` não rodou nada.");
-		expect(blocked.comments[0].body).toContain("O **Codex review** ainda bloqueia esta PR (1 sugestão do Codex sem resolver)");
+		expect(blocked.comments).toEqual([{ body: expect.stringContaining("### ⏸️ Tests: waiting for the Codex review (`abc123`)") }]);
+		expect(blocked.comments[0].body).toContain("The last `/quality-flare run` did not run anything.");
+		expect(blocked.comments[0].body).toContain("The **Codex review** still blocks this PR (1 unresolved Codex suggestion)");
 		expect(blocked.reactions).toEqual([{ content: "confused" }]);
 		const comment = { id: 3, ...blocked.comments[0] };
 
@@ -415,13 +435,13 @@ describe("tests on demand", () => {
 		// Once the conversation is resolved, the Codex review's own update says the tests can run.
 		const settled = mockGitHub({ review: review(true), existingComments: [comment] });
 		await runPlan({ pullRequests: [pr], checks: [codexReview] }, "octo/repo", 99, both, env);
-		expect(settled.edits).toEqual([{ id: "3", body: expect.stringContaining("### ⏳ Testes: esperando `/quality-flare run` (`abc123`)") }]);
+		expect(settled.edits).toEqual([{ id: "3", body: expect.stringContaining("### ⏳ Tests: waiting for `/quality-flare run` (`abc123`)") }]);
 
 		const clear = mockGitHub({ review: review(true), existingComments: [{ id: 3, body: settled.edits[0].body }] });
 		await runPlan({ pullRequests: [7], checks: [tests], command: { commentId: 5 } }, "octo/repo", 99, both, env);
 		expect(ran).toEqual([7]);
 		expect(clear.comments).toEqual([]);
-		expect(clear.edits).toEqual([{ id: "3", body: expect.stringContaining("### ✅ Testes: passaram") }]);
+		expect(clear.edits).toEqual([{ id: "3", body: expect.stringContaining("### ✅ Tests: passed") }]);
 	});
 
 	it("ignores run commands with the setting off", async () => {

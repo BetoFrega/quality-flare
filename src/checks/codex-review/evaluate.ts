@@ -34,7 +34,7 @@ export function parseSuggestion(body: string): { priority?: string; title: strin
 		.replace(/!\[[^\]]*\]\([^)]*\)/g, "")
 		.replace(/<\/?sub>/g, "")
 		.trim();
-	return { priority, title: title || "Sugestão do Codex" };
+	return { priority, title: title || "Codex suggestion" };
 }
 
 const RUNNING = /^(in[ _-]?progress|running|queued|pending)$/i;
@@ -81,13 +81,13 @@ export function evaluate(activity: ReviewActivity): CheckResult {
 	const findings = openFindings(activity);
 	if (findings.length) {
 		const list = findings.map(
-			(f) => `- ${f.priority ? `**${f.priority}** ` : ""}[${f.title}](${f.url})${f.outdated ? " _(código já mudou)_" : ""}`,
+			(f) => `- ${f.priority ? `**${f.priority}** ` : ""}[${f.title}](${f.url})${f.outdated ? " _(code already changed)_" : ""}`,
 		);
 		return {
 			conclusion: "failure",
-			title: findings.length === 1 ? "1 sugestão do Codex sem resolver" : `${findings.length} sugestões do Codex sem resolver`,
+			title: findings.length === 1 ? "1 unresolved Codex suggestion" : `${findings.length} unresolved Codex suggestions`,
 			summary: [
-				"Resolva cada conversa aberta pelo Codex (corrigindo ou respondendo por que não) e clique em **Resolve conversation**. O check reavalia sozinho.",
+				"Resolve each conversation Codex opened (fix it or reply with why not) and click **Resolve conversation**. The check runs again on its own.",
 				list.join("\n"),
 			].join("\n\n"),
 		};
@@ -95,8 +95,8 @@ export function evaluate(activity: ReviewActivity): CheckResult {
 	if (isReviewing(activity)) {
 		return {
 			conclusion: "pending",
-			title: "O Codex está revisando a PR",
-			summary: "Espere a review do Codex terminar. O check reavalia sozinho quando ela chegar.",
+			title: "Codex is reviewing the PR",
+			summary: "Wait for the Codex review to finish. The check runs again on its own when it arrives.",
 		};
 	}
 	const resolved = activity.threads.filter((t) => isCodex(t.author)).length;
@@ -104,15 +104,15 @@ export function evaluate(activity: ReviewActivity): CheckResult {
 	if (!reviewed) {
 		return {
 			conclusion: "neutral",
-			title: "O Codex ainda não revisou esta PR",
-			summary: "Nenhuma review do Codex por enquanto. Quando ela chegar, o check reavalia sozinho. Para pedir uma, comente `@codex review`.",
+			title: "Codex has not reviewed this PR yet",
+			summary: "No Codex review yet. When it arrives, the check runs again on its own. To ask for one, comment `@codex review`.",
 		};
 	}
 	return {
 		conclusion: "success",
-		title: resolved ? `Todas as sugestões do Codex foram resolvidas (${resolved})` : "O Codex não encontrou problemas",
+		title: resolved ? `All Codex suggestions were resolved (${resolved})` : "Codex found no problems",
 		summary: resolved
-			? "Cada conversa aberta pelo Codex foi resolvida."
-			: "O Codex revisou a PR e não deixou sugestões.",
+			? "Every conversation Codex opened was resolved."
+			: "Codex reviewed the PR and left no suggestions.",
 	};
 }

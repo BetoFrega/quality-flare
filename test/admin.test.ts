@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { handleAdmin } from "../src/admin/index.ts";
+import { renderRunPage } from "../src/admin/runs-page.ts";
+import { LIVE_SCRIPT } from "../src/admin/live-script.ts";
 import type { Check } from "../src/checks/types.ts";
 import type { MetricsStore, Usage } from "../src/metrics.ts";
 import type { RunStore, TestRunDetail } from "../src/runs.ts";
@@ -17,7 +19,7 @@ const access = { aud: "aud", getIdentity: async () => ({ email: "me@example.com"
 const NOW = 10 * 60_000;
 const history: TestRunDetail[] = [
 	{
-		id: 2, repo: "octo/app", pr: 4, sha: "bbbbbbbbbb", status: "completed", conclusion: "failure", title: "1 falha em 2 testes",
+		id: 2, repo: "octo/app", pr: 4, sha: "bbbbbbbbbb", status: "completed", conclusion: "failure", title: "1 failure in 2 tests",
 		startedAt: NOW - 90_000, finishedAt: NOW - 87_500, summary: "",
 		report: {
 			files: [{
@@ -26,7 +28,7 @@ const history: TestRunDetail[] = [
 			}],
 		},
 	},
-	{ id: 1, repo: "octo/app", pr: 3, sha: "aaaaaaaaaa", status: "running", conclusion: null, title: null, startedAt: NOW - 90 * 60_000, finishedAt: null, summary: null, report: null },
+	{ id: 1, repo: "octo/app", pr: 3, sha: "aaaaaaaaaa", status: "running", conclusion: null, title: null, startedAt: NOW - 90 * 60_000, finishedAt: null, container: true, summary: null, report: null },
 ];
 const runs: RunStore = {
 	start: async () => 0,
@@ -37,7 +39,7 @@ const runs: RunStore = {
 };
 
 const usage: Usage = { attempts: 12, retries: 2, crashes: 1, splits: 2, dynamicWorkers: 10, cpuMs: 45_000, wallMs: 600_000 };
-const box = { runs: 1, wallMs: 600_000, cpuUs: 1_200_000_000, unmeasured: 0 };
+const box = { runs: 1, wallMs: 600_000, memoryGiBs: 7_200, diskGBs: 12_000, cpuUs: 1_200_000_000, unmeasured: 0 };
 const metrics: MetricsStore = {
 	start: async () => {},
 	finish: async () => {},
@@ -96,16 +98,59 @@ describe("admin", () => {
 		expect(await res.text()).toContain("/setup");
 	});
 
+	it("says why the Tests checks are missing when the deploy left them out", async () => {
+		const { env, call } = setup();
+		expect(await (await call(new Request("https://worker.example/admin"))).text()).not.toContain("Workers Paid");
+		env.TESTS_OFF = "free-plan";
+		expect(await (await call(new Request("https://worker.example/admin"))).text()).toContain("Workers Paid");
+	});
+
 	it("links to this installation's own App for installing on more repositories", async () => {
 		const { call } = setup();
 		expect(await (await call(new Request("https://worker.example/admin"))).text()).toContain("https://github.com/apps/qf-test/installations/new");
 	});
 
-	it("links to this installation's docs and to the project's site", async () => {
+	it("separates the admin's sections from the links to this installation's docs and the project's site", async () => {
 		const { call } = setup();
 		const page = await (await call(new Request("https://worker.example/admin"))).text();
-		expect(page).toContain('<a href="/docs">Docs</a>');
-		expect(page).toContain('<a href="https://quality-flare.frega.dev">Site</a>');
+		expect(page).toContain(
+			'<nav class="sections" aria-label="Sections"><a href="/admin" aria-current="page">Repositories</a><a href="/admin/runs">Test runs</a><a href="/admin/costs">Costs</a></nav>',
+		);
+		expect(page).toContain('<a href="/docs">Docs<span aria-hidden="true"> ↗</span></a>');
+		expect(page).toContain('<a href="https://quality-flare.frega.dev">Site<span aria-hidden="true"> ↗</span></a>');
+		expect(page).toContain('<span class="who" title="me@example.com">me@example.com</span>');
+	});
+
+	it("links each repository to its runs and costs, naming the repository on repeated controls", async () => {
+		const { call } = setup();
+		const page = await (await call(new Request("https://worker.example/admin"))).text();
+		expect(page).toContain('<a href="/admin/runs?repo=octo%2Fapp" aria-label="Test runs of octo/app">Test runs</a>');
+		expect(page).toContain('<a href="/admin/costs?repo=octo%2Fapp" aria-label="Costs of octo/app">Costs</a>');
+		expect(page).toContain('aria-label="Open octo/app on GitHub">Open on GitHub</a>');
+		expect(page).toContain('aria-label="Enable all checks on octo/app">Enable all</button>');
+		expect(page).toContain('aria-label="Disable all checks on octo/&#60;secret&#62;">Disable all</button>');
+		expect(page).toContain('href="/admin/runs?repo=octo%2F%3Csecret%3E"');
+	});
+
+	it("keeps the admin's navigation on error pages for signed-in people, with a way back", async () => {
+		const { call } = setup();
+		for (const res of [await call(new Request("https://worker.example/admin/nope")), await call(new Request("https://worker.example/admin/runs/9")), await call(post("/admin/repos", { repo: "octo/not-installed" }))]) {
+			const page = await res.text();
+			expect(page).toContain('<nav class="sections"');
+			expect(page).not.toContain('aria-current="page"');
+			expect(page).toContain("me@example.com");
+			expect(page).toContain('<a href="/admin">Back to Repositories</a>');
+		}
+		const crossSite = await (await call(post("/admin/repos", { repo: "octo/app" }, "https://evil.example"))).text();
+		expect(crossSite).toContain('<nav class="sections"');
+		expect(crossSite).not.toContain("Back to Repositories");
+	});
+
+	it("shows no admin navigation before Access lets the person in", async () => {
+		const { env, callAs } = setup();
+		expect(await (await callAs(undefined, new Request("https://worker.example/admin"))).text()).not.toContain("<nav");
+		env.ACCESS_AUD = "";
+		expect(await (await callAs(access, new Request("https://worker.example/admin"))).text()).not.toContain("<nav");
 	});
 
 	it("lists installed repositories, off by default, with their checks collapsed", async () => {
@@ -116,12 +161,23 @@ describe("admin", () => {
 		const html = await res.text();
 		expect(res.status).toBe(200);
 		expect(html).toContain("me@example.com");
-		expect(html).toContain("1 de 2 checks ativos");
-		expect(html).toContain("0 de 2 checks ativos");
-		expect(html).toContain('aria-label="Ativar checks em octo/app"');
-		expect(html).toMatch(/aria-checked="true" aria-label="Ativar checks em octo\/app"/);
-		expect(html).toMatch(/aria-checked="false" aria-label="Ativar checks em octo\/&#60;secret&#62;"/);
+		expect(html).toContain("1 of 2 checks enabled");
+		expect(html).toContain("no checks run: repository disabled");
+		expect(html).toMatch(/id="octo\/app:repo" role="switch" aria-checked="true" aria-label="Enable checks on octo\/app"/);
+		expect(html).toMatch(/aria-checked="false" aria-label="Enable checks on octo\/&#60;secret&#62;">\s*<span class="track"><span class="thumb"><\/span><\/span><span class="label">Disabled</);
 		expect(html).not.toContain("<details open");
+		expect(html).not.toContain('role="status"');
+	});
+
+	it("warns that turning an enabled repository off blocks the checks branch protection requires", async () => {
+		const { env, call } = setup();
+		await setRepoEnabled(env.SETTINGS, "octo/app", true);
+		const html = await (await call(new Request("https://worker.example/admin"))).text();
+		const warning = /<p class="note warn" id="octo\/app:warning">([^<]+)<\/p>/.exec(html)?.[1];
+		expect(warning).toContain("blocks merging PRs");
+		expect(warning).toContain("Disable all");
+		expect(html).toMatch(new RegExp(`id="octo/app:repo"[^>]*aria-describedby="octo/app:warning" title="${warning}"`));
+		expect(html.match(/class="note warn"/g)).toHaveLength(1);
 		expect(html).not.toContain("<secret>");
 	});
 
@@ -142,10 +198,10 @@ describe("admin", () => {
 		expect(names(await (await call(new Request("https://worker.example/admin?q=APP"))).text())).toEqual(["octo/app"]);
 		const disabled = await (await call(new Request("https://worker.example/admin?status=disabled&sort=bogus"))).text();
 		expect(names(disabled)).toEqual(["octo/app"]);
-		expect(disabled).toContain("1 de 2");
+		expect(disabled).toContain("no checks run");
 		expect(disabled).toContain('<option value="disabled" selected>');
 		expect(disabled).toContain('<option value="name" selected>');
-		expect(await (await call(new Request("https://worker.example/admin?q=nothing"))).text()).toContain("Nenhum repositório com esses filtros");
+		expect(await (await call(new Request("https://worker.example/admin?q=nothing"))).text()).toContain("No repositories match these filters");
 	});
 
 	it("keeps the filters after a change", async () => {
@@ -153,28 +209,43 @@ describe("admin", () => {
 		const page = await (await call(new Request("https://worker.example/admin?q=app&sort=enabled"))).text();
 		expect(page).toContain('<input type="hidden" name="back" value="q=app&#38;sort=enabled">');
 		const res = await call(post("/admin/checks", { repo: "octo/app", check: "other", enabled: "true", back: "q=app&sort=enabled&evil=1" }));
-		expect(res.headers.get("Location")).toBe("https://worker.example/admin?q=app&sort=enabled&open=octo%2Fapp#octo%2Fapp");
+		expect(res.headers.get("Location")).toBe("https://worker.example/admin?q=app&sort=enabled&open=octo%2Fapp&changed=octo%2Fapp%3Acheck%3Aother#octo%2Fapp%3Acheck%3Aother");
 	});
 
 	it("enables a repository", async () => {
 		const { env, call } = setup();
 		const res = await call(post("/admin/repos", { repo: "octo/app", enabled: "true" }));
 		expect(res.status).toBe(303);
-		expect(res.headers.get("Location")).toBe("https://worker.example/admin#octo%2Fapp");
+		expect(res.headers.get("Location")).toBe("https://worker.example/admin?changed=octo%2Fapp%3Arepo#octo%2Fapp%3Arepo");
 		expect((await getRepoSettings(env.SETTINGS, "octo/app")).enabled).toBe(true);
 	});
 
 	it("toggles one check and keeps the repository expanded", async () => {
 		const { env, call } = setup();
 		const res = await call(post("/admin/checks", { repo: "octo/app", check: "other", enabled: "true" }));
-		expect(res.headers.get("Location")).toBe("https://worker.example/admin?open=octo%2Fapp#octo%2Fapp");
+		expect(res.headers.get("Location")).toBe("https://worker.example/admin?open=octo%2Fapp&changed=octo%2Fapp%3Acheck%3Aother#octo%2Fapp%3Acheck%3Aother");
 		expect((await getRepoSettings(env.SETTINGS, "octo/app")).enabledChecks).toEqual(new Set(["other"]));
+	});
+
+	it("returns focus to the switch that was used and confirms the change there", async () => {
+		const { env, call } = setup();
+		await setChecksEnabled(env.SETTINGS, "octo/app", ["other"], true);
+		const html = await (await call(new Request("https://worker.example/admin?open=octo%2Fapp&changed=octo%2Fapp%3Acheck%3Aother"))).text();
+		expect(html).toMatch(/id="octo\/app:check:other" role="switch" aria-checked="true" aria-label="Other on octo\/app" aria-describedby="octo\/app:check:other-status">/);
+		expect(html).toContain('<span class="saved" role="status" id="octo/app:check:other-status">Saved</span>');
+		expect(html.match(/role="status"/g)).toHaveLength(1);
+		// The confirmation is not carried into the forms' filter round-trip.
+		expect(html).not.toContain('name="back"');
 	});
 
 	it("enables and disables every check of a repository at once", async () => {
 		const { env, call } = setup();
-		await call(post("/admin/checks/all", { repo: "octo/app", enabled: "true" }));
+		const res = await call(post("/admin/checks/all", { repo: "octo/app", enabled: "true" }));
+		expect(res.headers.get("Location")).toBe("https://worker.example/admin?open=octo%2Fapp&changed=octo%2Fapp%3Achecks#octo%2Fapp%3Achecks");
 		expect((await getRepoSettings(env.SETTINGS, "octo/app")).enabledChecks).toEqual(new Set(["closes-issue", "other"]));
+		const page = await (await call(new Request("https://worker.example/admin?open=octo%2Fapp&changed=octo%2Fapp%3Achecks"))).text();
+		expect(page).toContain('<p class="saved" role="status" id="octo/app:checks-status">Saved: 2 of 2 checks enabled.</p>');
+		expect(page).toContain('<ul class="checks" id="octo/app:checks" tabindex="-1" aria-describedby="octo/app:checks-status">');
 		await call(post("/admin/checks/all", { repo: "octo/app", enabled: "false" }));
 		expect((await getRepoSettings(env.SETTINGS, "octo/app")).enabledChecks).toEqual(new Set());
 	});
@@ -182,7 +253,7 @@ describe("admin", () => {
 	it("turns tests on demand on for a repository", async () => {
 		const { env, call } = setup();
 		const res = await call(post("/admin/on-demand", { repo: "octo/app", enabled: "true" }));
-		expect(res.headers.get("Location")).toBe("https://worker.example/admin?open=octo%2Fapp#octo%2Fapp");
+		expect(res.headers.get("Location")).toBe("https://worker.example/admin?open=octo%2Fapp&changed=octo%2Fapp%3Aon-demand#octo%2Fapp%3Aon-demand");
 		expect((await getRepoSettings(env.SETTINGS, "octo/app")).onDemand).toBe(true);
 	});
 
@@ -204,10 +275,16 @@ describe("admin", () => {
 	it("lists test runs, flagging runs that never finished", async () => {
 		const { call } = setup();
 		const page = await (await call(new Request("https://worker.example/admin/runs"))).text();
-		expect(page).toContain('<a href="/admin/runs/2">✗ Falhou</a>');
-		expect(page).toContain("1 falha em 2 testes");
+		// The icon is hidden from screen readers; the label says it.
+		expect(page).toContain('<a href="/admin/runs/2"><span aria-hidden="true">✗</span> Failed</a>');
+		expect(page).toContain("1 failure in 2 tests");
 		expect(page).toContain("2.5 s");
-		expect(page).toContain('<a href="/admin/runs/1">! Interrompida</a>');
+		expect(page).toContain('<a href="/admin/runs/1"><span aria-hidden="true">!</span> Interrupted</a>');
+		expect(page).toContain("<th>Check</th><th>Target</th>");
+		expect(page).toContain('title="Dynamic Workers created (and crashes)">Workers</th>');
+		expect(page).toContain("<td>Tests</td>");
+		expect(page).toContain("<td>Container tests</td>");
+		expect(page).toContain("The 50 most recent runs of the Tests and Container tests checks.");
 		// No ever-growing duration for a run that died.
 		expect(page).not.toContain("90 min 0 s");
 		expect(page).toContain(`<td class="num">—</td>`);
@@ -222,9 +299,9 @@ describe("admin", () => {
 		const page = await (await call("/admin/runs?repo=octo%2Fapp&state=failure&sort=longest")).text();
 		expect(queries[0]).toEqual({ repo: "octo/app", state: "failure", sort: "longest" });
 		expect(page).toContain('<option value="octo/app" selected>');
-		expect(page).toContain('<option value="failure" selected>Falhou</option>');
+		expect(page).toContain('<option value="failure" selected>Failed</option>');
 		expect(page).toContain('<option value="longest" selected>');
-		expect(page).toContain("Nenhuma execução com esses filtros");
+		expect(page).toContain("No runs match these filters");
 		await call("/admin/runs?state=whatever&sort=x");
 		expect(queries[1]).toEqual({ repo: undefined, state: undefined, sort: undefined });
 	});
@@ -235,8 +312,25 @@ describe("admin", () => {
 		const store = { ...runs, list: async () => [fresh] };
 		const res = await handleAdmin(new Request("https://worker.example/admin/runs"), env, access, { checks, runs: () => store, now: () => NOW });
 		const page = await res.text();
-		expect(page).toContain("● Rodando");
+		expect(page).toContain('<span aria-hidden="true">●</span> Running</a>');
+		expect(page).toContain('<span data-progress="1" role="status" aria-live="polite">');
 		expect(page).toContain('<meta http-equiv="refresh" content="5">');
+		expect(page).not.toContain("past deadline");
+	});
+
+	it("says how long a run has been running, and flags one past its deadline", async () => {
+		const { env } = setup();
+		const slow = { ...history[1], startedAt: NOW - 20 * 60_000 };
+		const late = { ...history[1], id: 3, startedAt: NOW - 65 * 60_000 };
+		const store = { ...runs, list: async () => [slow, late], get: async () => late };
+		const call = (path: string) => handleAdmin(new Request(`https://worker.example${path}`), env, access, { checks, runs: () => store, now: () => NOW });
+		const list = await (await call("/admin/runs")).text();
+		expect(list).toContain('<td class="state running"><a href="/admin/runs/1"><span aria-hidden="true">●</span> Running for 20 min</a>');
+		expect(list).toContain('<td class="state running overdue"><a href="/admin/runs/3"><span aria-hidden="true">●</span> Running for 65 min · past deadline</a>');
+		expect(list).toContain("A run going for more than 60 min is past its deadline and probably stuck. At 75 min it shows as interrupted.");
+		const page = await (await call("/admin/runs/3")).text();
+		expect(page).toContain('<h2 class="state running overdue"><span aria-hidden="true">●</span> Running for 65 min · past deadline</h2>');
+		expect(page).toContain("probably stuck");
 	});
 
 	it("shows each test of a run, escaping names and errors", async () => {
@@ -245,6 +339,14 @@ describe("admin", () => {
 		expect(page).toContain("test/a.test.ts");
 		expect(page).toContain("a › &#60;subtracts&#62;");
 		expect(page).toContain("<pre>AssertionError: expected 1 to be 2</pre>");
+		expect(page).toContain('<a href="https://github.com/octo/app/pull/4">octo/app#4</a>');
+		// Failures first, then the files (the failing one open), then the usage.
+		const [failures, files, cost] = ["<h3>Failures</h3>", "<h3>Files</h3>", "<h3>Usage and cost</h3>"].map((h) => page.indexOf(h));
+		expect(failures).toBeGreaterThan(-1);
+		expect(failures).toBeLessThan(files);
+		expect(files).toBeLessThan(cost);
+		expect(page).toContain('<details class="plain" open><summary><span class="state failure">');
+		expect(page).toContain('<span class="state failure" role="img" aria-label="failed">✗</span> <span class="mono">test/a.test.ts</span> › a › &#60;subtracts&#62;<pre>');
 		expect((await call(new Request("https://worker.example/admin/runs/9"))).status).toBe(404);
 	});
 
@@ -270,16 +372,34 @@ describe("admin", () => {
 	it("shows what each run used and an estimated cost", async () => {
 		const { call } = setup();
 		const list = await (await call(new Request("https://worker.example/admin/runs"))).text();
-		// 10 Dynamic Workers × US$ 0.002 + 45,000 ms of CPU + requests and queue operations
-		expect(list).toContain('<td class="num">10 <span class="failure" title="quedas">1✗</span></td><td class="num">US$ 0.02</td>');
+		// 10 Dynamic Workers × $0.002 + 45,000 ms of CPU + requests and queue operations
+		expect(list).toContain('<td class="num">10 <span class="failure" title="Dynamic Workers that crashed">1✗</span></td><td class="num">$0.02</td>');
 		// A container run: 12 GiB and 20 GB for 600 s, plus 1,200 vCPU-s.
-		expect(list).toContain('<td class="num"><span title="Rodou num container">—</span></td><td class="num">US$ 0.04</td>');
+		expect(list).toContain('<td class="num"><span title="Ran in a container">—</span></td><td class="num">$0.04</td>');
 		const page = await (await call(new Request("https://worker.example/admin/runs/2"))).text();
-		expect(page).toContain("Uso e custo");
-		expect(page).toContain("<dt>Quedas (memória)</dt><dd>1</dd>");
-		expect(page).toContain("Caiu (consumer sem memória?)");
+		expect(page).toContain("Usage and cost");
+		expect(page).toContain(">Crashed Dynamic Workers</dt><dd>1</dd>");
+		expect(page).toContain("Crashed (consumer out of memory?)");
 		expect(page).toContain('<span class="failure">exceededMemory</span>');
-		expect(page).toContain("Dividido (queda antes)");
+		expect(page).toContain("Split (after a crash)");
+	});
+
+	it("puts a run's Dynamic Workers and container usage under one heading", () => {
+		const both = renderRunPage(history[0], undefined, NOW, {
+			usage,
+			attempts: [{ runId: 2, shard: "0", attempt: 1, files: 5, startedAt: NOW - 90_000, finishedAt: NOW - 89_000, outcome: "ran", codeBytes: null, dynamicWorker: true, cpuMs: 900, dwWallMs: 1000, dwOutcome: "ok" }],
+			container: { wallMs: 600_000, cpuUs: 1_200_000_000 },
+		});
+		expect(both.split("Usage and cost").length - 1).toBe(1);
+		expect(both).toContain("<dt>Time on</dt>");
+		const alone = renderRunPage({ ...history[0], container: true }, undefined, NOW, { container: { wallMs: 600_000, cpuUs: undefined } });
+		expect(alone).toContain("<h3>Usage and cost</h3>");
+		expect(alone).toContain("<span>Container tests</span>");
+	});
+
+	it("keeps the reader's scroll position when the live script reloads the page", () => {
+		expect(LIVE_SCRIPT).toContain("sessionStorage.setItem(scrollKey, String(scrollY))");
+		expect(LIVE_SCRIPT).not.toContain("return location.reload()");
 	});
 
 	it("leaves the usage out of a run that has none recorded, or when it can't be read", async () => {
@@ -288,27 +408,38 @@ describe("admin", () => {
 		const res = await handleAdmin(new Request("https://worker.example/admin/runs"), env, access, { checks, runs: () => runs, metrics: () => broken, now: () => NOW });
 		expect(res.status).toBe(200);
 		const { call } = setup();
-		expect(await (await call(new Request("https://worker.example/admin/runs/1"))).text()).not.toContain("Uso e custo");
+		expect(await (await call(new Request("https://worker.example/admin/runs/1"))).text()).not.toContain("Usage and cost");
 	});
 
 	it("totals usage and cost per day and month, per repository", async () => {
 		const { call } = setup();
 		const page = await (await call(new Request("https://worker.example/admin/costs?repo=octo%2Fapp"))).text();
-		expect(page).toContain('<a href="/admin/costs" aria-current="page">Custos</a>');
+		expect(page).toContain('<a href="/admin/costs" aria-current="page">Costs</a>');
 		expect(page).toContain('<option value="octo/app" selected>');
 		expect(page).toContain('<td class="mono">1970-01-01</td>');
-		expect(page).toContain("<h3>Testes, mês 1970-01</h3>");
+		expect(page).toContain("<h4>Tests on Dynamic Workers, month 1970-01</h4>");
 		// Under the monthly allowances, a month costs nothing.
-		expect(page).toContain("<dt>Após franquia</dt><dd>US$ 0</dd>");
-		// The account's measured usage: 500 Dynamic Workers past the 1,000 included, and 40,000 GiB-s of container memory.
-		expect(page).toContain("<dt>Cobrança estimada do mês</dt><dd>US$ 1.10</dd>");
-		expect(page).toContain("<dt>Dynamic Workers</dt><dd>1.500 de 1.000</dd>");
-		expect(page).toContain("<dt>Memória dos containers</dt><dd>36,1 de 25 GiB-h</dd>");
-		expect(page).toContain("<dt>Containers após franquia</dt><dd>US$ 0.10</dd>");
+		expect(page).toContain("<dt>Past allowance</dt><dd>$0</dd>");
 		// The Container tests estimate.
-		expect(page).toContain("<h3>Containers, mês 1970-01</h3>");
-		expect(page).toContain("<dt>Custo estimado</dt><dd>US$ 0.04</dd>");
-		expect(page).toContain("<dt>CPU dos containers</dt><dd>20 de 375 vCPU-min</dd>");
+		expect(page).toContain("<h4>Container tests, month 1970-01</h4>");
+		expect(page).toContain("<dt>Estimated cost</dt><dd>$0.04</dd>");
+		expect(page).toContain("<dt>Container CPU</dt><dd>20 vCPU-min of 375 vCPU-min <span class=\"pct\">5%</span>");
+	});
+
+	it("leads with whether the account's measured month is inside the allowance", async () => {
+		const { call } = setup();
+		const page = await (await call(new Request("https://worker.example/admin/costs"))).text();
+		// 500 Dynamic Workers past the 1,000 included, and 40,000 GiB-s of container memory.
+		expect(page).toContain('<div class="lead over"><p class="verdict">Past the allowance in 1970-01: $1.10 to pay so far</p>');
+		expect(page).toContain("Highest use: Dynamic Workers, 150% of the allowance.");
+		expect(page).toContain('<dt>Dynamic Workers</dt><dd>1,500 of 1,000 <span class="pct failure">150%</span><meter min="0" max="1000" value="1500"');
+		expect(page).toContain("<dt>Account CPU</dt><dd>35.0 min of 8.3 h <span class=\"pct\">7%</span>");
+		expect(page).toContain("<dt>Container memory</dt><dd>36.1 GiB-h of 25 GiB-h <span class=\"pct failure\">144%</span>");
+		expect(page).toContain("<dt>Containers past the allowance</dt><dd>$0.10</dd>");
+		// The filter comes after the measured usage it doesn't change, and says so.
+		expect(page.indexOf('<section id="conta">')).toBeLessThan(page.indexOf('<form class="filters"'));
+		expect(page).toContain("The filter only applies to the estimates; the measured usage above is for the whole account.");
+		expect(page).toContain('<nav class="toc" aria-label="On this page"><a href="#account">');
 	});
 
 	it("says why the account's usage is missing", async () => {
@@ -320,6 +451,9 @@ describe("admin", () => {
 			account: async () => Promise.reject(new Error("GraphQL Analytics: 403")),
 			now: () => NOW,
 		});
-		expect(await res.text()).toContain("Não deu para ler o uso real da conta: GraphQL Analytics: 403");
+		const page = await res.text();
+		expect(page).toContain("Could not read the account's real usage: GraphQL Analytics: 403");
+		// The lead falls back to the estimates, which are under the allowance.
+		expect(page).toContain('<div class="lead"><p class="verdict">Estimate: within the allowance in 1970-01: $0 to pay so far</p>');
 	});
 });

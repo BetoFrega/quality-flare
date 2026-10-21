@@ -6,6 +6,7 @@ import { TURBO_PATH, turboToken } from "../../turbo-cache.ts";
 import type { Check, CheckResult } from "../types.ts";
 import { CONFIG_FILE, containerCommands, readContainerConfig, type ContainerCommand, type ContainerConfig } from "./config.ts";
 import { cancelRuns, cannotRun, CODE_ACTIONS, finishRun } from "./index.ts";
+import { DEFAULT_INSTANCE, instanceSize, type InstanceType } from "./instances.ts";
 import { d1JobStore, type JobStore } from "./jobs.ts";
 import { toCheckResult, type TestReport, type TestResult } from "./report.ts";
 
@@ -27,9 +28,6 @@ import { toCheckResult, type TestReport, type TestResult } from "./report.ts";
 
 const NAME = "Container tests";
 
-/** Instance type of every run: 4 vCPU, 12 GiB, 20 GB. A smaller one uses the same CPU for longer. */
-export const INSTANCE = { name: "standard-4", vcpu: 4, memoryGiB: 12, diskGB: 20 } as const;
-
 /** Containers prices (https://developers.cloudflare.com/containers/pricing/), in US dollars. */
 export const CONTAINER_PRICES = {
 	/** Per GiB-second of memory, for as long as the container runs, busy or not. */
@@ -50,7 +48,7 @@ export const RESTORE_WAIT_MS = 2 * 60_000;
 
 /**
  * A run still going this long after it started is failed and its container destroyed: about twice the
- * longest real run (a full run of macae, ~11 min), since a hung run is billed for every minute it stays up.
+ * longest full run seen so far (~11 min, on a large monorepo), since a hung run is billed for every minute it stays up.
  * qf-run.sh's step limits (STEP_MINUTES) stop a single step that hangs first.
  */
 export const BOX_DEADLINE_MS = 20 * 60_000;
@@ -60,6 +58,9 @@ const STEP_MINUTES = 15;
 
 /** Without a request or an alarm for this long, Cloudflare stops the container on its own. */
 const INACTIVITY_MS = 5 * 60_000;
+
+/** How long a run whose container went away keeps trying to close its commands' check runs. */
+const CLOSE_RETRY_MS = 60 * 60_000;
 
 const OUT = "/work/out";
 /** GitHub caps a check run summary at 65535 characters. */
@@ -88,6 +89,8 @@ export interface BoxJob {
 	restored?: string;
 	/** When the image was started instead of a snapshot that never came up (epoch milliseconds). */
 	fallbackAt?: number;
+	/** The config's `instance`; jobs started before it existed ran on DEFAULT_INSTANCE. */
+	instance?: InstanceType;
 }
 
 /** The last snapshot kept for a repository (the config's `snapshot`), in SETTINGS under snapshotKey. */
@@ -171,19 +174,19 @@ export async function startRun({ github, env, installationId, repo, pr, sha, bas
 	let checkRunId: number | undefined;
 	const commands: BoxCommand[] = [];
 	try {
-		if (runId === undefined) throw new Error("O D1 (quality-flare-runs) não respondeu; ele acompanha o container.");
+		if (runId === undefined) throw new Error("D1 (quality-flare-runs) did not respond. It tracks the container.");
 		// A newer push supersedes the PR's container run still going: its TestBox sees the job gone and destroys the container.
 		await cancelRuns(github, repo, await runs.running(repo, pr, runId), d1JobStore(env.RUNS), runs, live);
 		const config = await readConfig();
 		const detailsUrl = `${env.PUBLIC_URL}/admin/runs/${runId}`;
-		checkRunId = await github.startCheckRun(repo, sha, NAME, full ? "Rodando todos os testes num container" : "Rodando os testes num container", detailsUrl);
+		checkRunId = await github.startCheckRun(repo, sha, NAME, full ? "Running all tests in a container" : "Running the tests in a container", detailsUrl);
 		for (const { name } of containerCommands(config)) {
-			commands.push({ name, checkRunId: await github.startCheckRun(repo, sha, name, "Esperando os testes, no mesmo container", detailsUrl) });
+			commands.push({ name, checkRunId: await github.startCheckRun(repo, sha, name, "Waiting for the tests, in the same container", detailsUrl) });
 		}
 		await d1JobStore(env.RUNS).create(runId, { shards: 1, checkRunId, installationId });
 		const scope = full ? { full: true as const } : config.changed ? { changed: true as const } : {};
-		await startBox({ runId, repo, sha, base, installationId, checkRunId, commands, startedAt: Date.now(), ...scope }, config);
-		live.send({ type: "status", runId, text: "Container: iniciando" });
+		await startBox({ runId, repo, sha, base, installationId, checkRunId, commands, startedAt: Date.now(), instance: config.instance ?? DEFAULT_INSTANCE, ...scope }, config);
+		live.send({ type: "status", runId, text: "Container: starting" });
 		await live.flush();
 		return null;
 	} catch (error) {
@@ -200,7 +203,7 @@ export async function startRun({ github, env, installationId, repo, pr, sha, bas
 export async function startBox(job: BoxJob, config: ContainerConfig, boxes: DurableObjectNamespace = exports.TestBox): Promise<void> {
 	const stub = boxes.get(boxes.idFromName(String(job.runId)));
 	const res = await stub.fetch("https://box/start", { method: "POST", body: JSON.stringify({ job, config }) });
-	if (!res.ok) throw new Error(`O container não iniciou: ${await res.text()}`);
+	if (!res.ok) throw new Error(`The container did not start: ${await res.text()}`);
 }
 
 export class TestBox {
@@ -213,7 +216,7 @@ export class TestBox {
 		if (request.method !== "POST") return new Response("Not found", { status: 404 });
 		const { job, config } = (await request.json()) as { job: BoxJob; config: ContainerConfig };
 		const container = this.ctx.container;
-		if (!container) return new Response("Este Durable Object não tem container.", { status: 500 });
+		if (!container) return new Response("This Durable Object has no container.", { status: 500 });
 		const started = await this.start(container, job, config);
 		await container.setInactivityTimeout(INACTIVITY_MS);
 		await this.ctx.storage.put({ job: started, config });
@@ -234,7 +237,7 @@ export class TestBox {
 			? { api: `${this.env.PUBLIC_URL}${TURBO_PATH}`, token: await turboToken(secret, job.repo), cacheToken: await turboToken(secret, job.repo, job.full ? "files" : "read") }
 			: undefined;
 		// npm, GitHub and quality-flare's caches; the tokens reach this repository only.
-		const options = { instance: INSTANCE.name, enableInternet: true, env: boxEnv(job, config, token, turbo) };
+		const options = { instance: job.instance ?? DEFAULT_INSTANCE, enableInternet: true, env: boxEnv(job, config, token, turbo) };
 		const { restored: _, ...rest } = job;
 		const saved = usesSnapshot(config) && !fresh ? await this.env.SETTINGS.get<SavedSnapshot>(snapshotKey(job.repo), "json") : null;
 		if (saved && saved.image === container.images.tests) {
@@ -283,7 +286,23 @@ export class TestBox {
 		const job = await this.ctx.storage.get<BoxJob>("job");
 		const config = (await this.ctx.storage.get<ContainerConfig>("config")) ?? {};
 		const container = this.ctx.container;
-		if (!job || !container) return;
+		if (!job) return;
+		if (!container) {
+			// A deploy without the tests (no Workers Paid) took the container away mid-run: close the commands' check
+			// runs, which only this object knows (the sweep closes the run itself), trying again while GitHub fails.
+			let since = await this.ctx.storage.get<number>("closing");
+			if (since === undefined) {
+				since = Date.now();
+				await this.ctx.storage.put("closing", since);
+				await recordUsage(this.env.RUNS, job, { wallMs: since - job.startedAt });
+			}
+			if (!(await this.closeCommands(job)) && Date.now() - since < CLOSE_RETRY_MS) {
+				await this.ctx.storage.setAlarm(Date.now() + 60_000);
+				return;
+			}
+			await this.ctx.storage.deleteAll();
+			return;
+		}
 		// A cancelled run (its job gone) skips the wait: pollBox below abandons it at once.
 		if ((job.restored || job.fallbackAt) && !(await this.ctx.storage.get("seen")) && (await d1JobStore(this.env.RUNS).get(job.runId))) {
 			if (!container.running) {
@@ -339,7 +358,7 @@ export class TestBox {
 	private async publish(job: BoxJob, results: BoxResults, report: TestReport | undefined, usage: BoxUsage): Promise<void> {
 		// Closing the job claims the run: a newer push or the sweep closing it first means it was already reported.
 		const closed = await d1JobStore(this.env.RUNS).close(job.runId);
-		await recordUsage(this.env.RUNS, job.runId, usage);
+		await recordUsage(this.env.RUNS, job, usage);
 		if (!closed) return this.abandon(job, usage);
 		const github = await this.github(job);
 		await github.completeCheckRun(job.repo, job.checkRunId, results.tests);
@@ -356,12 +375,31 @@ export class TestBox {
 
 	/** The run was cancelled or swept, which reported the Container tests check run; the commands' are still open. */
 	private async abandon(job: BoxJob, usage: BoxUsage): Promise<void> {
-		await recordUsage(this.env.RUNS, job.runId, usage);
+		await recordUsage(this.env.RUNS, job, usage);
 		const finished = await this.finished();
 		const open = job.commands.filter((_, i) => !finished.has(i));
 		if (!open.length) return;
 		const github = await this.github(job);
 		for (const command of open) await github.completeCheckRun(job.repo, command.checkRunId, COMMAND_CANCELLED).catch(logError);
+	}
+
+	/** Completes the commands' check runs still open, keeping which closed; whether all are closed now. */
+	private async closeCommands(job: BoxJob): Promise<boolean> {
+		const shown: Shown = (await this.ctx.storage.get<Shown>("shown")) ?? { outputs: {}, finished: [], failures: 0 };
+		try {
+			const github = await this.github(job);
+			for (const [i, command] of job.commands.entries()) {
+				if (shown.finished.includes(i)) continue;
+				await github.completeCheckRun(job.repo, command.checkRunId, COMMAND_CANCELLED);
+				shown.finished.push(i);
+			}
+			return true;
+		} catch (error) {
+			logError(error);
+			return false;
+		} finally {
+			await this.ctx.storage.put("shown", shown);
+		}
 	}
 
 	/**
@@ -384,7 +422,7 @@ export class TestBox {
 		const counts = progress.counts;
 		if (counts) {
 			for (const failure of counts.failures.slice(shown.failures)) {
-				live.send({ type: "test", runId: job.runId, file: failure.file, name: failure.name || "(fora dos testes)", state: "fail", errors: [failure.error] });
+				live.send({ type: "test", runId: job.runId, file: failure.file, name: failure.name || "(outside the tests)", state: "fail", errors: [failure.error] });
 			}
 			shown.failures = Math.max(shown.failures, counts.failures.length);
 			live.send({ type: "counts", runId: job.runId, pass: counts.passed, fail: counts.failed + counts.broken, other: counts.skipped, total: counts.tests || undefined });
@@ -421,15 +459,15 @@ export async function alertFullRun(github: Pick<GitHubClient, "createIssue">, jo
 	);
 	if (!failed.length) return undefined;
 	const body = [
-		`A run completa diária do quality-flare em \`${job.base}\` (${job.sha}) falhou:`,
+		`The daily full quality-flare run on \`${job.base}\` (${job.sha}) failed:`,
 		"",
 		...failed.map((c) => `- **${c.name}**: ${c.result!.title}`),
 		"",
-		"As PRs rodam só os testes afetados pelo que mudam, então alguma mudança já na branch quebrou algo que a run dela não cobriu.",
+		"PRs run only the tests affected by what they change, so a change already on the branch broke something its PR run did not cover.",
 		"",
-		`Detalhes: ${runUrl}`,
+		`Details: ${runUrl}`,
 	].join("\n");
-	return github.createIssue(job.repo, `A run completa de ${job.base} falhou em ${job.sha.slice(0, 7)}`, body);
+	return github.createIssue(job.repo, `The full run of ${job.base} failed at ${job.sha.slice(0, 7)}`, body);
 }
 
 /** The container's environment (see qf-run.sh). */
@@ -482,6 +520,8 @@ function hash(text: string): string {
 export interface BoxUsage {
 	wallMs: number;
 	cpuUs?: number;
+	/** The instance type it ran on; DEFAULT_INSTANCE when missing. */
+	instance?: string;
 }
 
 export interface BoxResults {
@@ -524,30 +564,30 @@ export async function pollBox(job: BoxJob, deps: PollDeps): Promise<"poll" | "do
 	if (wallMs > BOX_DEADLINE_MS || !deps.running()) {
 		const output = await readOutput(deps, job.commands.length);
 		const why = deps.running()
-			? `A execução passou de ${BOX_DEADLINE_MS / 60_000} minutos e o container foi destruído.`
-			: "O container parou antes de terminar (falta de memória ou de disco, provavelmente).";
+			? `The run took more than ${BOX_DEADLINE_MS / 60_000} minutes and the container was destroyed.`
+			: "The container stopped before it finished (probably out of memory or disk).";
 		await deps.publish(stopped(why, output), undefined, { wallMs, cpuUs: output.cpuUs });
 		return "done";
 	}
 	const current = (await deps.read("current"))?.trim() ?? "";
 	if (current !== "tests") {
-		const status = STEP_STATUS[current] ?? "Iniciando o container";
+		const status = STEP_STATUS[current] ?? "Starting the container";
 		deps.status(`Container: ${status.toLowerCase()}`);
-		const waiting = { title: "Esperando a instalação", summary: `${status}; depois este comando roda no mesmo container, junto com os testes.` };
+		const waiting = { title: "Waiting for the install", summary: `${status}. Then this command runs in the same container as the tests.` };
 		await deps.progress({ tests: { title: status, summary: `${status}.` }, commands: job.commands.map(() => waiting) });
 		return "poll";
 	}
 	const steps = parseSteps((await deps.read("steps")) ?? "");
 	const step = (name: string) => steps.find((s) => s.name === name);
 	const running = job.commands.findIndex((_, i) => !step(`command${i + 1}`));
-	const runningNames = [...(step("tests") ? [] : ["os testes"]), ...(running >= 0 ? [job.commands[running].name] : [])];
-	deps.status(`Container: rodando ${runningNames.join(" e ") || "os testes"}`);
+	const runningNames = [...(step("tests") ? [] : ["the tests"]), ...(running >= 0 ? [job.commands[running].name] : [])];
+	deps.status(`Container: running ${runningNames.join(" and ") || "the tests"}`);
 	const counts = parseProgress(await deps.read("progress.json"));
 	const commands = await Promise.all(
 		job.commands.map(async ({ name }, i): Promise<BoxProgress["commands"][number]> => {
 			const finished = step(`command${i + 1}`);
 			if (finished) return deps.finished.has(i) ? undefined : commandResult(name, finished, await deps.read(`command${i + 1}.log`));
-			if (i > running) return { title: `Esperando ${job.commands[i - 1].name}`, summary: "Os comandos rodam um depois do outro, no mesmo container, junto com os testes." };
+			if (i > running) return { title: `Waiting for ${job.commands[i - 1].name}`, summary: "The commands run one after another, in the same container as the tests." };
 			return runningOutput(await deps.tail(`command${i + 1}.log`));
 		}),
 	);
@@ -556,8 +596,8 @@ export async function pollBox(job: BoxJob, deps: PollDeps): Promise<"poll" | "do
 }
 
 const STEP_STATUS: Record<string, string> = {
-	clone: "Baixando o código",
-	install: "Instalando as dependências",
+	clone: "Downloading the code",
+	install: "Installing the dependencies",
 };
 
 /** Kept between looks so each shows only what changed (see TestBox.show). */
@@ -606,23 +646,23 @@ export function parseProgress(text: string | undefined): TestProgress | undefine
 
 /** What the Container tests check run shows while the tests (or the commands after them) run. */
 export function testsOutput(counts: TestProgress | undefined, finished: Step | undefined, command: string | undefined): Pick<CheckResult, "title" | "summary"> {
-	const after = command ? `\n\nRodando agora, no mesmo container: ${command}.` : "";
-	if (!counts) return { title: "Rodando os testes", summary: `O vitest está carregando os testes.${after}` };
+	const after = command ? `\n\nRunning now, in the same container: ${command}.` : "";
+	if (!counts) return { title: "Running the tests", summary: `vitest is loading the tests.${after}` };
 	const failed = counts.failed + counts.broken;
-	const title = `${counts.passed} ${counts.passed === 1 ? "passou" : "passaram"}${failed ? `, ${failed} ${failed === 1 ? "falhou" : "falharam"}` : ""}${finished ? `; esperando ${command ?? "o fim"}` : ""}`;
+	const title = `${counts.passed} passed${failed ? `, ${failed} failed` : ""}${finished ? `; waiting for ${command ?? "the end"}` : ""}`;
 	const lines = [
-		finished ? "Os testes terminaram; o resultado sai quando os comandos do mesmo container terminarem." : `Arquivos: ${counts.filesDone} de ${counts.files}. Testes encontrados até agora: ${counts.tests}.`,
-		`Passaram ${counts.passed}, falharam ${counts.failed}, pulados ${counts.skipped}${counts.broken ? `, arquivos com erro fora dos testes ${counts.broken}` : ""}.`,
+		finished ? "The tests finished. The result comes when the commands in the same container finish." : `Files: ${counts.filesDone} of ${counts.files}. Tests found so far: ${counts.tests}.`,
+		`Passed ${counts.passed}, failed ${counts.failed}, skipped ${counts.skipped}${counts.broken ? `, files with errors outside the tests ${counts.broken}` : ""}.`,
 	];
 	const failures = counts.failures.map((f) => `**${f.file}${f.name ? ` › ${f.name}` : ""}**\n\n\`\`\`\n${fence(f.error)}\n\`\`\``);
-	const more = failed > counts.failures.length ? [`… e mais ${failed - counts.failures.length} falha(s), no resultado final.`] : [];
-	return { title, summary: [...lines, ...(failures.length ? ["### Falhas até agora", ...failures, ...more] : [])].join("\n\n") + after };
+	const more = failed > counts.failures.length ? [`… and ${failed - counts.failures.length} more ${failed - counts.failures.length === 1 ? "failure" : "failures"} in the final result.`] : [];
+	return { title, summary: [...lines, ...(failures.length ? ["### Failures so far", ...failures, ...more] : [])].join("\n\n") + after };
 }
 
 /** What a running command's check run shows: the end of its log so far. */
 export function runningOutput(tail: string | undefined): Pick<CheckResult, "title" | "summary"> {
 	const log = (tail ?? "").trim();
-	return { title: "Rodando", summary: log ? `Final do log até agora:\n\n\`\`\`\n${fence(log)}\n\`\`\`` : "Rodando, ainda sem saída." };
+	return { title: "Running", summary: log ? `End of the log so far:\n\n\`\`\`\n${fence(log)}\n\`\`\`` : "Running, no output yet." };
 }
 
 /** Keeps a log from closing the code block it's shown in. */
@@ -664,12 +704,12 @@ export function boxResults(output: BoxOutput, commands: Pick<BoxCommand, "name">
 	const tests = step("tests");
 	const report = output.report ? parseVitestReport(output.report) : undefined;
 	if (!report || tests?.exitCode === TIMED_OUT) {
-		const why = tests?.exitCode === TIMED_OUT ? `Os testes passaram do limite de ${STEP_MINUTES} minutos.` : "O vitest terminou sem gerar o relatório.";
+		const why = tests?.exitCode === TIMED_OUT ? `The tests went past the ${STEP_MINUTES}-minute limit.` : "vitest finished without writing the report.";
 		return { ...results, tests: logFailure(why, output.logs.tests) };
 	}
 	if (!report.files.length) return { ...results, tests: changed ? NOTHING_AFFECTED : NO_TESTS };
 	const result = toCheckResult(report);
-	if (changed && result.conclusion === "success") result.title += ", só os afetados pela PR";
+	if (changed && result.conclusion === "success") result.title += ", only those affected by the PR";
 	return { ...results, tests: result };
 }
 
@@ -680,16 +720,16 @@ function stopped(why: string, output: BoxOutput): BoxResults {
 }
 
 function failedStep(name: "clone" | "install", step: Step | undefined): string {
-	const what = name === "clone" ? "Não foi possível baixar o código" : "A instalação das dependências falhou";
+	const what = name === "clone" ? "Could not download the code" : "Installing the dependencies failed";
 	if (!step) return `${what}.`;
-	return step.exitCode === TIMED_OUT ? `${what}: passou do tempo limite.` : `${what} (código de saída ${step.exitCode}).`;
+	return step.exitCode === TIMED_OUT ? `${what}: it timed out.` : `${what} (exit code ${step.exitCode}).`;
 }
 
 function commandResult(name: string, step: Step | undefined, log: string | undefined): CheckResult | undefined {
 	if (!step) return undefined;
-	if (step.exitCode === 0) return { conclusion: "success", title: `${name} passou`, summary: `Sem erros, em ${(step.ms / 1000).toFixed(0)} s.` };
-	const why = step.exitCode === TIMED_OUT ? `${name} passou do limite de ${STEP_MINUTES} minutos.` : `${name} falhou (código de saída ${step.exitCode}).`;
-	return { ...logFailure(why, log), title: `${name} falhou` };
+	if (step.exitCode === 0) return { conclusion: "success", title: `${name} passed`, summary: `No errors, in ${(step.ms / 1000).toFixed(0)} s.` };
+	const why = step.exitCode === TIMED_OUT ? `${name} went past the ${STEP_MINUTES}-minute limit.` : `${name} failed (exit code ${step.exitCode}).`;
+	return { ...logFailure(why, log), title: `${name} failed` };
 }
 
 function logFailure(why: string, log: string | undefined): CheckResult {
@@ -732,7 +772,7 @@ export function parseVitestReport(json: string, root = "/work/repo/"): TestRepor
 		return {
 			path: file.name.startsWith(root) ? file.name.slice(root.length) : file.name,
 			state,
-			...(broken ? { errors: [file.message || "O arquivo falhou fora dos testes."] } : {}),
+			...(broken ? { errors: [file.message || "The file failed outside its tests."] } : {}),
 			tests,
 		};
 	});
@@ -740,20 +780,21 @@ export function parseVitestReport(json: string, root = "/work/repo/"): TestRepor
 }
 
 /** Estimated price of a run's container. Memory and disk count for as long as it ran, CPU only as used. */
-export function boxCost({ wallMs, cpuUs }: BoxUsage): number {
+export function boxCost({ wallMs, cpuUs, instance }: BoxUsage): number {
 	const seconds = wallMs / 1000;
+	const size = instanceSize(instance);
 	return (
-		INSTANCE.memoryGiB * seconds * CONTAINER_PRICES.memoryGiBs +
-		INSTANCE.diskGB * seconds * CONTAINER_PRICES.diskGBs +
+		size.memoryGiB * seconds * CONTAINER_PRICES.memoryGiBs +
+		size.diskGB * seconds * CONTAINER_PRICES.diskGBs +
 		((cpuUs ?? 0) / 1_000_000) * CONTAINER_PRICES.vcpuS
 	);
 }
 
 /** Usage goes in the run's test_container_runs row, created with the run (src/runs.ts). */
-async function recordUsage(db: D1Database, runId: number, usage: BoxUsage): Promise<void> {
+async function recordUsage(db: D1Database, job: BoxJob, usage: BoxUsage): Promise<void> {
 	await db
 		.prepare("UPDATE test_container_runs SET instance = ?, wall_ms = ?, cpu_us = ? WHERE run_id = ?")
-		.bind(INSTANCE.name, usage.wallMs, usage.cpuUs ?? null, runId)
+		.bind(job.instance ?? DEFAULT_INSTANCE, usage.wallMs, usage.cpuUs ?? null, job.runId)
 		.run()
 		.catch(logError);
 }
@@ -761,34 +802,34 @@ async function recordUsage(db: D1Database, runId: number, usage: BoxUsage): Prom
 /** A run's container usage, for the admin; undefined for runs that didn't use a container or are still going. */
 export async function containerUsage(db: D1Database, runId: number): Promise<BoxUsage | undefined> {
 	const row = await db
-		.prepare("SELECT wall_ms, cpu_us FROM test_container_runs WHERE run_id = ? AND wall_ms IS NOT NULL")
+		.prepare("SELECT instance, wall_ms, cpu_us FROM test_container_runs WHERE run_id = ? AND wall_ms IS NOT NULL")
 		.bind(runId)
-		.first<{ wall_ms: number; cpu_us: number | null }>();
-	return row ? { wallMs: row.wall_ms, cpuUs: row.cpu_us ?? undefined } : undefined;
+		.first<{ instance: string | null; wall_ms: number; cpu_us: number | null }>();
+	return row ? { wallMs: row.wall_ms, cpuUs: row.cpu_us ?? undefined, instance: row.instance ?? DEFAULT_INSTANCE } : undefined;
 }
 
 const COMMAND_CANCELLED: CheckResult = {
 	conclusion: "cancelled",
-	title: "Cancelado",
-	summary: "A execução foi cancelada (um push mais novo) ou passou do prazo antes deste comando terminar.",
+	title: "Cancelled",
+	summary: "The run was cancelled (by a newer push) or ran out of time before this command finished.",
 };
 
 const NOT_RUN: CheckResult = {
 	conclusion: "neutral",
-	title: "Não rodou",
-	summary: "O container parou antes de chegar a este comando; o check Container tests diz por quê.",
+	title: "Did not run",
+	summary: "The container stopped before it got to this command. The Container tests check says why.",
 };
 
 const NO_TESTS: CheckResult = {
 	conclusion: "neutral",
-	title: "Nenhum teste encontrado",
-	summary: "O vitest do repositório não encontrou arquivos de teste.",
+	title: "No tests found",
+	summary: "The repository's vitest found no test files.",
 };
 
 const NOTHING_AFFECTED: CheckResult = {
 	conclusion: "success",
-	title: "Nenhum teste afetado pela PR",
-	summary: "Nenhum arquivo de teste depende do que a PR mudou (`vitest --changed`). A run completa diária da branch principal roda todos.",
+	title: "No tests affected by the PR",
+	summary: "No test file depends on what the PR changed (`vitest --changed`). The daily full run on the main branch runs them all.",
 };
 
 function logError(error: unknown): undefined {

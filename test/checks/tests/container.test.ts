@@ -68,7 +68,7 @@ describe("Container tests", () => {
 
 	it("fails with the install log when dependencies don't install, and runs no command", () => {
 		const results = boxResults(output("clone 0 900\ninstall 1 30000\n", { logs: { install: "npm ERR! missing lockfile" } }), commands);
-		expect(results.tests).toMatchObject({ conclusion: "failure", title: "A instalação das dependências falhou (código de saída 1)" });
+		expect(results.tests).toMatchObject({ conclusion: "failure", title: "Installing the dependencies failed (exit code 1)" });
 		expect(results.tests.summary).toContain("npm ERR! missing lockfile");
 		expect(results.commands).toEqual([]);
 	});
@@ -81,25 +81,25 @@ describe("Container tests", () => {
 			}),
 			commands,
 		);
-		expect(results.tests).toMatchObject({ conclusion: "failure", title: "2 falhas em 3 testes" });
-		expect(results.commands[0]).toMatchObject({ conclusion: "failure", title: "Typecheck falhou" });
+		expect(results.tests).toMatchObject({ conclusion: "failure", title: "2 failures in 3 tests" });
+		expect(results.commands[0]).toMatchObject({ conclusion: "failure", title: "Typecheck failed" });
 		expect(results.commands[0]?.summary).toContain("error TS2322");
-		expect(results.commands[1]).toMatchObject({ conclusion: "success", title: "Lint passou", summary: "Sem erros, em 121 s." });
+		expect(results.commands[1]).toMatchObject({ conclusion: "success", title: "Lint passed", summary: "No errors, in 121 s." });
 	});
 
 	it("passes when every test passes, and leaves out a command that didn't run", () => {
 		const report = JSON.stringify({ testResults: [{ name: "/work/repo/a.test.ts", status: "passed", assertionResults: [{ title: "ok", status: "passed" }] }] });
 		const results = boxResults(output("clone 0 1\ninstall 0 1\ntests 0 1\ncommand1 124 1200000\n", { report }), commands);
-		expect(results.tests).toMatchObject({ conclusion: "success", title: "1 teste passaram" });
-		expect(results.commands).toEqual([expect.objectContaining({ title: "Typecheck falhou", summary: "Typecheck passou do limite de 15 minutos." }), undefined]);
+		expect(results.tests).toMatchObject({ conclusion: "success", title: "1 test passed" });
+		expect(results.commands).toEqual([expect.objectContaining({ title: "Typecheck failed", summary: "Typecheck went past the 15-minute limit." }), undefined]);
 	});
 
 	it("says when only the PR's affected tests ran, and passes when none were affected", () => {
 		const report = JSON.stringify({ testResults: [{ name: "/work/repo/a.test.ts", status: "passed", assertionResults: [{ title: "ok", status: "passed" }] }] });
-		expect(boxResults(output("clone 0 1\ninstall 0 1\ntests 0 1\n", { report }), [], true).tests.title).toBe("1 teste passaram, só os afetados pela PR");
+		expect(boxResults(output("clone 0 1\ninstall 0 1\ntests 0 1\n", { report }), [], true).tests.title).toBe("1 test passed, only those affected by the PR");
 		const none = output("clone 0 1\ninstall 0 1\ntests 0 1\n", { report: JSON.stringify({ testResults: [] }) });
-		expect(boxResults(none, [], true).tests).toMatchObject({ conclusion: "success", title: "Nenhum teste afetado pela PR" });
-		expect(boxResults(none).tests).toMatchObject({ conclusion: "neutral", title: "Nenhum teste encontrado" });
+		expect(boxResults(none, [], true).tests).toMatchObject({ conclusion: "success", title: "No tests affected by the PR" });
+		expect(boxResults(none).tests).toMatchObject({ conclusion: "neutral", title: "No tests found" });
 	});
 
 	it("opens an issue when the daily full run fails, naming what failed", async () => {
@@ -108,16 +108,16 @@ describe("Container tests", () => {
 		const passed = { conclusion: "success", title: "ok", summary: "" } as const;
 		expect(await alertFullRun({ createIssue }, job, { tests: passed, commands: [passed] }, "https://qf/admin/runs/3")).toBeUndefined();
 		expect(createIssue).not.toHaveBeenCalled();
-		await alertFullRun({ createIssue }, job, { tests: passed, commands: [{ conclusion: "failure", title: "Lint falhou", summary: "" }] }, "https://qf/admin/runs/3");
+		await alertFullRun({ createIssue }, job, { tests: passed, commands: [{ conclusion: "failure", title: "Lint failed", summary: "" }] }, "https://qf/admin/runs/3");
 		const [repo, title, body] = createIssue.mock.calls[0] as unknown as string[];
-		expect([repo, title]).toEqual(["octo/app", "A run completa de main falhou em abcdef1"]);
-		expect(body).toContain("- **Lint**: Lint falhou");
+		expect([repo, title]).toEqual(["octo/app", "The full run of main failed at abcdef1"]);
+		expect(body).toContain("- **Lint**: Lint failed");
 		expect(body).toContain("https://qf/admin/runs/3");
 	});
 
 	it("fails with the log when the tests time out", () => {
 		const results = boxResults(output("clone 0 1\ninstall 0 1\ntests 124 1500000\n", { logs: { tests: "····" } }));
-		expect(results.tests).toMatchObject({ conclusion: "failure", title: "Os testes passaram do limite de 15 minutos" });
+		expect(results.tests).toMatchObject({ conclusion: "failure", title: "The tests went past the 15-minute limit" });
 	});
 
 	describe("TestBox polling", () => {
@@ -141,19 +141,19 @@ describe("Container tests", () => {
 		it("shows the step running and looks again later", async () => {
 			const d = deps({ current: "install\n" });
 			expect(await pollBox(job, d)).toBe("poll");
-			expect(d.status).toHaveBeenCalledWith("Container: instalando as dependências");
+			expect(d.status).toHaveBeenCalledWith("Container: installing the dependencies");
 		});
 
 		it("names the tests and commands still running", async () => {
 			const d = deps({ current: "tests\n" });
 			await pollBox(job, d);
-			expect(d.status).toHaveBeenCalledWith("Container: rodando os testes e Lint");
+			expect(d.status).toHaveBeenCalledWith("Container: running the tests and Lint");
 		});
 
 		it("leaves out what already finished", async () => {
 			const d = deps({ current: "tests\n", steps: "clone 0 1\ninstall 0 1\ntests 0 1\n" });
 			await pollBox(job, d);
-			expect(d.status).toHaveBeenCalledWith("Container: rodando Lint");
+			expect(d.status).toHaveBeenCalledWith("Container: running Lint");
 		});
 
 		const progress = (p: Partial<TestProgress>) => JSON.stringify({ files: 3, filesDone: 1, tests: 10, passed: 4, failed: 0, skipped: 1, broken: 0, failures: [], ...p });
@@ -163,8 +163,8 @@ describe("Container tests", () => {
 			const d = deps({ current: "install\n" });
 			await pollBox(twoCommands, d);
 			const [shown] = d.progress.mock.calls[0];
-			expect(shown.tests.title).toBe("Instalando as dependências");
-			expect(shown.commands.map((c) => c?.title)).toEqual(["Esperando a instalação", "Esperando a instalação"]);
+			expect(shown.tests.title).toBe("Installing the dependencies");
+			expect(shown.commands.map((c) => c?.title)).toEqual(["Waiting for the install", "Waiting for the install"]);
 		});
 
 		it("shows the tests so far with their failures, the running command's log and the next one waiting", async () => {
@@ -172,14 +172,14 @@ describe("Container tests", () => {
 			const d = deps({ current: "tests\n", "progress.json": progress({ failed: 1, failures }), "command1.log": "line 1\nchecking src/index.ts" });
 			await pollBox(twoCommands, d);
 			const [shown] = d.progress.mock.calls[0];
-			expect(shown.tests.title).toBe("4 passaram, 1 falhou");
-			expect(shown.tests.summary).toContain("Arquivos: 1 de 3");
+			expect(shown.tests.title).toBe("4 passed, 1 failed");
+			expect(shown.tests.summary).toContain("Files: 1 of 3");
 			expect(shown.tests.summary).toContain("**src/a.test.ts › sum › carries**");
 			expect(shown.tests.summary).toContain("AssertionError: expected 3 to be 4");
-			expect(shown.tests.summary).toContain("Rodando agora, no mesmo container: Typecheck.");
-			expect(shown.commands[0]).toMatchObject({ title: "Rodando" });
+			expect(shown.tests.summary).toContain("Running now, in the same container: Typecheck.");
+			expect(shown.commands[0]).toMatchObject({ title: "Running" });
 			expect(shown.commands[0]?.summary).toContain("checking src/index.ts");
-			expect(shown.commands[1]).toMatchObject({ title: "Esperando Typecheck" });
+			expect(shown.commands[1]).toMatchObject({ title: "Waiting for Typecheck" });
 			expect(shown.counts).toMatchObject({ passed: 4, failed: 1 });
 		});
 
@@ -188,9 +188,9 @@ describe("Container tests", () => {
 			const d = deps(files);
 			await pollBox(twoCommands, d);
 			const [shown] = d.progress.mock.calls[0];
-			expect(shown.commands[0]).toMatchObject({ conclusion: "failure", title: "Typecheck falhou" });
+			expect(shown.commands[0]).toMatchObject({ conclusion: "failure", title: "Typecheck failed" });
 			expect(shown.commands[0]?.summary).toContain("error TS2304");
-			expect(shown.commands[1]).toMatchObject({ title: "Rodando" });
+			expect(shown.commands[1]).toMatchObject({ title: "Running" });
 			const again = deps(files, { finished: [0] });
 			await pollBox(twoCommands, again);
 			expect(again.progress.mock.calls[0][0].commands[0]).toBeUndefined();
@@ -199,7 +199,7 @@ describe("Container tests", () => {
 		it("says the tests finished and wait for the commands", async () => {
 			const d = deps({ current: "tests\n", steps: "clone 0 1\ninstall 0 1\ntests 0 1\n", "progress.json": progress({ filesDone: 3, passed: 9 }) });
 			await pollBox(twoCommands, d);
-			expect(d.progress.mock.calls[0][0].tests.title).toBe("9 passaram; esperando Typecheck");
+			expect(d.progress.mock.calls[0][0].tests.title).toBe("9 passed; waiting for Typecheck");
 		});
 
 		it("publishes once the container is done, with its usage", async () => {
@@ -222,7 +222,7 @@ describe("Container tests", () => {
 		it("fails the run when the container stopped, or past the deadline", async () => {
 			const stopped = deps({}, { running: false });
 			expect(await pollBox(job, stopped)).toBe("done");
-			expect(stopped.publish.mock.calls[0][0].tests.title).toBe("O container parou antes de terminar (falta de memória ou de disco, provavelmente)");
+			expect(stopped.publish.mock.calls[0][0].tests.title).toBe("The container stopped before it finished (probably out of memory or disk)");
 			const late = deps({}, { now: BOX_DEADLINE_MS + 1 });
 			expect(await pollBox(job, late)).toBe("done");
 			expect(late.publish.mock.calls[0][0].tests.conclusion).toBe("failure");
@@ -288,26 +288,30 @@ describe("Container tests", () => {
 		const invalid = (container: unknown) => () => readContainerConfig(JSON.stringify({ container }));
 		expect(invalid({ vitestArgs: "--project node" })).toThrow(/vitestArgs/);
 		expect(invalid({ typecheck: true })).toThrow(/typecheck/);
-		expect(invalid({ changed: "yes" })).toThrow(/"container.changed" deve ser true ou false/);
-		expect(invalid({ alwaysRun: "bin/" })).toThrow(/"container.alwaysRun" deve ser uma lista/);
-		expect(invalid({ turboCache: 1 })).toThrow(/"container.turboCache" deve ser true ou false/);
-		expect(invalid({ snapshot: "yes" })).toThrow(/"container.snapshot" deve ser true ou false/);
-		expect(invalid({ cache: ".eslintcache" })).toThrow(/"container.cache" deve ser uma lista/);
-		expect(invalid({ cache: ["/etc"] })).toThrow(/dentro do repositório/);
-		expect(invalid({ cache: ["a/../../b"] })).toThrow(/dentro do repositório/);
-		for (const root of [".", "./", ".git", "./.git/objects"]) expect(invalid({ cache: [root] })).toThrow(/fora da .git e abaixo da raiz/);
+		expect(invalid({ changed: "yes" })).toThrow(/"container.changed" must be true or false/);
+		expect(invalid({ alwaysRun: "bin/" })).toThrow(/"container.alwaysRun" must be a list/);
+		expect(invalid({ turboCache: 1 })).toThrow(/"container.turboCache" must be true or false/);
+		expect(invalid({ snapshot: "yes" })).toThrow(/"container.snapshot" must be true or false/);
+		expect(invalid({ cache: ".eslintcache" })).toThrow(/"container.cache" must be a list/);
+		expect(invalid({ cache: ["/etc"] })).toThrow(/inside the repository/);
+		expect(invalid({ cache: ["a/../../b"] })).toThrow(/inside the repository/);
+		for (const root of [".", "./", ".git", "./.git/objects"]) expect(invalid({ cache: [root] })).toThrow(/outside .git and below the root/);
 		expect(readContainerConfig(JSON.stringify({ container: { cache: ["node_modules/.cache/eslint"] } }))).toEqual({ cache: ["node_modules/.cache/eslint"] });
 		expect(readContainerConfig(JSON.stringify({ container: { changed: true, turboCache: true } }))).toEqual({ changed: true, turboCache: true });
-		expect(invalid({ commands: ["npm run lint"] })).toThrow(/"container.commands" deve ligar/);
-		expect(invalid({ commands: { Lint: 1 } })).toThrow(/"container.commands" deve ligar/);
-		expect(invalid({ commands: { " ": "x" } })).toThrow(/não serve de nome/);
-		expect(invalid({ typecheck: "tsc", commands: { typecheck: "tsc" } })).toThrow(/não repita/);
-		expect(invalid({ commands: Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`c${i}`, "x"])) })).toThrow(/até 8/);
+		expect(readContainerConfig(JSON.stringify({ container: { instance: "standard-2" } }))).toEqual({ instance: "standard-2" });
+		expect(invalid({ instance: "huge" })).toThrow(/"container.instance"/);
+		expect(invalid({ commands: ["npm run lint"] })).toThrow(/"container.commands" must map/);
+		expect(invalid({ commands: { Lint: 1 } })).toThrow(/"container.commands" must map/);
+		expect(invalid({ commands: { " ": "x" } })).toThrow(/is not a valid check run name/);
+		expect(invalid({ typecheck: "tsc", commands: { typecheck: "tsc" } })).toThrow(/Do not repeat/);
+		expect(invalid({ commands: Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`c${i}`, "x"])) })).toThrow(/up to 8/);
 	});
 
-	it("estimates about two cents for the run measured on macae", () => {
+	it("estimates about two cents for a large monorepo's run", () => {
 		// npm ci + vitest + typecheck: 225 s on a standard-4, 635 vCPU-seconds.
 		expect(boxCost({ wallMs: 225_000, cpuUs: 635_000_000 })).toBeCloseTo(0.0198, 3);
+		// The same CPU on a standard-2 (6 GiB, 12 GB), twice as long.
+		expect(boxCost({ wallMs: 450_000, cpuUs: 635_000_000, instance: "standard-2" })).toBeCloseTo(0.0198, 3);
 	});
 
 	describe.skipIf(inWorkers)("with D1", () => {
@@ -325,8 +329,8 @@ describe("Container tests", () => {
 
 			expect(await containerTests.run({ github, repo: "octo/app", pr, env, installationId: 9 })).toBeNull();
 			const [run] = await d1RunStore(RUNS).list();
-			expect(startCheckRun).toHaveBeenCalledWith("octo/app", "abc", "Container tests", "Rodando os testes num container", `https://qf.example/admin/runs/${run.id}`);
-			expect(startCheckRun).toHaveBeenCalledWith("octo/app", "abc", "Lint", "Esperando os testes, no mesmo container", `https://qf.example/admin/runs/${run.id}`);
+			expect(startCheckRun).toHaveBeenCalledWith("octo/app", "abc", "Container tests", "Running the tests in a container", `https://qf.example/admin/runs/${run.id}`);
+			expect(startCheckRun).toHaveBeenCalledWith("octo/app", "abc", "Lint", "Waiting for the tests, in the same container", `https://qf.example/admin/runs/${run.id}`);
 			expect(await d1JobStore(RUNS).get(run.id)).toMatchObject({ checkRunId: 55, installationId: 9 });
 			const body = JSON.parse(String(fetch.mock.calls[0][1].body));
 			expect(body.job).toMatchObject({

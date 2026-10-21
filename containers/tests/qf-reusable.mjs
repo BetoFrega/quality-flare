@@ -12,24 +12,24 @@
 import { existsSync, readFileSync } from "node:fs";
 
 function fail(reason) {
-	console.error(`Instalação não reaproveitável: ${reason}.`);
+	console.error(`Install cannot be reused: ${reason}.`);
 	process.exit(1);
 }
 
-for (const other of ["pnpm-lock.yaml", "yarn.lock", ".yarnrc", ".yarnrc.yml"]) if (existsSync(other)) fail(`tem ${other}`);
+for (const other of ["pnpm-lock.yaml", "yarn.lock", ".yarnrc", ".yarnrc.yml"]) if (existsSync(other)) fail(`has ${other}`);
 // npm prefers npm-shrinkwrap.json when both exist; qf-run.sh's `npm ci` needs package-lock.json.
-if (!existsSync("package-lock.json")) fail("sem package-lock.json");
+if (!existsSync("package-lock.json")) fail("no package-lock.json");
 const lockfile = existsSync("npm-shrinkwrap.json") ? "npm-shrinkwrap.json" : "package-lock.json";
 let packages;
 try {
 	packages = JSON.parse(readFileSync(lockfile, "utf8")).packages;
 } catch {
-	fail(`${lockfile} ilegível`);
+	fail(`${lockfile} is unreadable`);
 }
-if (!packages || typeof packages !== "object") fail(`${lockfile} sem "packages" (lockfileVersion 1)`);
+if (!packages || typeof packages !== "object") fail(`${lockfile} has no "packages" (lockfileVersion 1)`);
 for (const [path, entry] of Object.entries(packages)) {
 	if (path === "" || entry.link || entry.inBundle || entry.integrity) continue;
 	// A workspace or linked directory: its files are the repository's own, read where they are.
 	if (!path.startsWith("node_modules/") && !path.includes("/node_modules/")) continue;
-	fail(`${path} no ${lockfile} não tem integrity${entry.resolved ? ` (${entry.resolved})` : ""}`);
+	fail(`${path} in ${lockfile} has no integrity${entry.resolved ? ` (${entry.resolved})` : ""}`);
 }

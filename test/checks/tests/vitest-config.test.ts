@@ -3,8 +3,8 @@ import { readVitestConfig } from "../../../src/checks/tests/vitest-config.ts";
 
 const reader = (files: Record<string, string>) => async (path: string) => files[path];
 
-// Trimmed from Tudo Macaé: a unit config that merges into the ordinary one, which merges a shared one.
-const MACAE = {
+// A monorepo whose unit config merges into the ordinary one, which merges a shared one.
+const MONOREPO = {
 	"vitest.unit.config.mts": `import { mergeConfig } from "vitest/config";
 import ordinary from "./vitest.config.mts";
 
@@ -49,7 +49,7 @@ export const sharedTestConfig = defineConfig({
 
 describe("readVitestConfig", () => {
 	it("reads the unit config through mergeConfig into the configs it imports", async () => {
-		expect(await readVitestConfig(reader(MACAE))).toEqual({
+		expect(await readVitestConfig(reader(MONOREPO))).toEqual({
 			path: "vitest.unit.config.mts",
 			config: {
 				testTimeout: 20000,

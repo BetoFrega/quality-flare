@@ -67,7 +67,7 @@ describe.skipIf(inWorkers)("Tests check shards", () => {
 		expect(await tests.run({ github, repo: "octo/app", pr, env, installationId: 9 })).toBeNull();
 		const bodies = (sendBatch.mock.calls[0] as unknown as [{ body: TestShard }[]])[0].map((m) => m.body);
 		// "View more details" on GitHub opens this run in the admin.
-		expect(startCheckRun).toHaveBeenCalledWith("octo/app", "abc", "Tests", `Rodando ${SHARD_SIZE + 5} arquivos de teste`, `https://qf.example/admin/runs/${bodies[0].runId}`);
+		expect(startCheckRun).toHaveBeenCalledWith("octo/app", "abc", "Tests", `Running ${SHARD_SIZE + 5} test files`, `https://qf.example/admin/runs/${bodies[0].runId}`);
 		expect(bodies.map((b) => [b.shard, b.files.length])).toEqual([["0", SHARD_SIZE], ["1", 5]]);
 		expect(bodies[0]).toMatchObject({ repo: "octo/app", sha: "abc", installationId: 9 });
 		expect(await d1JobStore(RUNS).get(bodies[0].runId)).toEqual({ checkRunId: 55, installationId: 9, startedAt: expect.any(Number) });
@@ -128,7 +128,7 @@ describe.skipIf(inWorkers)("Tests check shards", () => {
 		await processShard({ ...shard(["test/a.test.ts"]), runId }, 2, { jobs, run, publish, enqueue: async () => {}, now: () => RUN_DEADLINE_MS + 1 });
 		expect(run).not.toHaveBeenCalled();
 		const [, report] = publish.mock.calls[0];
-		expect(report.files).toEqual([{ path: "test/a.test.ts", state: "fail", errors: [expect.stringContaining("passou de 60 minutos")], tests: [] }]);
+		expect(report.files).toEqual([{ path: "test/a.test.ts", state: "fail", errors: [expect.stringContaining("went past 60 minutes")], tests: [] }]);
 	});
 
 	it("fails a run past its deadline with the shards that finished, and its queued shards drop", async () => {
@@ -143,7 +143,7 @@ describe.skipIf(inWorkers)("Tests check shards", () => {
 
 		await expireRuns({ runs, jobs, now: () => RUN_DEADLINE_MS + 1, completeCheckRun });
 
-		const result = { conclusion: "failure", title: "A execução passou de 60 minutos", summary: expect.stringContaining("1 arquivo terminou antes disso") };
+		const result = { conclusion: "failure", title: "The run went past 60 minutes", summary: expect.stringContaining("1 file finished before that") };
 		expect(completeCheckRun).toHaveBeenCalledExactlyOnceWith("octo/app", { checkRunId: 55, installationId: 9, results: [passing(["test/a.test.ts"])] }, result);
 		expect(await runs.get(late)).toMatchObject({ status: "completed", conclusion: "failure", report: passing(["test/a.test.ts"]).report });
 		expect(await runs.get(recent)).toMatchObject({ status: "running" });
@@ -156,7 +156,7 @@ describe.skipIf(inWorkers)("Tests check shards", () => {
 		const RUNS = await fakeD1();
 		const github = { listFiles: async () => ["src/a.ts"], getFileText: async () => undefined } as unknown as GitHubClient;
 		const result = await tests.run({ github, repo: "octo/app", pr, env: { RUNS } as Env, installationId: 9 });
-		expect(result).toMatchObject({ conclusion: "neutral", title: "Nenhum teste encontrado" });
+		expect(result).toMatchObject({ conclusion: "neutral", title: "No tests found" });
 		expect((await d1RunStore(RUNS).list())[0]).toMatchObject({ status: "completed", conclusion: "neutral" });
 	});
 
@@ -205,7 +205,7 @@ describe.skipIf(inWorkers)("Tests check shards", () => {
 		expect(await processShard(queue[1].shard, 3, deps)).toBe("gave-up");
 		expect(publish.mock.calls[0][1].files).toEqual([
 			expect.objectContaining({ path: "a.test.ts", state: "pass" }),
-			{ path: "b.test.ts", state: "fail", tests: [], errors: [expect.stringContaining("memória")] },
+			{ path: "b.test.ts", state: "fail", tests: [], errors: [expect.stringContaining("memory")] },
 		]);
 	});
 
@@ -277,6 +277,6 @@ describe("a shard's Dynamic Worker", () => {
 			new Response(new ReadableStream({ start: (c) => init.signal!.addEventListener("abort", () => c.error(init.signal!.reason)) }));
 		const loader = { load: () => ({ getEntrypoint: () => ({ fetch }) }) } as unknown as WorkerLoader;
 		const bundle = { modules: {}, testFiles: ["test/a.test.ts"], setupFiles: [], unresolved: [] };
-		await expect(runInDynamicWorker(loader, bundle, () => {}, {}, 100)).rejects.toThrow(/passaram de .* minutos rodando e foram interrompidos/);
+		await expect(runInDynamicWorker(loader, bundle, () => {}, {}, 100)).rejects.toThrow(/ran for more than .* minutes and were stopped/);
 	});
 });

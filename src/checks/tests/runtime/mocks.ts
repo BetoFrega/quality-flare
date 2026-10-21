@@ -45,7 +45,7 @@ export function mockFacade(key: string, apply: (ns: Namespace) => void): void {
 
 /** `vi.mock(key, factory)` as the bundle rewrote it: `key` is the mocked module's name in the bundle. */
 export function mock(key: string, factory?: Factory): void {
-	if (!registering) throw new Error("vi.mock() só é suportado no topo do arquivo de teste, fora de funções e blocos.");
+	if (!registering) throw new Error("vi.mock() is only supported at the top level of a test file, outside functions and blocks.");
 	registering.set(key, factory);
 }
 
@@ -97,10 +97,10 @@ function activate(values: Map<string, Namespace | Error>) {
 }
 
 async function fromFactory(key: string, factory: Factory): Promise<Namespace> {
-	if (!factory) throw new Error(`vi.mock("${key}") sem factory (automock ou pasta __mocks__) não é suportado no quality-flare; passe uma factory.`);
+	if (!factory) throw new Error(`vi.mock("${key}") without a factory (automock or a __mocks__ folder) is not supported in quality-flare. Pass a factory.`);
 	const value = await factory(() => import(key));
 	if (value === null || typeof value !== "object") {
-		throw new Error(`A factory de vi.mock("${key}") deve retornar um objeto com os exports do módulo.`);
+		throw new Error(`The factory of vi.mock("${key}") must return an object with the module's exports.`);
 	}
 	return value as Namespace;
 }
