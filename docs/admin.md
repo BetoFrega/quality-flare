@@ -4,9 +4,9 @@ The admin at `/admin` lists the repositories where the App is installed. Everyth
 
 ## Repositories and checks
 
-- The **Ativar checks** switch of each repository turns quality-flare on for it. While it is off, the Worker ignores that repository's webhooks and creates no check runs.
-- Clicking a repository opens its checks, each with its own switch, and the **Ativar todos** and **Desativar todos** buttons.
-- In an enabled repository, a check that is off doesn't run and is reported as `neutral` ("Desativado"), so a check that branch protection requires doesn't block merging.
+- Each repository's switch (**Enabled**/**Disabled**) turns quality-flare on for it. While it is off, the Worker ignores that repository's webhooks and creates no check runs.
+- Clicking a repository opens its checks, each with its own switch, and the **Enable all** and **Disable all** buttons.
+- In an enabled repository, a check that is off doesn't run and is reported as `neutral` ("Disabled"), so a check that branch protection requires doesn't block merging.
 - The [tests on demand](on-demand.md) option is set here too.
 - The list can be filtered by name and state and sorted.
 

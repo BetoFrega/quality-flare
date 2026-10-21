@@ -1,6 +1,6 @@
 # Checks
 
-Each check reports as its own check run on the pull request's head commit. Checks are turned on per repository in the [admin](admin.md); in an enabled repository, a check that is off is reported as **neutral** ("Desativado"), so a check that branch protection requires doesn't block merging.
+Each check reports as its own check run on the pull request's head commit. Checks are turned on per repository in the [admin](admin.md); in an enabled repository, a check that is off is reported as **neutral** ("Disabled"), so a check that branch protection requires doesn't block merging.
 
 To add a check, implement the `Check` interface of [`src/checks/types.ts`](../src/checks/types.ts) and register it in [`src/checks/index.ts`](../src/checks/index.ts).
 

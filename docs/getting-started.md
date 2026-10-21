@@ -6,16 +6,14 @@ You need admin rights on the repository, to install the App and change branch pr
 
 ## 1. Install the App on the repository
 
-The instance's GitHub App is created on its `/setup` page. Open the admin at `https://<your-instance>/admin` and follow **Conectar outros repositórios** ("connect more repositories"), or open the App's page on GitHub and choose **Install** or **Configure**. Pick the repositories quality-flare should see.
-
-> The admin and the check runs' texts are in Portuguese. This page names each control as it appears, with a translation.
+The instance's GitHub App is created on its `/setup` page. Open the admin at `https://<your-instance>/admin` and follow **Connect more repositories**, or open the App's page on GitHub and choose **Install** or **Configure**. Pick the repositories quality-flare should see.
 
 ## 2. Turn the repository on in the admin
 
 Everything starts off, so installing the App changes nothing yet.
 
-1. In `/admin`, find the repository and turn on its **Ativar checks** switch ("enable checks"). From now on the Worker handles its webhooks.
-2. Click the repository to open its checks and turn on the ones you want. **Ativar todos** turns them all on.
+1. In `/admin`, find the repository and turn on its switch, so it reads **Enabled**. From now on the Worker handles its webhooks.
+2. Click the repository to open its checks and turn on the ones you want. **Enable all** turns them all on. Tests and Container tests appear only if the instance runs on Workers Paid; see [Self-hosting](self-hosting.md#workers-free-or-workers-paid).
 
 A check that is off in an enabled repository still reports, as **neutral**, so a check that branch protection requires never blocks a merge just because it is off.
 
